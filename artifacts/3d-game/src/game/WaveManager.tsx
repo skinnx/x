@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Enemy, EnemyType, ENEMY_STATS } from './types';
 import { useGameStore } from './useGameStore';
 
-const SPAWN_RADIUS = 26;
+const SPAWN_RADIUS = 32;
 
 type WaveConfig = { type: EnemyType; count: number }[];
 

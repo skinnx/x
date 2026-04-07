@@ -153,8 +153,13 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
       isDodgingRef.current = true;
       pos.addScaledVector(dodgeDirRef.current, DODGE_SPEED * dt);
       pos.y = 0;
-      pos.x = Math.max(-36, Math.min(36, pos.x));
-      pos.z = Math.max(-36, Math.min(36, pos.z));
+      const dodgeRadius = 28.5;
+      const dd = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
+      if (dd > dodgeRadius) {
+        const n = new THREE.Vector3(pos.x, 0, pos.z).normalize();
+        pos.x = n.x * dodgeRadius;
+        pos.z = n.z * dodgeRadius;
+      }
       onCameraTarget(pos, rotRef.current);
       return;
     } else if (isDodgingRef.current) {
@@ -204,8 +209,13 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
 
     pos.addScaledVector(velRef.current, dt);
     pos.y = 0;
-    pos.x = Math.max(-36, Math.min(36, pos.x));
-    pos.z = Math.max(-36, Math.min(36, pos.z));
+    const arenaRadius = 28.5;
+    const flatDist = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
+    if (flatDist > arenaRadius) {
+      const norm = new THREE.Vector3(pos.x, 0, pos.z).normalize();
+      pos.x = norm.x * arenaRadius;
+      pos.z = norm.z * arenaRadius;
+    }
     meshRef.current.rotation.y = rotRef.current;
 
     if (capeRef.current) {
