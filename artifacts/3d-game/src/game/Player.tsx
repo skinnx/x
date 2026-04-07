@@ -16,7 +16,6 @@ const HEAVY_COOLDOWN = 1.0;
 const ATTACK_REACH = 3.4;
 const HEAVY_REACH = 4.8;
 const COMBO_WINDOW = 1.0;
-const STAMINA_REGEN = 22;
 const ENERGY_REGEN = 12;
 const ATK_STA = 16;
 const HEAVY_STA = 30;
@@ -119,7 +118,6 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
     const staCost = heavy ? HEAVY_STA : ATK_STA;
     if (!store.getState().consumeStamina(staCost)) return;
     if (!bones.root.current) return;
-
     const now = Date.now();
     comboRef.current = ((now - lastAtkRef.current) / 1000 < COMBO_WINDOW) ? Math.min(comboRef.current + 1, 5) : 1;
     lastAtkRef.current = now;
@@ -146,7 +144,6 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
       if (diff.length() > reach) return;
       diff.normalize();
       if (forward.dot(diff) < Math.cos(arc)) return;
-
       const base = heavy ? 50 : 22;
       const comboDmg = base + (comboRef.current - 1) * (heavy ? 22 : 14);
       const isCrit = rollCrit();
@@ -156,7 +153,7 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
       hitAny = true;
       if (killed) {
         store.getState().incrementKills();
-        store.getState().addScore((enemy.maxHealth) * comboRef.current * (isCrit ? 2 : 1));
+        store.getState().addScore(enemy.maxHealth * comboRef.current * (isCrit ? 2 : 1));
         store.getState().addXP(ENEMY_STATS[enemy.type].xpValue);
       }
     });
@@ -165,7 +162,6 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
       store.getState().triggerScreenShake(heavy ? 0.28 : 0.1);
       store.getState().restoreEnergy(heavy ? 18 : 8);
     }
-
     setTimeout(() => {
       isAtkRef.current = false;
       isHeavyRef.current = false;
@@ -179,7 +175,6 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
     if (!bones.root.current) return;
     const pos = bones.root.current.position;
     const forward = new THREE.Vector3(-Math.sin(rotRef.current), 0, -Math.cos(rotRef.current));
-
     if (!store.getState().useSkill(id)) return;
 
     if (id === 'whirlwind') {
@@ -190,8 +185,7 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
       enemies.forEach((enemy) => {
         if (enemy.state === 'dead') return;
         const ep = new THREE.Vector3(enemy.position.x, 0, enemy.position.z);
-        const dist = ep.distanceTo(pos);
-        if (dist > 4.8) return;
+        if (ep.distanceTo(pos) > 4.8) return;
         const isCrit = rollCrit();
         const dmg = Math.round(65 * player.damageMultiplier * (isCrit ? 2 : 1));
         const killed = store.getState().damageEnemy(enemy.id, dmg, isCrit);
@@ -200,21 +194,18 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
       });
       store.getState().triggerScreenShake(0.35);
     }
-
     if (id === 'phantomStrike') {
       phantomDirRef.current.copy(forward);
       phantomDashRef.current = 0.4;
       addParticle(pos, '#4488ff', 20, 12);
       addParticle(pos, '#88ccff', 10, 8);
     }
-
     if (id === 'bloodRage') {
       addParticle(pos, '#cc0000', 30, 8);
       addParticle(pos, '#ff4400', 20, 6);
       store.getState().triggerScreenShake(0.2);
       store.getState().triggerHitFlash(0.15);
     }
-
     if (id === 'execute') {
       const { enemies } = store.getState();
       let executed = 0;
@@ -223,9 +214,7 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
         const ep = new THREE.Vector3(enemy.position.x, 0, enemy.position.z);
         if (ep.distanceTo(pos) > 5.0) return;
         const threshold = enemy.health / enemy.maxHealth;
-        const dmg = threshold < 0.3
-          ? enemy.health + 1
-          : Math.round(90 * player.damageMultiplier);
+        const dmg = threshold < 0.3 ? enemy.health + 1 : Math.round(90 * player.damageMultiplier);
         const isCrit = threshold < 0.3;
         const killed = store.getState().damageEnemy(enemy.id, dmg, isCrit);
         addParticle(ep, '#aa44ff', 18, 10);
@@ -246,17 +235,13 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
     const isMoving = anim === 'walk' || anim === 'run';
     const isAtk = anim === 'attack' || anim === 'heavy';
 
-    if (isWW && bones.root.current) {
-      bones.root.current.rotation.y += dt * 12;
-    }
+    if (isWW && bones.root.current) bones.root.current.rotation.y += dt * 12;
 
     if (bones.hip.current) {
-      const bobY = isMoving ? Math.abs(Math.sin(freq * 2)) * 0.08 : Math.sin(t * 1.8) * 0.01;
-      bones.hip.current.position.y = lerp(bones.hip.current.position.y, bobY, s);
+      bones.hip.current.position.y = lerp(bones.hip.current.position.y, isMoving ? Math.abs(Math.sin(freq * 2)) * 0.09 : Math.sin(t * 1.8) * 0.012, s);
     }
     if (bones.spine.current) {
-      const targetX = isBlocking ? -0.2 : anim === 'heavy' ? 0.18 : 0;
-      bones.spine.current.rotation.x = lerp(bones.spine.current.rotation.x, targetX, s * 0.65);
+      bones.spine.current.rotation.x = lerp(bones.spine.current.rotation.x, isBlocking ? -0.22 : isAtk ? 0.14 : 0, s * 0.55);
     }
     if (bones.chest.current) {
       bones.chest.current.rotation.y = lerp(bones.chest.current.rotation.y, isMoving ? -Math.cos(freq) * 0.1 : 0, s * 0.8);
@@ -271,10 +256,8 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
     if (bones.shinL.current) bones.shinL.current.rotation.x = lerp(bones.shinL.current.rotation.x, isMoving ? Math.max(0, Math.sin(freq)) * 0.72 : 0, s);
 
     if (bones.upperArmL.current) {
-      const txL = isBlocking ? -1.25 : isMoving ? -walkSwing * 0.5 : Math.sin(t * 0.9) * 0.02;
-      const tzL = isBlocking ? -0.5 : -0.12;
-      bones.upperArmL.current.rotation.x = lerp(bones.upperArmL.current.rotation.x, txL, s);
-      bones.upperArmL.current.rotation.z = lerp(bones.upperArmL.current.rotation.z, tzL, s);
+      bones.upperArmL.current.rotation.x = lerp(bones.upperArmL.current.rotation.x, isBlocking ? -1.3 : isMoving ? -walkSwing * 0.5 : Math.sin(t * 0.9) * 0.02, s);
+      bones.upperArmL.current.rotation.z = lerp(bones.upperArmL.current.rotation.z, isBlocking ? -0.55 : -0.12, s);
     }
     if (bones.foreArmL.current) {
       bones.foreArmL.current.rotation.x = lerp(bones.foreArmL.current.rotation.x, isBlocking ? -0.95 : 0, s);
@@ -282,29 +265,24 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
 
     if (bones.swordPivot.current) {
       atkPhaseRef.current += dt * (isHeavyRef.current ? 5 : 7.5);
-      let txR: number, tzR: number, tyR: number;
+      let txR = 0, tzR = 0, tyR = 0;
       if (isAtk || isWW) {
         const ph = isWW ? t * 8 : atkPhaseRef.current;
         if (isWW) {
-          txR = -0.6;
-          tzR = Math.sin(ph) * 0.8;
-          tyR = Math.cos(ph) * 0.4;
+          txR = -0.6; tzR = Math.sin(ph) * 0.8; tyR = Math.cos(ph) * 0.4;
         } else if (isHeavyRef.current) {
           txR = ph < 1 ? lerp(-0.9, -2.2, ph) : lerp(-2.2, 0.9, ph - 1);
-          tzR = Math.sin(ph * Math.PI) * 0.45;
-          tyR = 0;
+          tzR = Math.sin(ph * Math.PI) * 0.45; tyR = 0;
         } else {
-          const c = comboRef.current;
           txR = ph < 0.8 ? lerp(-0.5, -1.9, ph / 0.8) : lerp(-1.9, 0.25, (ph - 0.8) / 1.2);
-          tzR = (c % 2 === 1)
+          tzR = comboRef.current % 2 === 1
             ? (ph < 0.8 ? lerp(-0.3, 0.6, ph / 0.8) : lerp(0.6, -0.3, (ph - 0.8) / 1.2))
             : (ph < 0.8 ? lerp(-0.3, -0.8, ph / 0.8) : lerp(-0.8, -0.3, (ph - 0.8) / 1.2));
           tyR = Math.sin(ph * Math.PI) * 0.25;
         }
       } else {
         txR = isMoving ? walkSwing * 0.52 : Math.sin(t * 0.95) * 0.025;
-        tzR = 0.08;
-        tyR = 0;
+        tzR = 0.08; tyR = 0;
       }
       bones.swordPivot.current.rotation.x = lerp(bones.swordPivot.current.rotation.x, txR, s * 0.88);
       bones.swordPivot.current.rotation.z = lerp(bones.swordPivot.current.rotation.z, tzR, s * 0.88);
@@ -312,25 +290,22 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
     }
 
     if (bones.cape.current) {
-      const sx = isMoving ? speed * 0.045 + Math.sin(t * 3.2) * 0.03 : Math.sin(t * 1.6) * 0.01;
-      bones.cape.current.rotation.x = lerp(bones.cape.current.rotation.x, sx, s * 0.35);
-      bones.cape.current.rotation.z = lerp(bones.cape.current.rotation.z, isMoving ? Math.sin(freq * 0.5) * 0.04 : 0, s * 0.3);
+      bones.cape.current.rotation.x = lerp(bones.cape.current.rotation.x, isMoving ? speed * 0.048 + Math.sin(t * 3.2) * 0.032 : Math.sin(t * 1.6) * 0.012, s * 0.3);
+      bones.cape.current.rotation.z = lerp(bones.cape.current.rotation.z, isMoving ? Math.sin(freq * 0.5) * 0.045 : 0, s * 0.3);
     }
 
     if (trailMeshRef.current) {
       trailOpRef.current = Math.max(0, trailOpRef.current - dt * 5.5);
-      (trailMeshRef.current.material as THREE.MeshBasicMaterial).opacity = trailOpRef.current * 0.6;
+      (trailMeshRef.current.material as THREE.MeshBasicMaterial).opacity = trailOpRef.current * 0.55;
     }
     if (swordGlowRef.current) {
       const target = isAtk || isWW ? (isHeavyRef.current ? 7 : 4) : (isRaging ? 2 : 0.7);
       swordGlowRef.current.intensity = lerp(swordGlowRef.current.intensity, target, s);
     }
-
     if (bones.auraRing.current) {
       const { player } = store.getState();
       const mat = bones.auraRing.current.material as THREE.MeshBasicMaterial;
-      const targetOp = isRaging ? 0.65 : player.isPhantomStriking ? 0.45 : 0;
-      mat.opacity = lerp(mat.opacity, targetOp, s * 2);
+      mat.opacity = lerp(mat.opacity, isRaging ? 0.65 : player.isPhantomStriking ? 0.45 : 0, s * 2);
       bones.auraRing.current.rotation.y = t * (isRaging ? 3 : 5);
       mat.color.setHex(isRaging ? 0xcc0000 : 0x4488ff);
     }
@@ -338,7 +313,7 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
       const mat = bones.whirlRing.current.material as THREE.MeshBasicMaterial;
       mat.opacity = lerp(mat.opacity, isWW ? 0.8 : 0, s * 3);
       bones.whirlRing.current.rotation.y = t * 15;
-      bones.whirlRing.current.scale.setScalar(isWW ? lerp(bones.whirlRing.current.scale.x, 5, s * 2) : 1);
+      if (isWW) bones.whirlRing.current.scale.setScalar(lerp(bones.whirlRing.current.scale.x, 5, s * 2));
     }
   }
 
@@ -346,7 +321,6 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
     if (!bones.root.current) return;
     const { gameState, player } = store.getState();
     if (gameState.phase !== 'playing' || !player.isAlive) return;
-
     const dt = Math.min(delta, 0.05);
     animTimeRef.current += dt;
     const t = animTimeRef.current;
@@ -380,8 +354,7 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
           if (killed) { store.getState().incrementKills(); store.getState().addScore(enemy.maxHealth * 2); store.getState().addXP(ENEMY_STATS[enemy.type].xpValue); }
         }
       });
-      const r = 28.5;
-      const d = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
+      const r = 28.5, d = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
       if (d > r) { const n = new THREE.Vector3(pos.x, 0, pos.z).normalize(); pos.x = n.x * r; pos.z = n.z * r; }
       onCameraTarget(pos, rotRef.current);
       animateBones(dt, 20, 'run', t, false, player.isRaging);
@@ -393,7 +366,7 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
       isDodgingRef.current = true;
       pos.addScaledVector(dodgeDirRef.current, DODGE_SPEED * dt);
       pos.y = 0;
-      const r = 28.5; const d = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
+      const r = 28.5, d = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
       if (d > r) { const n = new THREE.Vector3(pos.x, 0, pos.z).normalize(); pos.x = n.x * r; pos.z = n.z * r; }
       animStateRef.current = 'dodge';
       animateBones(dt, DODGE_SPEED, 'dodge', t, false, player.isRaging);
@@ -424,10 +397,9 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
       let targetAngle: number;
       if (p.lockedTargetId) {
         const locked = store.getState().enemies.find(e => e.id === p.lockedTargetId);
-        if (locked && locked.state !== 'dead') {
-          targetAngle = Math.atan2(-(locked.position.x - pos.x), -(locked.position.z - pos.z));
-        } else { store.getState().setLockTarget(null); targetAngle = Math.atan2(-moveDir.x, -moveDir.z); }
-      } else { targetAngle = Math.atan2(-moveDir.x, -moveDir.z); }
+        if (locked && locked.state !== 'dead') targetAngle = Math.atan2(-(locked.position.x - pos.x), -(locked.position.z - pos.z));
+        else { store.getState().setLockTarget(null); targetAngle = Math.atan2(-moveDir.x, -moveDir.z); }
+      } else targetAngle = Math.atan2(-moveDir.x, -moveDir.z);
       rotRef.current = lerpAngle(rotRef.current, targetAngle, ROT_SPEED * dt);
       velRef.current.lerp(moveDir.multiplyScalar(MOVE_SPEED * (isAtkRef.current ? 0.3 : 1)), 10 * dt);
       if (!isAtkRef.current) animStateRef.current = velRef.current.length() > 5 ? 'run' : 'walk';
@@ -439,7 +411,7 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
     if (!player.isWhirlwinding) {
       pos.addScaledVector(velRef.current, dt);
       pos.y = 0;
-      const r = 28.5; const d = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
+      const r = 28.5, d = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
       if (d > r) { const n = new THREE.Vector3(pos.x, 0, pos.z).normalize(); pos.x = n.x * r; pos.z = n.z * r; }
       bones.root.current.rotation.y = rotRef.current;
     }
@@ -460,7 +432,7 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
 
     if (keys.lockOn && !prevKeysRef.current.lockOn) {
       const { player: p, enemies } = store.getState();
-      if (p.lockedTargetId) { store.getState().setLockTarget(null); }
+      if (p.lockedTargetId) store.getState().setLockTarget(null);
       else {
         const living = enemies.filter(e => e.state !== 'dead');
         if (living.length > 0) {
@@ -508,7 +480,6 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
         }
       }
     }
-
     onCameraTarget(pos, rotRef.current);
   });
 
@@ -516,245 +487,422 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
   if (!player.isAlive) return null;
 
   const isRaging = player.isRaging;
-  const isBlock = player.isBlocking;
+  const isBlocking = player.isBlocking;
   const isWW = player.isWhirlwinding;
   const isPhantom = player.isPhantomStriking;
-  const runeEmissive = isRaging ? '#660000' : isPhantom ? '#002244' : '#000000';
-  const runeIntensity = isRaging ? 0.6 : isPhantom ? 0.4 : 0.0;
+
+  const re = isRaging ? '#770000' : isPhantom ? '#002255' : '#000000';
+  const ri = isRaging ? 0.7 : isPhantom ? 0.45 : 0;
+  const goldRe = isRaging ? '#442200' : '#000000';
+  const goldRi = isRaging ? 0.5 : 0;
+  const eyeColor = isRaging ? '#ff2200' : '#4499ff';
+  const bladePulse = isRaging ? '#ff2200' : isPhantom ? '#4499ff' : '#224488';
 
   return (
     <group ref={bones.root}>
-      <group ref={bones.hip} position={[0, 0.92, 0]}>
+      <group ref={bones.hip} position={[0, 0.96, 0]}>
         <group ref={bones.spine}>
-          <group ref={bones.chest} position={[0, 0.52, 0]}>
-            {/* Torso */}
-            <mesh position={[0, 0.22, 0]} castShadow>
-              <boxGeometry args={[0.74, 0.5, 0.37]} />
-              <meshStandardMaterial color="#7a1515" roughness={0.38} metalness={0.65} emissive={runeEmissive} emissiveIntensity={runeIntensity} />
+          {/* === PELVIS / LOWER TORSO === */}
+          <mesh position={[0, 0.04, 0]} castShadow>
+            <boxGeometry args={[0.72, 0.38, 0.38]} />
+            <meshStandardMaterial color="#1a0a06" roughness={0.65} metalness={0.3} />
+          </mesh>
+          {/* Fauld - articulated waist plates */}
+          {[-0.22, 0, 0.22].map((xo, i) => (
+            <mesh key={i} position={[xo, -0.05, 0.19]} castShadow>
+              <boxGeometry args={[0.2, 0.24, 0.06]} />
+              <meshStandardMaterial color="#6a0e0e" roughness={0.32} metalness={0.72} emissive={re} emissiveIntensity={ri * 0.5} />
             </mesh>
-            {/* Chest plate detail */}
-            <mesh position={[0, 0.3, 0.19]} castShadow>
-              <boxGeometry args={[0.56, 0.34, 0.04]} />
-              <meshStandardMaterial color="#8a1818" roughness={0.32} metalness={0.75} emissive={runeEmissive} emissiveIntensity={runeIntensity * 1.5} />
+          ))}
+          {/* Tassets - hanging hip armor L/R */}
+          {[-1, 1].map((side) => (
+            <group key={side} position={[side * 0.33, -0.04, 0]}>
+              <mesh position={[0, -0.1, 0]} castShadow>
+                <boxGeometry args={[0.22, 0.2, 0.1]} />
+                <meshStandardMaterial color="#6a0e0e" roughness={0.32} metalness={0.72} emissive={re} emissiveIntensity={ri * 0.5} />
+              </mesh>
+              <mesh position={[0, -0.3, 0]} castShadow>
+                <boxGeometry args={[0.19, 0.2, 0.09]} />
+                <meshStandardMaterial color="#5a0c0c" roughness={0.35} metalness={0.7} emissive={re} emissiveIntensity={ri * 0.4} />
+              </mesh>
+            </group>
+          ))}
+
+          <group ref={bones.chest} position={[0, 0.26, 0]}>
+            {/* === MAIN TORSO === */}
+            {/* Spine/back plate */}
+            <mesh position={[0, 0.28, -0.04]} castShadow>
+              <boxGeometry args={[0.78, 0.56, 0.3]} />
+              <meshStandardMaterial color="#1e0c08" roughness={0.68} metalness={0.28} />
             </mesh>
-            {/* Rune glyph center */}
-            <mesh position={[0, 0.3, 0.22]}>
-              <planeGeometry args={[0.18, 0.18]} />
-              <meshBasicMaterial color={isRaging ? '#ff2200' : isPhantom ? '#4488ff' : '#440000'} transparent opacity={0.8} />
+            {/* Breastplate - main piece */}
+            <mesh position={[0, 0.28, 0.09]} castShadow>
+              <boxGeometry args={[0.82, 0.54, 0.22]} />
+              <meshStandardMaterial color="#860d0d" roughness={0.25} metalness={0.82} emissive={re} emissiveIntensity={ri} />
             </mesh>
-            {/* Abdomen */}
-            <mesh position={[0, -0.02, 0]} castShadow>
-              <boxGeometry args={[0.62, 0.44, 0.34]} />
-              <meshStandardMaterial color="#1e0e08" roughness={0.6} metalness={0.4} />
+            {/* Breastplate raised center ridge */}
+            <mesh position={[0, 0.28, 0.2]} castShadow>
+              <boxGeometry args={[0.18, 0.52, 0.04]} />
+              <meshStandardMaterial color="#a01212" roughness={0.2} metalness={0.85} emissive={re} emissiveIntensity={ri * 1.2} />
             </mesh>
-            {/* Belt */}
-            <mesh position={[0, -0.18, 0]} castShadow>
-              <boxGeometry args={[0.68, 0.16, 0.36]} />
-              <meshStandardMaterial color="#3a2010" roughness={0.5} metalness={0.5} />
-            </mesh>
-            {/* Shoulders */}
-            {[-1, 1].map((side) => (
-              <mesh key={side} position={[side * 0.46, 0.3, 0]} castShadow>
-                <boxGeometry args={[0.24, 0.25, 0.25]} />
-                <meshStandardMaterial color="#7a0f0f" roughness={0.35} metalness={0.7} emissive={runeEmissive} emissiveIntensity={runeIntensity * 0.8} />
+            {/* Gold border trim around breastplate */}
+            {[[-0.44, 0.28], [0.44, 0.28]].map(([x, y], i) => (
+              <mesh key={i} position={[x, y, 0.16]} castShadow>
+                <boxGeometry args={[0.06, 0.52, 0.03]} />
+                <meshStandardMaterial color="#b88820" roughness={0.18} metalness={0.9} emissive={goldRe} emissiveIntensity={goldRi} />
               </mesh>
             ))}
+            <mesh position={[0, 0.04, 0.17]} castShadow>
+              <boxGeometry args={[0.9, 0.06, 0.03]} />
+              <meshStandardMaterial color="#b88820" roughness={0.18} metalness={0.9} emissive={goldRe} emissiveIntensity={goldRi} />
+            </mesh>
+            <mesh position={[0, 0.52, 0.17]} castShadow>
+              <boxGeometry args={[0.9, 0.06, 0.03]} />
+              <meshStandardMaterial color="#b88820" roughness={0.18} metalness={0.9} emissive={goldRe} emissiveIntensity={goldRi} />
+            </mesh>
+            {/* Rune emblem center */}
+            <mesh position={[0, 0.28, 0.215]}>
+              <planeGeometry args={[0.15, 0.22]} />
+              <meshBasicMaterial color={eyeColor} transparent opacity={0.7} blending={THREE.AdditiveBlending} depthWrite={false} />
+            </mesh>
+            {/* Gorget - neck protection */}
+            <mesh position={[0, 0.58, 0.06]} castShadow>
+              <cylinderGeometry args={[0.18, 0.26, 0.16, 10]} />
+              <meshStandardMaterial color="#750c0c" roughness={0.28} metalness={0.8} emissive={re} emissiveIntensity={ri * 0.6} />
+            </mesh>
+            {/* Gorget gold ring */}
+            <mesh position={[0, 0.66, 0.06]}>
+              <torusGeometry args={[0.185, 0.018, 6, 16]} />
+              <meshStandardMaterial color="#b88820" roughness={0.18} metalness={0.9} />
+            </mesh>
 
-            {/* RIGHT ARM (sword) */}
-            <group position={[0.46, 0.26, 0]}>
-              <group ref={bones.upperArmR} position={[0.14, -0.1, 0]}>
-                <mesh position={[0, -0.2, 0]} castShadow>
-                  <capsuleGeometry args={[0.1, 0.34, 4, 6]} />
-                  <meshStandardMaterial color="#5a1010" roughness={0.55} metalness={0.42} />
+            {/* === HEAD === */}
+            <group ref={bones.head} position={[0, 0.7, 0]}>
+              {/* Skull base */}
+              <mesh position={[0, 0.18, 0.02]} castShadow>
+                <sphereGeometry args={[0.23, 10, 8]} />
+                <meshStandardMaterial color="#c4925f" roughness={0.5} />
+              </mesh>
+              {/* Helmet - base band */}
+              <mesh position={[0, 0.18, 0.02]} castShadow>
+                <cylinderGeometry args={[0.225, 0.235, 0.22, 12]} />
+                <meshStandardMaterial color="#1c1c2c" roughness={0.25} metalness={0.82} emissive={re} emissiveIntensity={ri * 0.5} />
+              </mesh>
+              {/* Helmet dome */}
+              <mesh position={[0, 0.31, 0.02]} castShadow>
+                <sphereGeometry args={[0.225, 12, 7, 0, Math.PI * 2, 0, Math.PI * 0.52]} />
+                <meshStandardMaterial color="#181826" roughness={0.22} metalness={0.85} />
+              </mesh>
+              {/* Helmet crest spine */}
+              <mesh position={[0, 0.52, 0.02]} rotation={[0.1, 0, 0]} castShadow>
+                <boxGeometry args={[0.06, 0.14, 0.26]} />
+                <meshStandardMaterial color="#1a1a28" roughness={0.22} metalness={0.82} />
+              </mesh>
+              {/* Plume feathers */}
+              {[-0.015, 0, 0.015].map((xo, fi) => (
+                <mesh key={fi} position={[xo, 0.64, 0.02 + fi * 0.012]} castShadow>
+                  <boxGeometry args={[0.04, 0.28, 0.06]} />
+                  <meshStandardMaterial color={fi === 1 ? '#cc0000' : '#880000'} roughness={0.92} />
                 </mesh>
-                <group ref={bones.foreArmR} position={[0, -0.44, 0]}>
-                  <mesh position={[0, -0.17, 0]} castShadow>
-                    <capsuleGeometry args={[0.088, 0.3, 4, 6]} />
-                    <meshStandardMaterial color="#4a0e0e" roughness={0.55} metalness={0.42} />
+              ))}
+              {/* Visor - horizontal slit */}
+              <mesh position={[0, 0.21, 0.225]} castShadow>
+                <boxGeometry args={[0.26, 0.055, 0.04]} />
+                <meshStandardMaterial color="#0a0a14" roughness={0.5} metalness={0.6} />
+              </mesh>
+              {/* Visor - vertical slit (T-shape) */}
+              <mesh position={[0, 0.16, 0.226]} castShadow>
+                <boxGeometry args={[0.055, 0.11, 0.038]} />
+                <meshStandardMaterial color="#0a0a14" roughness={0.5} metalness={0.6} />
+              </mesh>
+              {/* Eye glow through visor */}
+              <mesh position={[0, 0.21, 0.228]}>
+                <planeGeometry args={[0.22, 0.038]} />
+                <meshBasicMaterial color={eyeColor} transparent opacity={0.95} />
+              </mesh>
+              {/* Cheek guards */}
+              {[-1, 1].map((side) => (
+                <group key={side} position={[side * 0.18, 0.13, 0.16]}>
+                  <mesh castShadow>
+                    <boxGeometry args={[0.08, 0.25, 0.11]} />
+                    <meshStandardMaterial color="#181826" roughness={0.25} metalness={0.82} />
+                  </mesh>
+                </group>
+              ))}
+              {/* Helmet gold rim */}
+              <mesh position={[0, 0.08, 0.02]}>
+                <torusGeometry args={[0.225, 0.016, 5, 16]} />
+                <meshStandardMaterial color="#b88820" roughness={0.18} metalness={0.9} emissive={goldRe} emissiveIntensity={goldRi} />
+              </mesh>
+            </group>
+
+            {/* === PAULDRONS (SHOULDERS) === */}
+            {[-1, 1].map((side) => (
+              <group key={side} position={[side * 0.5, 0.28, 0]}>
+                {/* Main shoulder piece */}
+                <mesh position={[side * 0.06, 0, 0]} castShadow>
+                  <boxGeometry args={[0.28, 0.28, 0.28]} />
+                  <meshStandardMaterial color="#860d0d" roughness={0.26} metalness={0.82} emissive={re} emissiveIntensity={ri * 0.8} />
+                </mesh>
+                {/* Pauldron upper plate */}
+                <mesh position={[side * 0.1, 0.14, -0.01]} rotation={[0, 0, side * -0.25]} castShadow>
+                  <boxGeometry args={[0.32, 0.1, 0.3]} />
+                  <meshStandardMaterial color="#9a1010" roughness={0.24} metalness={0.84} emissive={re} emissiveIntensity={ri} />
+                </mesh>
+                {/* Pauldron lower plate */}
+                <mesh position={[side * 0.07, -0.14, 0.01]} rotation={[0.15, 0, side * -0.12]} castShadow>
+                  <boxGeometry args={[0.26, 0.1, 0.27]} />
+                  <meshStandardMaterial color="#750d0d" roughness={0.28} metalness={0.8} />
+                </mesh>
+                {/* Gold trim on pauldron */}
+                <mesh position={[side * 0.1, 0.19, -0.01]} castShadow>
+                  <boxGeometry args={[0.33, 0.04, 0.31]} />
+                  <meshStandardMaterial color="#b88820" roughness={0.18} metalness={0.9} emissive={goldRe} emissiveIntensity={goldRi} />
+                </mesh>
+              </group>
+            ))}
+
+            {/* === RIGHT ARM (SWORD) === */}
+            <group position={[0.52, 0.1, 0]}>
+              <group ref={bones.upperArmR} position={[0.14, -0.1, 0]}>
+                {/* Rerebrace (upper arm plate) */}
+                <mesh position={[0, -0.18, 0]} castShadow>
+                  <capsuleGeometry args={[0.1, 0.32, 4, 6]} />
+                  <meshStandardMaterial color="#6a0e0e" roughness={0.52} metalness={0.45} />
+                </mesh>
+                <mesh position={[0, -0.18, 0.1]} castShadow>
+                  <boxGeometry args={[0.2, 0.32, 0.06]} />
+                  <meshStandardMaterial color="#860d0d" roughness={0.28} metalness={0.8} emissive={re} emissiveIntensity={ri * 0.5} />
+                </mesh>
+                {/* Couter (elbow) */}
+                <mesh position={[0, -0.4, 0.04]} castShadow>
+                  <sphereGeometry args={[0.1, 7, 6]} />
+                  <meshStandardMaterial color="#750c0c" roughness={0.3} metalness={0.78} />
+                </mesh>
+
+                <group ref={bones.foreArmR} position={[0, -0.5, 0]}>
+                  {/* Vambrace */}
+                  <mesh position={[0, -0.15, 0]} castShadow>
+                    <capsuleGeometry args={[0.09, 0.26, 4, 6]} />
+                    <meshStandardMaterial color="#5a0c0c" roughness={0.55} metalness={0.42} />
+                  </mesh>
+                  <mesh position={[0, -0.15, 0.09]} castShadow>
+                    <boxGeometry args={[0.19, 0.28, 0.05]} />
+                    <meshStandardMaterial color="#860d0d" roughness={0.28} metalness={0.8} />
                   </mesh>
                   {/* Gauntlet */}
-                  <mesh position={[0, -0.38, 0]} castShadow>
-                    <boxGeometry args={[0.22, 0.18, 0.22]} />
-                    <meshStandardMaterial color="#6a1010" roughness={0.4} metalness={0.7} emissive={runeEmissive} emissiveIntensity={runeIntensity} />
+                  <mesh position={[0, -0.37, 0.02]} castShadow>
+                    <boxGeometry args={[0.23, 0.2, 0.22]} />
+                    <meshStandardMaterial color="#750c0c" roughness={0.28} metalness={0.82} emissive={re} emissiveIntensity={ri * 0.8} />
                   </mesh>
-                  <group ref={bones.swordPivot} position={[0, -0.52, 0]}>
-                    {/* Sword blade */}
-                    <mesh position={[0, -0.5, 0]} castShadow>
-                      <boxGeometry args={[0.062, 1.05, 0.034]} />
-                      <meshStandardMaterial color="#c8d2e4" roughness={0.08} metalness={0.98} envMapIntensity={3} />
+                  {/* Gold trim on gauntlet */}
+                  <mesh position={[0, -0.27, 0.02]}>
+                    <boxGeometry args={[0.24, 0.04, 0.23]} />
+                    <meshStandardMaterial color="#b88820" roughness={0.18} metalness={0.9} emissive={goldRe} emissiveIntensity={goldRi} />
+                  </mesh>
+                  {/* Fingers (simplified) */}
+                  {[-0.07, 0, 0.07].map((xo, fi) => (
+                    <mesh key={fi} position={[xo, -0.5, 0.04]} castShadow>
+                      <boxGeometry args={[0.055, 0.1, 0.07]} />
+                      <meshStandardMaterial color="#6a0e0e" roughness={0.35} metalness={0.75} />
+                    </mesh>
+                  ))}
+
+                  {/* SWORD */}
+                  <group ref={bones.swordPivot} position={[0, -0.58, 0]}>
+                    {/* Main blade */}
+                    <mesh position={[0, -0.6, 0]} castShadow>
+                      <boxGeometry args={[0.058, 1.22, 0.03]} />
+                      <meshStandardMaterial color="#d0daea" roughness={0.06} metalness={1.0} envMapIntensity={4} />
+                    </mesh>
+                    {/* Blade taper tip */}
+                    <mesh position={[0, -1.26, 0]} rotation={[0, 0, Math.PI]} castShadow>
+                      <coneGeometry args={[0.032, 0.14, 4]} />
+                      <meshStandardMaterial color="#d0daea" roughness={0.06} metalness={1.0} />
                     </mesh>
                     {/* Fuller groove */}
-                    <mesh position={[0, -0.5, 0]}>
-                      <boxGeometry args={[0.018, 0.95, 0.006]} />
-                      <meshStandardMaterial color="#dde8ff" roughness={0.05} metalness={1} envMapIntensity={4} />
+                    <mesh position={[0, -0.6, 0]}>
+                      <boxGeometry args={[0.016, 1.05, 0.005]} />
+                      <meshStandardMaterial color="#e8eeff" roughness={0.04} metalness={1} envMapIntensity={5} />
+                    </mesh>
+                    {/* Rune glow on blade */}
+                    <mesh position={[0.03, -0.5, 0.016]}>
+                      <planeGeometry args={[0.035, 0.48]} />
+                      <meshBasicMaterial color={bladePulse} transparent opacity={0.8} blending={THREE.AdditiveBlending} depthWrite={false} />
                     </mesh>
                     {/* Crossguard */}
-                    <mesh position={[0, -0.04, 0]} castShadow>
-                      <boxGeometry args={[0.34, 0.07, 0.07]} />
-                      <meshStandardMaterial color="#c8a022" roughness={0.18} metalness={0.92} />
+                    <mesh position={[0, -0.05, 0]} castShadow>
+                      <boxGeometry args={[0.46, 0.07, 0.07]} />
+                      <meshStandardMaterial color="#c09228" roughness={0.15} metalness={0.95} />
                     </mesh>
+                    {/* Crossguard quillons detail */}
+                    {[-1, 1].map((side) => (
+                      <mesh key={side} position={[side * 0.22, -0.05, 0]} castShadow>
+                        <sphereGeometry args={[0.048, 6, 5]} />
+                        <meshStandardMaterial color="#d4a030" roughness={0.12} metalness={0.96} />
+                      </mesh>
+                    ))}
+                    {/* Grip (wire wrapped) */}
+                    {[0.06, 0.03, 0, -0.03, -0.06, -0.09].map((yo, i) => (
+                      <mesh key={i} position={[0, yo, 0]} castShadow>
+                        <torusGeometry args={[0.034, 0.012, 5, 12]} />
+                        <meshStandardMaterial color={i % 2 === 0 ? '#3a1a08' : '#2a1006'} roughness={0.8} />
+                      </mesh>
+                    ))}
                     {/* Pommel */}
-                    <mesh position={[0, 0.12, 0]} castShadow>
-                      <sphereGeometry args={[0.075, 7, 6]} />
-                      <meshStandardMaterial color="#b89020" roughness={0.22} metalness={0.9} />
+                    <mesh position={[0, 0.15, 0]} castShadow>
+                      <cylinderGeometry args={[0.062, 0.048, 0.06, 8]} />
+                      <meshStandardMaterial color="#c09228" roughness={0.15} metalness={0.95} />
                     </mesh>
-                    {/* Handle */}
-                    <mesh position={[0, 0.0, 0]} castShadow>
-                      <cylinderGeometry args={[0.034, 0.038, 0.24, 7]} />
-                      <meshStandardMaterial color="#3a2010" roughness={0.8} />
+                    <mesh position={[0, 0.2, 0]} castShadow>
+                      <sphereGeometry args={[0.078, 8, 6]} />
+                      <meshStandardMaterial color="#b88820" roughness={0.14} metalness={0.96} emissive={goldRe} emissiveIntensity={goldRi} />
                     </mesh>
-                    {/* Rune on blade */}
-                    <mesh position={[0, -0.5, 0.018]}>
-                      <planeGeometry args={[0.04, 0.35]} />
-                      <meshBasicMaterial color={isRaging ? '#ff2200' : '#4488ff'} transparent opacity={0.75} blending={THREE.AdditiveBlending} depthWrite={false} />
+                    {/* Sword trail */}
+                    <mesh ref={trailMeshRef} position={[0, -0.6, 0]}>
+                      <planeGeometry args={[0.85, 1.4]} />
+                      <meshBasicMaterial color={isHeavyRef.current ? '#cc44ff' : '#44aaff'} transparent opacity={0} side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} />
                     </mesh>
-                    <mesh ref={trailMeshRef} position={[0, -0.5, 0]}>
-                      <planeGeometry args={[0.8, 1.3]} />
-                      <meshBasicMaterial color={isHeavyRef.current ? '#bb44ff' : '#44aaff'} transparent opacity={0}
-                        side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} />
-                    </mesh>
-                    <pointLight ref={swordGlowRef} color={isRaging ? '#ff4400' : isHeavyRef.current ? '#aa44ff' : '#4488ff'} intensity={0.7} distance={3.5} decay={2} />
+                    <pointLight ref={swordGlowRef} color={isRaging ? '#ff4400' : isHeavyRef.current ? '#cc44ff' : '#4488ff'} intensity={0.7} distance={3.5} decay={2} />
                   </group>
                 </group>
               </group>
             </group>
 
-            {/* LEFT ARM */}
-            <group position={[-0.46, 0.26, 0]}>
+            {/* === LEFT ARM === */}
+            <group position={[-0.52, 0.1, 0]}>
               <group ref={bones.upperArmL} position={[-0.14, -0.1, 0]}>
-                <mesh position={[0, -0.2, 0]} castShadow>
-                  <capsuleGeometry args={[0.1, 0.34, 4, 6]} />
-                  <meshStandardMaterial color="#5a1010" roughness={0.55} metalness={0.42} />
+                <mesh position={[0, -0.18, 0]} castShadow>
+                  <capsuleGeometry args={[0.1, 0.32, 4, 6]} />
+                  <meshStandardMaterial color="#6a0e0e" roughness={0.52} metalness={0.45} />
                 </mesh>
-                <group ref={bones.foreArmL} position={[0, -0.44, 0]}>
-                  <mesh position={[0, -0.17, 0]} castShadow>
-                    <capsuleGeometry args={[0.088, 0.3, 4, 6]} />
-                    <meshStandardMaterial color="#4a0e0e" roughness={0.55} metalness={0.42} />
+                <mesh position={[0, -0.18, 0.1]} castShadow>
+                  <boxGeometry args={[0.2, 0.32, 0.06]} />
+                  <meshStandardMaterial color="#860d0d" roughness={0.28} metalness={0.8} />
+                </mesh>
+                <mesh position={[0, -0.4, 0.04]} castShadow>
+                  <sphereGeometry args={[0.1, 7, 6]} />
+                  <meshStandardMaterial color="#750c0c" roughness={0.3} metalness={0.78} />
+                </mesh>
+                <group ref={bones.foreArmL} position={[0, -0.5, 0]}>
+                  <mesh position={[0, -0.15, 0]} castShadow>
+                    <capsuleGeometry args={[0.09, 0.26, 4, 6]} />
+                    <meshStandardMaterial color="#5a0c0c" roughness={0.55} metalness={0.42} />
                   </mesh>
-                  <mesh position={[0, -0.38, 0]} castShadow>
-                    <boxGeometry args={[0.22, 0.18, 0.22]} />
-                    <meshStandardMaterial color="#6a1010" roughness={0.4} metalness={0.7} />
+                  <mesh position={[0, -0.15, 0.09]} castShadow>
+                    <boxGeometry args={[0.19, 0.28, 0.05]} />
+                    <meshStandardMaterial color="#860d0d" roughness={0.28} metalness={0.8} />
                   </mesh>
-                  {isBlock && (
-                    <mesh position={[-0.14, -0.32, -0.28]} rotation={[0.3, -0.45, 0.1]} castShadow>
-                      <boxGeometry args={[0.58, 0.78, 0.07]} />
-                      <meshStandardMaterial color="#22223a" roughness={0.45} metalness={0.72} />
-                    </mesh>
+                  <mesh position={[0, -0.37, 0.02]} castShadow>
+                    <boxGeometry args={[0.23, 0.2, 0.22]} />
+                    <meshStandardMaterial color="#750c0c" roughness={0.28} metalness={0.82} />
+                  </mesh>
+                  {/* Shield when blocking */}
+                  {isBlocking && (
+                    <group position={[-0.12, -0.35, -0.32]} rotation={[0.25, -0.42, 0.08]}>
+                      <mesh castShadow>
+                        <boxGeometry args={[0.6, 0.82, 0.072]} />
+                        <meshStandardMaterial color="#22223a" roughness={0.38} metalness={0.75} />
+                      </mesh>
+                      <mesh position={[0, 0, 0.04]}>
+                        <boxGeometry args={[0.42, 0.6, 0.02]} />
+                        <meshStandardMaterial color="#861010" roughness={0.28} metalness={0.8} emissive={re} emissiveIntensity={ri * 0.6} />
+                      </mesh>
+                      {/* Cross on shield */}
+                      <mesh position={[0, 0, 0.055]}>
+                        <boxGeometry args={[0.06, 0.52, 0.01]} />
+                        <meshStandardMaterial color="#c09228" roughness={0.18} metalness={0.9} />
+                      </mesh>
+                      <mesh position={[0, 0, 0.055]}>
+                        <boxGeometry args={[0.36, 0.06, 0.01]} />
+                        <meshStandardMaterial color="#c09228" roughness={0.18} metalness={0.9} />
+                      </mesh>
+                    </group>
                   )}
                 </group>
               </group>
             </group>
 
-            {/* HEAD */}
-            <group ref={bones.head} position={[0, 0.51, 0]}>
-              <mesh position={[0, 0.16, 0]} castShadow>
-                <sphereGeometry args={[0.24, 10, 8]} />
-                <meshStandardMaterial color="#c4905f" roughness={0.45} />
-              </mesh>
-              {/* Helmet base */}
-              <mesh position={[0, 0.24, 0]} castShadow>
-                <cylinderGeometry args={[0.205, 0.24, 0.14, 9]} />
-                <meshStandardMaterial color="#1a1a2e" roughness={0.3} metalness={0.75} emissive={runeEmissive} emissiveIntensity={runeIntensity * 0.8} />
-              </mesh>
-              {/* Helmet dome */}
-              <mesh position={[0, 0.35, 0]} castShadow>
-                <sphereGeometry args={[0.205, 9, 6, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
-                <meshStandardMaterial color="#181828" roughness={0.28} metalness={0.78} />
-              </mesh>
-              {/* Visor T-slit */}
-              <mesh position={[0, 0.25, 0.2]} castShadow>
-                <boxGeometry args={[0.22, 0.08, 0.04]} />
-                <meshStandardMaterial color="#0a0a14" roughness={0.5} metalness={0.6} />
-              </mesh>
-              <mesh position={[0, 0.22, 0.2]}>
-                <boxGeometry args={[0.06, 0.14, 0.04]} />
-                <meshStandardMaterial color="#0a0a14" roughness={0.5} metalness={0.6} />
-              </mesh>
-              {/* Eye glow through visor */}
-              <mesh position={[0, 0.25, 0.21]}>
-                <planeGeometry args={[0.18, 0.05]} />
-                <meshBasicMaterial color={isRaging ? '#ff3300' : '#4488ff'} transparent opacity={0.9} />
-              </mesh>
-              {/* Cheek guards */}
-              {[-1, 1].map((s) => (
-                <mesh key={s} position={[s * 0.18, 0.16, 0.14]} castShadow>
-                  <boxGeometry args={[0.08, 0.2, 0.1]} />
-                  <meshStandardMaterial color="#181828" roughness={0.3} metalness={0.75} />
-                </mesh>
-              ))}
-              {/* Crest plume */}
-              <mesh position={[0, 0.52, 0]} castShadow>
-                <boxGeometry args={[0.06, 0.22, 0.18]} />
-                <meshStandardMaterial color="#880000" roughness={0.9} />
-              </mesh>
-            </group>
-
-            {/* Cape */}
-            <group ref={bones.cape} position={[0, 0.08, 0.22]}>
+            {/* === CAPE === */}
+            <group ref={bones.cape} position={[0, 0.08, -0.2]}>
               <mesh castShadow>
-                <planeGeometry args={[0.72, 1.05, 2, 6]} />
-                <meshStandardMaterial color="#680000" roughness={0.93} side={THREE.DoubleSide} />
+                <planeGeometry args={[0.84, 1.1, 2, 8]} />
+                <meshStandardMaterial color="#780000" roughness={0.92} side={THREE.DoubleSide} />
+              </mesh>
+              <mesh position={[0, -0.55, 0.02]} castShadow>
+                <planeGeometry args={[0.62, 0.55, 1, 4]} />
+                <meshStandardMaterial color="#600000" roughness={0.94} side={THREE.DoubleSide} />
               </mesh>
             </group>
           </group>
 
-          {/* Torso lower */}
-          <mesh position={[0, 0.22, 0]} castShadow>
-            <boxGeometry args={[0.6, 0.52, 0.32]} />
-            <meshStandardMaterial color="#1a0c06" roughness={0.58} metalness={0.38} />
-          </mesh>
+          {/* === LEGS === */}
+          {[1, -1].map((side) => (
+            <group key={side} ref={side === 1 ? bones.thighR : bones.thighL} position={[side * 0.22, -0.04, 0]}>
+              {/* Cuisse - upper leg */}
+              <mesh position={[0, -0.22, 0]} castShadow>
+                <capsuleGeometry args={[0.115, 0.38, 4, 7]} />
+                <meshStandardMaterial color="#1e0c06" roughness={0.65} metalness={0.28} />
+              </mesh>
+              {/* Cuisse plate front */}
+              <mesh position={[side * 0.01, -0.18, 0.08]} castShadow>
+                <boxGeometry args={[0.22, 0.36, 0.07]} />
+                <meshStandardMaterial color="#750c0c" roughness={0.3} metalness={0.78} emissive={re} emissiveIntensity={ri * 0.4} />
+              </mesh>
+
+              <group ref={side === 1 ? bones.shinR : bones.shinL} position={[0, -0.52, 0]}>
+                {/* Greave */}
+                <mesh position={[0, -0.2, 0]} castShadow>
+                  <capsuleGeometry args={[0.095, 0.34, 4, 6]} />
+                  <meshStandardMaterial color="#1e0c06" roughness={0.65} metalness={0.28} />
+                </mesh>
+                {/* Knee guard (genouillere) */}
+                <mesh position={[0, 0.03, 0.095]} castShadow>
+                  <sphereGeometry args={[0.115, 7, 6]} />
+                  <meshStandardMaterial color="#860d0d" roughness={0.28} metalness={0.8} emissive={re} emissiveIntensity={ri * 0.5} />
+                </mesh>
+                {/* Shin plate front */}
+                <mesh position={[0, -0.22, 0.09]} castShadow>
+                  <boxGeometry args={[0.18, 0.4, 0.06]} />
+                  <meshStandardMaterial color="#750c0c" roughness={0.3} metalness={0.78} />
+                </mesh>
+                {/* Sabaton - foot armor */}
+                <mesh position={[0, -0.52, 0.04]} castShadow>
+                  <boxGeometry args={[0.21, 0.1, 0.32]} />
+                  <meshStandardMaterial color="#6a0e0e" roughness={0.32} metalness={0.75} />
+                </mesh>
+                {/* Sabaton toe point */}
+                <mesh position={[0, -0.52, 0.22]} rotation={[0.3, 0, 0]} castShadow>
+                  <boxGeometry args={[0.14, 0.08, 0.12]} />
+                  <meshStandardMaterial color="#860d0d" roughness={0.28} metalness={0.8} />
+                </mesh>
+              </group>
+            </group>
+          ))}
         </group>
-
-        {/* LEGS */}
-        {[1, -1].map((side) => (
-          <group key={side} ref={side === 1 ? bones.thighR : bones.thighL} position={[side * 0.2, -0.04, 0]}>
-            <mesh position={[0, -0.24, 0]} castShadow>
-              <capsuleGeometry args={[0.12, 0.4, 4, 6]} />
-              <meshStandardMaterial color="#1a0c06" roughness={0.62} metalness={0.3} />
-            </mesh>
-            <mesh position={[side * 0.01, -0.15, 0.02]} castShadow>
-              <boxGeometry args={[0.24, 0.34, 0.21]} />
-              <meshStandardMaterial color="#2a1408" roughness={0.58} metalness={0.42} />
-            </mesh>
-            <group ref={side === 1 ? bones.shinR : bones.shinL} position={[0, -0.52, 0]}>
-              <mesh position={[0, -0.2, 0]} castShadow>
-                <capsuleGeometry args={[0.092, 0.34, 4, 6]} />
-                <meshStandardMaterial color="#1a0c06" roughness={0.62} metalness={0.3} />
-              </mesh>
-              <mesh position={[0, -0.28, 0.045]} castShadow>
-                <boxGeometry args={[0.19, 0.38, 0.09]} />
-                <meshStandardMaterial color="#3a1a0a" roughness={0.52} metalness={0.52} />
-              </mesh>
-              <mesh position={[0, -0.54, 0.02]} castShadow>
-                <boxGeometry args={[0.22, 0.11, 0.32]} />
-                <meshStandardMaterial color="#2e1808" roughness={0.56} metalness={0.42} />
-              </mesh>
-            </group>
-          </group>
-        ))}
       </group>
 
-      {/* SKILL EFFECTS */}
+      {/* SKILL VISUAL EFFECTS */}
       <mesh ref={bones.auraRing} position={[0, 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[0.8, 1.2, 32]} />
+        <ringGeometry args={[0.9, 1.3, 32]} />
         <meshBasicMaterial color={isRaging ? '#cc0000' : '#4488ff'} transparent opacity={0} blending={THREE.AdditiveBlending} depthWrite={false} side={THREE.DoubleSide} />
       </mesh>
-      <mesh ref={bones.whirlRing} position={[0, 0.06, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[0.5, 1.0, 32]} />
+      <mesh ref={bones.whirlRing} position={[0, 0.08, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.5, 1.1, 32]} />
         <meshBasicMaterial color="#ff6622" transparent opacity={0} blending={THREE.AdditiveBlending} depthWrite={false} side={THREE.DoubleSide} />
       </mesh>
 
-      {isRaging && <pointLight color="#ff2200" intensity={3} distance={8} decay={2} position={[0, 1.5, 0]} />}
-      {isPhantom && <pointLight color="#4488ff" intensity={2.5} distance={6} decay={2} position={[0, 1.5, 0]} />}
-      {isWW && <pointLight color="#ff6622" intensity={4} distance={7} decay={2} position={[0, 0.5, 0]} />}
+      {isRaging && <pointLight color="#ff1500" intensity={3.5} distance={9} decay={2} position={[0, 1.6, 0]} />}
+      {isPhantom && <pointLight color="#4488ff" intensity={2.5} distance={7} decay={2} position={[0, 1.6, 0]} />}
+      {isWW && <pointLight color="#ff7722" intensity={4.5} distance={8} decay={2} position={[0, 0.6, 0]} />}
 
       {player.lockedTargetId && (
         <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <ringGeometry args={[0.48, 0.58, 18]} />
-          <meshBasicMaterial color="#ffcc00" transparent opacity={0.85} />
+          <ringGeometry args={[0.5, 0.62, 24]} />
+          <meshBasicMaterial color="#ffcc00" transparent opacity={0.88} />
         </mesh>
       )}
-      <pointLight color="#6688ff" intensity={0.4} distance={5} position={[0, 1.6, 0]} />
+      <pointLight color="#6688ff" intensity={0.35} distance={5} position={[0, 1.8, 0]} />
     </group>
   );
 }
