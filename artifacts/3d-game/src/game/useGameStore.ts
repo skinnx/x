@@ -6,26 +6,32 @@ interface GameStore {
   enemies: Enemy[];
   gameState: GameState;
   particles: Particle[];
-  
+
   setPlayerHealth: (health: number) => void;
   setPlayerStamina: (stamina: number) => void;
-  setPlayerAttacking: (attacking: boolean, combo?: number) => void;
+  setPlayerAttacking: (attacking: boolean, heavy?: boolean, combo?: number) => void;
   setPlayerDodging: (dodging: boolean) => void;
+  setPlayerBlocking: (blocking: boolean) => void;
   setPlayerDead: () => void;
   consumeStamina: (amount: number) => boolean;
   restoreStamina: (amount: number) => void;
-  
+  setLockTarget: (id: string | null) => void;
+
   setEnemies: (enemies: Enemy[]) => void;
   updateEnemy: (id: string, updates: Partial<Enemy>) => void;
-  damageEnemy: (id: string, damage: number) => void;
+  damageEnemy: (id: string, damage: number) => boolean;
   removeDeadEnemies: () => void;
-  
+
   setGamePhase: (phase: GameState['phase']) => void;
   incrementKills: () => void;
   addScore: (points: number) => void;
   nextWave: () => void;
   resetGame: () => void;
-  
+  announceWave: (msg: string) => void;
+  triggerScreenShake: (intensity: number) => void;
+  triggerHitFlash: (intensity: number) => void;
+  tickEffects: (delta: number) => void;
+
   addParticle: (particle: Particle) => void;
   updateParticles: (delta: number) => void;
 }
@@ -36,22 +42,27 @@ const initialPlayer: PlayerState = {
   stamina: 100,
   maxStamina: 100,
   isAttacking: false,
+  isHeavyAttacking: false,
   attackCooldown: 0,
   combo: 0,
   lastAttackTime: 0,
   isDodging: false,
   dodgeCooldown: 0,
+  isBlocking: false,
   kills: 0,
   isAlive: true,
+  lockedTargetId: null,
 };
 
 const initialGameState: GameState = {
   phase: 'menu',
   wave: 1,
-  totalEnemies: 5,
-  enemiesKilled: 0,
   score: 0,
   elapsedTime: 0,
+  waveAnnounce: '',
+  waveAnnounceTimer: 0,
+  screenShake: 0,
+  hitFlash: 0,
 };
 
 export const useGameStore = create<GameStore>((set, get) => ({
@@ -70,11 +81,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
       player: { ...s.player, stamina: Math.max(0, Math.min(stamina, s.player.maxStamina)) },
     })),
 
-  setPlayerAttacking: (attacking, combo) =>
+  setPlayerAttacking: (attacking, heavy = false, combo) =>
     set((s) => ({
       player: {
         ...s.player,
         isAttacking: attacking,
+        isHeavyAttacking: heavy,
         combo: combo !== undefined ? combo : s.player.combo,
         lastAttackTime: attacking ? Date.now() : s.player.lastAttackTime,
       },
@@ -82,6 +94,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setPlayerDodging: (dodging) =>
     set((s) => ({ player: { ...s.player, isDodging: dodging } })),
+
+  setPlayerBlocking: (blocking) =>
+    set((s) => ({ player: { ...s.player, isBlocking: blocking } })),
 
   setPlayerDead: () =>
     set((s) => ({
@@ -92,9 +107,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   consumeStamina: (amount) => {
     const { player } = get();
     if (player.stamina < amount) return false;
-    set((s) => ({
-      player: { ...s.player, stamina: s.player.stamina - amount },
-    }));
+    set((s) => ({ player: { ...s.player, stamina: s.player.stamina - amount } }));
     return true;
   },
 
@@ -106,6 +119,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       },
     })),
 
+  setLockTarget: (id) =>
+    set((s) => ({ player: { ...s.player, lockedTargetId: id } })),
+
   setEnemies: (enemies) => set({ enemies }),
 
   updateEnemy: (id, updates) =>
@@ -113,49 +129,42 @@ export const useGameStore = create<GameStore>((set, get) => ({
       enemies: s.enemies.map((e) => (e.id === id ? { ...e, ...updates } : e)),
     })),
 
-  damageEnemy: (id, damage) =>
+  damageEnemy: (id, damage) => {
+    let killed = false;
     set((s) => ({
-      enemies: s.enemies.map((e) =>
-        e.id === id
-          ? {
-              ...e,
-              health: Math.max(0, e.health - damage),
-              state: e.health - damage <= 0 ? 'dead' : e.state,
-            }
-          : e
-      ),
-    })),
+      enemies: s.enemies.map((e) => {
+        if (e.id !== id) return e;
+        const newHp = Math.max(0, e.health - damage);
+        if (newHp <= 0 && e.state !== 'dead') killed = true;
+        return {
+          ...e,
+          health: newHp,
+          state: newHp <= 0 ? 'dead' : 'staggered',
+          staggerTimer: newHp <= 0 ? 0 : 0.3,
+          deathTimer: newHp <= 0 ? 1.2 : e.deathTimer,
+        };
+      }),
+    }));
+    return killed;
+  },
 
   removeDeadEnemies: () =>
     set((s) => ({
-      enemies: s.enemies.filter((e) => e.state !== 'dead'),
+      enemies: s.enemies.filter((e) => !(e.state === 'dead' && e.deathTimer <= 0)),
     })),
 
   setGamePhase: (phase) =>
     set((s) => ({ gameState: { ...s.gameState, phase } })),
 
   incrementKills: () =>
-    set((s) => ({
-      player: { ...s.player, kills: s.player.kills + 1 },
-      gameState: {
-        ...s.gameState,
-        enemiesKilled: s.gameState.enemiesKilled + 1,
-      },
-    })),
+    set((s) => ({ player: { ...s.player, kills: s.player.kills + 1 } })),
 
   addScore: (points) =>
-    set((s) => ({
-      gameState: { ...s.gameState, score: s.gameState.score + points },
-    })),
+    set((s) => ({ gameState: { ...s.gameState, score: s.gameState.score + points } })),
 
   nextWave: () =>
     set((s) => ({
-      gameState: {
-        ...s.gameState,
-        wave: s.gameState.wave + 1,
-        totalEnemies: s.gameState.totalEnemies + 3,
-        enemiesKilled: 0,
-      },
+      gameState: { ...s.gameState, wave: s.gameState.wave + 1 },
     })),
 
   resetGame: () =>
@@ -166,8 +175,34 @@ export const useGameStore = create<GameStore>((set, get) => ({
       particles: [],
     }),
 
+  announceWave: (msg) =>
+    set((s) => ({
+      gameState: { ...s.gameState, waveAnnounce: msg, waveAnnounceTimer: 3.0 },
+    })),
+
+  triggerScreenShake: (intensity) =>
+    set((s) => ({
+      gameState: { ...s.gameState, screenShake: Math.max(s.gameState.screenShake, intensity) },
+    })),
+
+  triggerHitFlash: (intensity) =>
+    set((s) => ({
+      gameState: { ...s.gameState, hitFlash: Math.max(s.gameState.hitFlash, intensity) },
+    })),
+
+  tickEffects: (delta) =>
+    set((s) => ({
+      gameState: {
+        ...s.gameState,
+        screenShake: Math.max(0, s.gameState.screenShake - delta * 5),
+        hitFlash: Math.max(0, s.gameState.hitFlash - delta * 4),
+        waveAnnounceTimer: Math.max(0, s.gameState.waveAnnounceTimer - delta),
+        elapsedTime: s.gameState.elapsedTime + delta,
+      },
+    })),
+
   addParticle: (particle) =>
-    set((s) => ({ particles: [...s.particles.slice(-80), particle] })),
+    set((s) => ({ particles: [...s.particles.slice(-120), particle] })),
 
   updateParticles: (delta) =>
     set((s) => ({
@@ -180,7 +215,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
             y: p.position.y + p.velocity.y * delta,
             z: p.position.z + p.velocity.z * delta,
           },
-          velocity: { ...p.velocity, y: p.velocity.y - 5 * delta },
+          velocity: { ...p.velocity, y: p.velocity.y - 8 * delta },
         }))
         .filter((p) => p.life > 0),
     })),
