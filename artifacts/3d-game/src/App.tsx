@@ -8,20 +8,16 @@ function App() {
   const { gameState, setGamePhase } = useGameStore();
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'KeyP' && gameState.phase === 'playing') {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.code === 'Tab') e.preventDefault();
+      if ((e.code === 'KeyP' || e.code === 'Escape') && gameState.phase === 'playing') {
         setGamePhase('paused');
-      } else if (e.code === 'KeyP' && gameState.phase === 'paused') {
-        setGamePhase('playing');
-      }
-      if (e.code === 'Escape' && gameState.phase === 'playing') {
-        setGamePhase('paused');
-      } else if (e.code === 'Escape' && gameState.phase === 'paused') {
+      } else if ((e.code === 'KeyP' || e.code === 'Escape') && gameState.phase === 'paused') {
         setGamePhase('playing');
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
   }, [gameState.phase, setGamePhase]);
 
   return (
@@ -35,41 +31,64 @@ function App() {
 
       {gameState.phase === 'menu' && <GameMenu />}
       {gameState.phase === 'playing' && <GameHUD />}
-      {gameState.phase === 'paused' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center" style={{ background: 'rgba(0,0,0,0.65)' }}>
-          <div
-            className="text-4xl font-black tracking-widest uppercase mb-6"
-            style={{
-              color: '#e8c870',
-              textShadow: '0 0 20px rgba(200,160,60,0.7)',
-              fontFamily: 'Georgia, serif',
-            }}
-          >
-            PAUSED
-          </div>
-          <button
-            onClick={() => setGamePhase('playing')}
-            className="px-8 py-3 text-base font-bold tracking-widest uppercase mb-3"
-            style={{
-              background: 'linear-gradient(180deg, #6b3010, #381804)',
-              border: '2px solid #aa6622',
-              color: '#ffcc80',
-              cursor: 'pointer',
-              fontFamily: 'Georgia, serif',
-            }}
-          >
-            Resume
-          </button>
-          <button
-            onClick={() => { useGameStore.getState().resetGame(); }}
-            className="px-6 py-2 text-sm tracking-widest"
-            style={{ color: '#664422', cursor: 'pointer', background: 'transparent', border: 'none' }}
-          >
-            Main Menu
-          </button>
-        </div>
-      )}
+      {gameState.phase === 'paused' && <PauseScreen />}
       {gameState.phase === 'gameover' && <GameOverScreen />}
+    </div>
+  );
+}
+
+function PauseScreen() {
+  const { setGamePhase, resetGame } = useGameStore();
+  return (
+    <div
+      className="absolute inset-0 flex flex-col items-center justify-center"
+      style={{ background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(2px)' }}
+    >
+      <div
+        className="text-5xl font-black tracking-[0.2em] uppercase mb-8"
+        style={{
+          color: '#e8c870',
+          textShadow: '0 0 30px rgba(180,140,50,0.6), 0 4px 8px rgba(0,0,0,0.9)',
+          fontFamily: 'Georgia, serif',
+        }}
+      >
+        PAUSED
+      </div>
+      <div className="flex flex-col items-center gap-3">
+        <button
+          onClick={() => setGamePhase('playing')}
+          className="px-12 py-3.5 text-base font-bold tracking-[0.18em] uppercase transition-all duration-150"
+          style={{
+            background: 'linear-gradient(180deg, #6b3010, #381804)',
+            border: '2px solid #aa6622',
+            color: '#ffcc80',
+            cursor: 'pointer',
+            fontFamily: 'Georgia, serif',
+            boxShadow: '0 0 20px rgba(150,80,0,0.3)',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.04)'; }}
+          onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+        >
+          CONTINUE
+        </button>
+        <button
+          onClick={resetGame}
+          style={{
+            color: '#664422',
+            cursor: 'pointer',
+            background: 'transparent',
+            border: 'none',
+            fontSize: 12,
+            letterSpacing: '0.15em',
+            marginTop: 4,
+          }}
+        >
+          MAIN MENU
+        </button>
+      </div>
+      <div className="mt-8 text-xs" style={{ color: '#443322', letterSpacing: '0.2em' }}>
+        Press P or ESC to resume
+      </div>
     </div>
   );
 }
