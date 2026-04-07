@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { GameScene } from './game/Scene';
-import { GameHUD, GameMenu, GameOverScreen } from './game/GameHUD';
+import { GameHUD } from './game/GameHUD';
 import { useGameStore } from './game/useGameStore';
 import { ErrorBoundary } from './game/ErrorBoundary';
 
@@ -29,10 +29,8 @@ function App() {
         <GameScene />
       </ErrorBoundary>
 
-      {gameState.phase === 'menu' && <GameMenu />}
-      {gameState.phase === 'playing' && <GameHUD />}
+      {gameState.phase !== 'paused' && <GameHUD />}
       {gameState.phase === 'paused' && <PauseScreen />}
-      {gameState.phase === 'gameover' && <GameOverScreen />}
     </div>
   );
 }

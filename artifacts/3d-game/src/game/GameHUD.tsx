@@ -1,405 +1,317 @@
-import { useEffect, useRef } from 'react';
 import { useGameStore } from './useGameStore';
+import { SkillId } from './types';
 
-export function GameHUD() {
-  const { player, gameState, enemies } = useGameStore();
+const SKILL_ORDER: SkillId[] = ['whirlwind', 'phantomStrike', 'bloodRage', 'execute'];
 
-  const hpPct = player.health / player.maxHealth;
-  const spPct = player.stamina / player.maxStamina;
-  const boss = enemies.find(e => e.type === 'boss' && e.state !== 'dead');
-  const aliveCount = enemies.filter(e => e.state !== 'dead' && e.health > 0).length;
+function HealthBar({ current, max, label, color, showNum }: { current: number; max: number; label: string; color: string; showNum?: boolean }) {
+  const pct = Math.max(0, Math.min(1, current / max));
+  const danger = pct < 0.3;
+  return (
+    <div style={{ marginBottom: 5 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+        <span style={{ color: '#bbb', fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', fontFamily: 'monospace' }}>{label}</span>
+        {showNum && <span style={{ color: '#888', fontSize: 10, fontFamily: 'monospace' }}>{Math.ceil(current)}/{max}</span>}
+      </div>
+      <div style={{ width: '100%', height: 8, background: 'rgba(0,0,0,0.55)', borderRadius: 2, overflow: 'hidden', border: `1px solid ${danger ? '#ff4422' : 'rgba(255,255,255,0.08)'}` }}>
+        <div style={{
+          height: '100%', width: `${pct * 100}%`,
+          background: danger ? 'linear-gradient(90deg, #aa0000, #ff2200)' : `linear-gradient(90deg, ${color}, ${color}bb)`,
+          transition: 'width 0.08s ease-out',
+          boxShadow: danger ? '0 0 8px #ff2200' : `0 0 6px ${color}88`,
+        }} />
+      </div>
+    </div>
+  );
+}
 
-  const shakeX = (Math.random() - 0.5) * gameState.screenShake * 12;
-  const shakeY = (Math.random() - 0.5) * gameState.screenShake * 12;
+function SkillSlot({ skillId, index }: { skillId: SkillId; index: number }) {
+  const { player } = useGameStore();
+  const skill = player.skills[skillId];
+  const keys = ['Z', 'X', 'C', 'V'];
+  const cdPct = skill.cooldown / skill.maxCooldown;
+  const energyOk = skillId === 'bloodRage' || player.energy >= skill.energyCost;
+  const ready = skill.cooldown <= 0 && energyOk;
+  const active = skill.isActive;
 
   return (
-    <div
-      className="absolute inset-0 pointer-events-none select-none overflow-hidden"
-      style={{ transform: `translate(${shakeX}px,${shakeY}px)` }}
-    >
-      <div
-        className="absolute inset-0"
-        style={{
-          background: 'radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,0.55) 100%)',
-        }}
-      />
-      {gameState.hitFlash > 0 && (
-        <div
-          className="absolute inset-0"
-          style={{
-            background: `rgba(200,0,0,${gameState.hitFlash * 0.3})`,
-            pointerEvents: 'none',
-          }}
-        />
+    <div style={{
+      position: 'relative', width: 64, height: 64, borderRadius: 6,
+      border: `2px solid ${active ? skill.color : ready ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.1)'}`,
+      background: active ? `${skill.color}33` : 'rgba(0,0,0,0.72)',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      overflow: 'hidden', cursor: 'default',
+      boxShadow: active ? `0 0 18px ${skill.color}bb, 0 0 5px ${skill.color}` : ready ? '0 0 6px rgba(255,255,255,0.15)' : 'none',
+      transition: 'box-shadow 0.2s, border-color 0.2s',
+    }}>
+      {skill.cooldown > 0 && (
+        <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: `${cdPct * 100}%`, background: 'rgba(0,0,0,0.68)', zIndex: 2 }} />
       )}
-      {hpPct < 0.3 && (
-        <div
-          className="absolute inset-0"
-          style={{
-            background: `radial-gradient(ellipse at center, transparent 40%, rgba(180,0,0,${(0.3 - hpPct) * 1.2}) 100%)`,
-            animation: 'pulse 1.5s ease-in-out infinite',
-          }}
-        />
+      <div style={{ fontSize: 24, zIndex: 3, filter: ready ? 'none' : 'brightness(0.45)' }}>{skill.icon}</div>
+      <div style={{ fontSize: 8, color: ready ? '#ddd' : '#555', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: 0.5, zIndex: 3, marginTop: 2 }}>
+        {skill.name.split(' ')[0]}
+      </div>
+      <div style={{ position: 'absolute', top: 3, left: 3, fontSize: 9, color: '#aaa', fontFamily: 'monospace', background: 'rgba(0,0,0,0.55)', borderRadius: 2, padding: '0 3px', zIndex: 4 }}>
+        {keys[index]}
+      </div>
+      {skill.energyCost > 0 && (
+        <div style={{ position: 'absolute', bottom: 3, right: 3, fontSize: 8, color: energyOk ? '#4488ff' : '#ff4444', fontFamily: 'monospace', zIndex: 4 }}>
+          {skill.energyCost}
+        </div>
+      )}
+      {skill.cooldown > 0.1 && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 'bold', color: '#fff', fontFamily: 'monospace', zIndex: 5 }}>
+          {skill.cooldown.toFixed(1)}
+        </div>
+      )}
+      {active && (
+        <div style={{ position: 'absolute', inset: -3, borderRadius: 8, border: `2px solid ${skill.color}`, animation: 'pulse-ring 0.7s ease-in-out infinite alternate', pointerEvents: 'none', zIndex: 1 }} />
+      )}
+    </div>
+  );
+}
+
+function DamageNumbers() {
+  const { damageNumbers } = useGameStore();
+  return (
+    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
+      {damageNumbers.map((dn) => {
+        const progress = 1 - dn.life / 1.4;
+        const y = 50 - progress * 22;
+        const opacity = dn.life > 0.8 ? 1 : dn.life / 0.8;
+        const size = dn.isCrit ? (dn.isSkill ? 36 : 30) : 20;
+        const color = dn.isHeal ? '#44ff88' : dn.isCrit ? (dn.isSkill ? '#ff88ff' : '#ffcc00') : dn.isSkill ? '#66aaff' : '#ffffff';
+        return (
+          <div key={dn.id} style={{
+            position: 'absolute',
+            left: `${45 + (Math.sin(dn.x * 7.3) * 15)}%`,
+            top: `${y}%`,
+            transform: 'translateX(-50%)',
+            color, fontSize: size, fontWeight: 'bold', fontFamily: 'monospace',
+            opacity, textShadow: `0 0 8px ${color}, 0 2px 4px rgba(0,0,0,0.8)`,
+            transition: 'none', userSelect: 'none',
+            letterSpacing: dn.isCrit ? 2 : 0,
+          }}>
+            {dn.isCrit && <span style={{ fontSize: 11, verticalAlign: 'super', color: '#ffcc00' }}>CRIT! </span>}
+            {dn.isHeal ? '+' : ''}{dn.value}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function XPBar() {
+  const { player } = useGameStore();
+  const pct = player.level >= 10 ? 1 : player.xp / player.xpToNext;
+  return (
+    <div style={{ width: '100%' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+        <span style={{ color: '#aa88ff', fontSize: 10, fontFamily: 'monospace', letterSpacing: 1 }}>LV {player.level}</span>
+        {player.level < 10
+          ? <span style={{ color: '#668', fontSize: 9, fontFamily: 'monospace' }}>{player.xp}/{player.xpToNext}</span>
+          : <span style={{ color: '#ffaa00', fontSize: 9, fontFamily: 'monospace' }}>MAX</span>
+        }
+      </div>
+      <div style={{ width: '100%', height: 5, background: 'rgba(0,0,0,0.55)', borderRadius: 2, overflow: 'hidden', border: '1px solid rgba(170,136,255,0.25)' }}>
+        <div style={{ height: '100%', width: `${pct * 100}%`, background: 'linear-gradient(90deg, #7722cc, #aa44ff)', boxShadow: '0 0 6px #aa44ffaa', transition: 'width 0.3s ease-out' }} />
+      </div>
+    </div>
+  );
+}
+
+function KillStreak() {
+  const { player } = useGameStore();
+  const titles: [number, string, string][] = [
+    [25, 'LEGENDARY', '#ff8800'],
+    [15, 'UNSTOPPABLE', '#ff4400'],
+    [10, 'DOMINATING', '#cc0066'],
+    [5, 'RAMPAGE', '#ff2200'],
+    [3, 'KILLING SPREE', '#ffaa00'],
+  ];
+  for (const [n, title, color] of titles) {
+    if (player.kills >= n) return (
+      <div style={{ textAlign: 'center', color, fontSize: 10, fontFamily: 'monospace', letterSpacing: 2, fontWeight: 'bold', textShadow: `0 0 8px ${color}`, marginTop: 4 }}>
+        ⚔ {title} ⚔
+      </div>
+    );
+  }
+  return null;
+}
+
+function LevelUpBanner() {
+  const { gameState } = useGameStore();
+  const msg = gameState.waveAnnounce;
+  if (!msg.startsWith('LEVEL') || gameState.waveAnnounceTimer <= 0) return null;
+  const opacity = Math.min(1, gameState.waveAnnounceTimer * 1.8);
+  return (
+    <div style={{ position: 'absolute', top: '32%', left: '50%', transform: 'translateX(-50%)', textAlign: 'center', opacity, pointerEvents: 'none' }}>
+      <div style={{ color: '#aa44ff', fontSize: 36, fontFamily: 'monospace', fontWeight: 'bold', letterSpacing: 4, textShadow: '0 0 20px #aa44ff, 0 0 40px #7722cc' }}>
+        ⬆ LEVEL UP! ⬆
+      </div>
+      <div style={{ color: '#ccc', fontSize: 15, fontFamily: 'monospace', marginTop: 6, letterSpacing: 3 }}>
+        Now Level {msg.replace('LEVEL UP! → ', '')}
+      </div>
+      <div style={{ color: '#aa88ff', fontSize: 10, marginTop: 8, letterSpacing: 2 }}>+HP &nbsp; +Stamina &nbsp; +Energy &nbsp; +Damage</div>
+    </div>
+  );
+}
+
+export function GameHUD() {
+  const { gameState, player } = useGameStore();
+
+  if (gameState.phase === 'menu') return <MenuScreen />;
+  if (gameState.phase === 'gameover') return <GameOverScreen />;
+
+  const allEnemies = useGameStore.getState().enemies;
+  const bossEnemy = allEnemies.find(e => e.type === 'boss' && e.state !== 'dead');
+  const liveCount = allEnemies.filter(e => e.state !== 'dead').length;
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', fontFamily: 'monospace' }}>
+      <style>{`
+        @keyframes pulse-ring { from { opacity: 0.5; transform: scale(1); } to { opacity: 1; transform: scale(1.08); } }
+        @keyframes wave-slide { from { opacity: 0; transform: translateX(-50%) translateY(-12px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+        @keyframes rage-pulse { 0%,100% { box-shadow: inset 0 0 0 transparent; } 50% { box-shadow: inset 0 0 28px rgba(200,0,0,0.22); } }
+      `}</style>
+
+      {player.isRaging && (
+        <div style={{ position: 'absolute', inset: 0, border: '3px solid #cc000040', animation: 'rage-pulse 0.8s ease-in-out infinite', pointerEvents: 'none', borderRadius: 2 }} />
+      )}
+      {gameState.hitFlash > 0.05 && (
+        <div style={{ position: 'absolute', inset: 0, background: `rgba(220,20,20,${gameState.hitFlash * 0.42})`, pointerEvents: 'none' }} />
       )}
 
-      <div className="absolute bottom-8 left-8">
-        <BarGroup label="HP" pct={hpPct} color1="#cc1100" color2="#ff4422" glow="#ff2200" width={220} height={14} />
-        <div className="mt-2">
-          <BarGroup label="SP" pct={spPct} color1="#1133cc" color2="#3366ff" glow="#4488ff" width={180} height={9} />
+      {/* Player panel */}
+      <div style={{ position: 'absolute', bottom: 106, left: 22, width: 210, background: 'rgba(0,0,0,0.62)', padding: '11px 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.07)', backdropFilter: 'blur(4px)' }}>
+        <HealthBar current={player.health} max={player.maxHealth} label="Health" color="#cc2222" showNum />
+        <HealthBar current={player.stamina} max={player.maxStamina} label="Stamina" color="#22aa44" />
+        <div style={{ marginTop: 5 }}>
+          <HealthBar current={player.energy} max={player.maxEnergy} label="Energy" color="#4488ff" />
         </div>
-        {player.combo > 1 && (
-          <div className="mt-3">
-            <ComboDisplay combo={player.combo} heavy={player.isHeavyAttacking} />
+        <div style={{ marginTop: 7 }}>
+          <XPBar />
+        </div>
+        <KillStreak />
+        {player.isRaging && (
+          <div style={{ marginTop: 5, textAlign: 'center', color: '#ff2200', fontSize: 10, fontWeight: 'bold', letterSpacing: 2, textShadow: '0 0 8px #ff4400', animation: 'pulse-ring 0.5s ease-in-out infinite alternate' }}>
+            ⚔ BLOOD RAGE {player.skills.bloodRage.activeTimer.toFixed(1)}s ⚔
           </div>
         )}
       </div>
 
-      {boss && (
-        <div className="absolute top-6 left-1/2 -translate-x-1/2 flex flex-col items-center" style={{ width: 400 }}>
-          <div className="text-xs tracking-[0.35em] uppercase mb-1.5" style={{ color: '#cc88ff', textShadow: '0 0 10px #8800cc' }}>
-            — DARK LORD —
+      {/* Skill bar */}
+      <div style={{ position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 10, padding: '10px 16px', background: 'rgba(0,0,0,0.65)', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', backdropFilter: 'blur(4px)' }}>
+        {SKILL_ORDER.map((id, i) => <SkillSlot key={id} skillId={id} index={i} />)}
+      </div>
+
+      {/* Keybind hint */}
+      <div style={{ position: 'absolute', bottom: 98, left: '50%', transform: 'translateX(-50%)', color: 'rgba(140,140,170,0.55)', fontSize: 9, letterSpacing: 1, textAlign: 'center' }}>
+        Z Whirlwind &nbsp;·&nbsp; X Phantom Strike &nbsp;·&nbsp; C Blood Rage &nbsp;·&nbsp; V Execute
+      </div>
+
+      {/* Top bar */}
+      <div style={{ position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 22, background: 'rgba(0,0,0,0.6)', padding: '8px 20px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.06)', backdropFilter: 'blur(4px)' }}>
+        {[
+          { label: 'WAVE', val: gameState.wave, color: '#fff' },
+          { label: 'SCORE', val: gameState.score.toLocaleString(), color: '#ffcc44' },
+          { label: 'KILLS', val: player.kills, color: '#ff6644' },
+          { label: 'COMBO', val: player.combo > 1 ? `x${player.combo}` : '-', color: player.combo >= 4 ? '#ffaa00' : player.combo >= 2 ? '#ffcc88' : '#888' },
+        ].map(({ label, val, color }, i) => (
+          <div key={i} style={{ textAlign: 'center', minWidth: 42 }}>
+            <div style={{ color: '#666', fontSize: 8, letterSpacing: 2 }}>{label}</div>
+            <div style={{ color, fontSize: 20, fontWeight: 'bold' }}>{val}</div>
           </div>
-          <div className="relative w-full h-4 rounded-sm overflow-hidden" style={{ background: 'rgba(0,0,0,0.7)', border: '1px solid rgba(180,80,255,0.5)' }}>
-            <div
-              className="h-full transition-all duration-300"
-              style={{
-                width: `${(boss.health / boss.maxHealth) * 100}%`,
-                background: 'linear-gradient(90deg, #440088, #9922ff)',
-                boxShadow: '0 0 12px #8800cc',
-              }}
-            />
-            <div className="absolute inset-0 flex items-center justify-center">
-              <span className="text-xs font-bold" style={{ color: '#eeddff', textShadow: '0 1px 3px rgba(0,0,0,0.9)' }}>
-                {Math.ceil(boss.health)} / {boss.maxHealth}
-              </span>
-            </div>
+        ))}
+      </div>
+
+      {/* Enemy count top-right */}
+      {liveCount > 0 && (
+        <div style={{ position: 'absolute', top: 16, right: 20, color: '#cc8888', fontSize: 10, background: 'rgba(0,0,0,0.55)', padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(200,80,80,0.18)' }}>
+          {liveCount} enemies
+        </div>
+      )}
+
+      {/* Boss health bar */}
+      {bossEnemy && (
+        <div style={{ position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)', width: 400, background: 'rgba(0,0,0,0.78)', padding: '11px 16px', borderRadius: 8, border: '2px solid #660088', backdropFilter: 'blur(4px)', marginBottom: 110 }}>
+          <div style={{ textAlign: 'center', color: '#cc88ff', fontSize: 10, letterSpacing: 3, marginBottom: 6, textShadow: '0 0 10px #aa44ff' }}>
+            ☠ SHADOW WARLORD ☠
+          </div>
+          <div style={{ width: '100%', height: 12, background: 'rgba(0,0,0,0.55)', borderRadius: 4, overflow: 'hidden', border: '1px solid #440066' }}>
+            <div style={{ height: '100%', width: `${(bossEnemy.health / bossEnemy.maxHealth) * 100}%`, background: 'linear-gradient(90deg, #440088, #aa00cc, #ff44ff)', boxShadow: '0 0 12px #cc00ff', transition: 'width 0.1s' }} />
+          </div>
+          <div style={{ textAlign: 'center', color: '#aa88cc', fontSize: 9, marginTop: 3, letterSpacing: 1 }}>
+            {Math.ceil(bossEnemy.health)} / {bossEnemy.maxHealth}
           </div>
         </div>
       )}
 
-      <div className="absolute top-6 right-8 flex flex-col items-end gap-1.5">
-        <div style={{ fontFamily: 'Georgia, serif' }}>
-          <span className="text-xs tracking-widest uppercase" style={{ color: '#aa8844' }}>Score</span>
-          <div className="text-3xl font-black" style={{ color: '#e8c870', textShadow: '0 0 20px rgba(200,160,60,0.6)' }}>
-            {gameState.score.toLocaleString()}
-          </div>
+      {/* Wave announcement */}
+      {gameState.waveAnnounceTimer > 0 && !gameState.waveAnnounce.startsWith('LEVEL') && (
+        <div style={{ position: 'absolute', top: '28%', left: '50%', transform: 'translateX(-50%)', color: '#fff', fontSize: 28, fontWeight: 'bold', letterSpacing: 4, textShadow: '0 0 20px #ff4422, 0 0 40px #ff0000', opacity: Math.min(1, gameState.waveAnnounceTimer * 1.5), animation: 'wave-slide 0.3s ease-out', pointerEvents: 'none', textAlign: 'center', whiteSpace: 'nowrap' }}>
+          {gameState.waveAnnounce}
         </div>
-        <div className="flex items-center gap-2">
-          <WaveBadge wave={gameState.wave} />
-        </div>
-        <div className="text-xs font-mono mt-0.5" style={{ color: '#886644' }}>
-          {aliveCount} enemies
-        </div>
-      </div>
-
-      <div className="absolute bottom-8 right-8 flex flex-col items-end gap-1">
-        <ControlHint keys="WASD" action="Move" />
-        <ControlHint keys="Space" action="Dodge" />
-        <ControlHint keys="F" action="Attack" />
-        <ControlHint keys="G" action="Heavy Attack" />
-        <ControlHint keys="Q" action="Block" />
-        <ControlHint keys="Tab" action="Lock-On" />
-        <ControlHint keys="P" action="Pause" />
-      </div>
-
-      {player.lockedTargetId && (
-        <LockOnReticle targetId={player.lockedTargetId} />
       )}
 
-      {gameState.waveAnnounceTimer > 0 && (
-        <WaveAnnounce text={gameState.waveAnnounce} timer={gameState.waveAnnounceTimer} />
-      )}
-    </div>
-  );
-}
+      <LevelUpBanner />
+      <DamageNumbers />
 
-function BarGroup({ label, pct, color1, color2, glow, width, height }: {
-  label: string; pct: number; color1: string; color2: string; glow: string; width: number; height: number;
-}) {
-  return (
-    <div className="flex items-center gap-2.5">
-      <span className="text-xs font-black uppercase tracking-widest w-6" style={{ color: color2, textShadow: `0 0 8px ${glow}` }}>
-        {label}
-      </span>
-      <div className="relative rounded-sm overflow-hidden" style={{ width, height, background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.06)' }}>
-        <div
-          className="h-full transition-all duration-100"
-          style={{
-            width: `${pct * 100}%`,
-            background: `linear-gradient(90deg, ${color1}, ${color2})`,
-            boxShadow: `0 0 8px ${glow}`,
-          }}
-        />
-        <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.06) 0%, transparent 60%)' }} />
-      </div>
-      <span className="text-xs font-mono" style={{ color: 'rgba(200,170,120,0.6)', minWidth: 28, textAlign: 'right' }}>
-        {Math.ceil(pct * 100)}%
-      </span>
-    </div>
-  );
-}
-
-function ComboDisplay({ combo, heavy }: { combo: number; heavy: boolean }) {
-  const color = heavy ? '#cc44ff' : combo >= 4 ? '#ff6600' : combo >= 3 ? '#ffaa00' : '#ff8833';
-  const glow = heavy ? '#9922ff' : color;
-  return (
-    <div className="flex items-center gap-1.5">
-      {Array.from({ length: combo }).map((_, i) => (
-        <div
-          key={i}
-          className="rounded-sm"
-          style={{ width: 10, height: 22, background: color, boxShadow: `0 0 8px ${glow}`, opacity: 0.85 + i * 0.05 }}
-        />
-      ))}
-      <span
-        className="text-sm font-black tracking-widest uppercase ml-1"
-        style={{ color, textShadow: `0 0 14px ${glow}, 0 2px 4px rgba(0,0,0,0.9)` }}
-      >
-        {heavy ? 'HEAVY' : `${combo}x COMBO`}
-      </span>
-    </div>
-  );
-}
-
-function WaveBadge({ wave }: { wave: number }) {
-  const isBoss = wave % 3 === 0;
-  return (
-    <div
-      className="px-2.5 py-0.5 text-xs font-black tracking-[0.2em] uppercase"
-      style={{
-        background: isBoss ? 'rgba(80,0,120,0.7)' : 'rgba(60,20,0,0.7)',
-        border: `1px solid ${isBoss ? 'rgba(180,80,255,0.5)' : 'rgba(200,120,20,0.4)'}`,
-        color: isBoss ? '#cc88ff' : '#e8b860',
-        boxShadow: isBoss ? '0 0 12px rgba(120,0,200,0.4)' : '0 0 8px rgba(180,100,0,0.3)',
-        fontFamily: 'Georgia, serif',
-      }}
-    >
-      {isBoss ? `★ WAVE ${wave} ★` : `WAVE ${wave}`}
-    </div>
-  );
-}
-
-function ControlHint({ keys, action }: { keys: string; action: string }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span
-        className="text-xs px-1.5 py-0.5 rounded font-mono"
-        style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', color: 'rgba(220,190,140,0.8)' }}
-      >
-        {keys}
-      </span>
-      <span className="text-xs" style={{ color: 'rgba(150,120,80,0.7)' }}>{action}</span>
-    </div>
-  );
-}
-
-function LockOnReticle({ targetId }: { targetId: string }) {
-  const enemy = useGameStore.getState().enemies.find(e => e.id === targetId);
-  if (!enemy || enemy.state === 'dead') return null;
-  return (
-    <div
-      className="absolute flex items-center justify-center"
-      style={{
-        left: '50%',
-        top: '40%',
-        width: 48,
-        height: 48,
-        transform: 'translate(-50%, -50%)',
-        border: '2px solid #ffcc00',
-        borderRadius: '50%',
-        boxShadow: '0 0 12px #ffaa00',
-        animation: 'spin 3s linear infinite',
-        opacity: 0.85,
-      }}
-    >
-      <div style={{ width: 6, height: 6, background: '#ffcc00', borderRadius: '50%', boxShadow: '0 0 6px #ffcc00' }} />
-    </div>
-  );
-}
-
-function WaveAnnounce({ text, timer }: { text: string; timer: number }) {
-  const opacity = Math.min(1, timer * 0.8);
-  const isBoss = text.includes('BOSS');
-  return (
-    <div
-      className="absolute left-1/2 -translate-x-1/2 flex flex-col items-center"
-      style={{ top: '22%', opacity }}
-    >
-      <div
-        className="text-sm tracking-[0.4em] uppercase mb-1"
-        style={{ color: isBoss ? '#cc88ff' : '#aa8844', textShadow: isBoss ? '0 0 16px #9900cc' : '0 0 10px #aa6600' }}
-      >
-        {isBoss ? '— PREPARE FOR BATTLE —' : '— ENEMIES APPROACH —'}
-      </div>
-      <div
-        className="text-4xl font-black tracking-[0.25em] uppercase"
-        style={{
-          color: isBoss ? '#dd88ff' : '#e8c870',
-          textShadow: isBoss
-            ? '0 0 40px #9900cc, 0 4px 8px rgba(0,0,0,0.9)'
-            : '0 0 30px rgba(200,160,60,0.8), 0 4px 8px rgba(0,0,0,0.9)',
-          fontFamily: 'Georgia, serif',
-        }}
-      >
-        {text}
+      {/* Controls reminder */}
+      <div style={{ position: 'absolute', bottom: 24, right: 18, color: 'rgba(90,90,120,0.55)', fontSize: 8, lineHeight: 1.8 }}>
+        <div>WASD Move · Space Dodge</div>
+        <div>F Attack · G Heavy · Q Block</div>
+        <div>Tab Lock-On · P Pause</div>
       </div>
     </div>
   );
 }
 
-export function GameMenu() {
+function MenuScreen() {
   const { setGamePhase, resetGame } = useGameStore();
-  const starsRef = useRef<HTMLDivElement[]>([]);
-
   return (
-    <div
-      className="absolute inset-0 flex flex-col items-center justify-center"
-      style={{
-        background: 'linear-gradient(180deg, #050010 0%, #150308 60%, #0a0005 100%)',
-        overflow: 'hidden',
-      }}
-    >
-      <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at 50% 80%, rgba(120,0,0,0.25) 0%, transparent 70%)' }} />
-
-      <div className="flex flex-col items-center gap-1 mb-14 z-10">
-        <div className="text-xs tracking-[0.6em] uppercase mb-4" style={{ color: '#664422' }}>
-          An Epic Action RPG
+    <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.75)' }}>
+      <div style={{ textAlign: 'center', maxWidth: 520 }}>
+        <div style={{ color: '#cc2200', fontSize: 52, fontWeight: 900, letterSpacing: 8, textShadow: '0 0 30px #ff4400, 0 0 60px #aa0000', marginBottom: 4, fontFamily: 'monospace' }}>CRIMSON DESERT</div>
+        <div style={{ color: '#883333', fontSize: 13, letterSpacing: 6, marginBottom: 44, fontFamily: 'monospace' }}>3D ACTION RPG — SURVIVE THE ARENA</div>
+        <div style={{ marginBottom: 40, color: '#777', fontSize: 11, letterSpacing: 1.5, lineHeight: 2.2, fontFamily: 'monospace', background: 'rgba(0,0,0,0.35)', padding: '16px 24px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.06)' }}>
+          <div>WASD — Move &nbsp;|&nbsp; Space — Dodge &nbsp;|&nbsp; Q — Block</div>
+          <div>F — Light Attack &nbsp;|&nbsp; G — Heavy Attack &nbsp;|&nbsp; Tab — Lock-On</div>
+          <div style={{ color: '#aa88ff', marginTop: 8 }}>Z — Whirlwind (AOE spin) &nbsp;|&nbsp; X — Phantom Strike (dash)</div>
+          <div style={{ color: '#aa88ff' }}>C — Blood Rage (fury mode) &nbsp;|&nbsp; V — Execute (finish move)</div>
         </div>
-        <div
-          className="font-black uppercase"
-          style={{
-            fontSize: 72,
-            lineHeight: 1,
-            color: '#cc1a00',
-            textShadow: '0 0 60px #aa0800, 0 0 120px #550000, 0 8px 16px rgba(0,0,0,0.9)',
-            fontFamily: 'Georgia, serif',
-            letterSpacing: '0.08em',
-          }}
-        >
-          CRIMSON
-        </div>
-        <div
-          className="font-bold uppercase tracking-[0.5em]"
-          style={{
-            fontSize: 32,
-            color: '#e8c870',
-            textShadow: '0 0 30px rgba(180,140,40,0.7), 0 4px 8px rgba(0,0,0,0.9)',
-            fontFamily: 'Georgia, serif',
-          }}
-        >
-          DESERT
-        </div>
-        <div className="flex gap-3 mt-4">
-          {[0, 1, 2].map(i => (
-            <div key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: '#880000', boxShadow: '0 0 6px #cc0000' }} />
-          ))}
-        </div>
-      </div>
-
-      <div className="flex flex-col items-center gap-3 z-10">
         <button
+          style={{ pointerEvents: 'all', cursor: 'pointer', background: 'linear-gradient(135deg, #8a0000, #cc2200)', color: '#fff', border: '1px solid #ff4422', borderRadius: 6, padding: '14px 52px', fontSize: 18, letterSpacing: 5, fontFamily: 'monospace', fontWeight: 'bold', boxShadow: '0 0 22px rgba(200,50,0,0.55)' }}
           onClick={() => { resetGame(); setGamePhase('playing'); }}
-          className="px-14 py-4 text-xl font-black uppercase tracking-[0.2em] transition-all duration-200"
-          style={{
-            background: 'linear-gradient(180deg, #8b1a1a 0%, #4a0808 100%)',
-            border: '2px solid #cc3300',
-            color: '#ffd080',
-            textShadow: '0 1px 4px rgba(0,0,0,0.9)',
-            boxShadow: '0 0 30px rgba(180,40,0,0.4), inset 0 1px 0 rgba(255,140,0,0.2)',
-            cursor: 'pointer',
-            fontFamily: 'Georgia, serif',
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.boxShadow = '0 0 50px rgba(255,60,0,0.7), inset 0 1px 0 rgba(255,140,0,0.3)';
-            e.currentTarget.style.transform = 'scale(1.04)';
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.boxShadow = '0 0 30px rgba(180,40,0,0.4), inset 0 1px 0 rgba(255,140,0,0.2)';
-            e.currentTarget.style.transform = 'scale(1)';
-          }}
         >
-          BEGIN YOUR LEGEND
+          ENTER THE ARENA
         </button>
       </div>
-
-      <div className="absolute bottom-10 flex flex-col items-center gap-1.5 z-10 text-xs" style={{ color: '#55332a', letterSpacing: '0.1em' }}>
-        <span>WASD Move · Space Dodge · F Attack · G Heavy · Q Block · Tab Lock-On</span>
-        <span>Chain attacks for combo bonus · Block to reduce damage</span>
-        <span style={{ color: '#441122' }}>Every 3rd wave a powerful Boss awakens</span>
-      </div>
     </div>
   );
 }
 
-export function GameOverScreen() {
+function GameOverScreen() {
   const { gameState, player, resetGame, setGamePhase } = useGameStore();
-
   return (
-    <div
-      className="absolute inset-0 flex flex-col items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.88)' }}
-    >
-      <div
-        className="text-xs tracking-[0.5em] uppercase mb-3"
-        style={{ color: '#660000' }}
-      >
-        — Your story ends here —
+    <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.84)' }}>
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ color: '#cc0000', fontSize: 52, fontWeight: 900, letterSpacing: 8, textShadow: '0 0 30px #ff0000', fontFamily: 'monospace', marginBottom: 14 }}>FALLEN</div>
+        <div style={{ color: '#555', fontSize: 11, marginBottom: 34, letterSpacing: 2, fontFamily: 'monospace' }}>You have been defeated in the Crimson Desert</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 36, background: 'rgba(0,0,0,0.42)', padding: '18px 28px', borderRadius: 8, border: '1px solid rgba(200,0,0,0.18)' }}>
+          {[['WAVE', String(gameState.wave)], ['SCORE', gameState.score.toLocaleString()], ['KILLS', String(player.kills)], ['LEVEL', String(player.level)]].map(([lbl, val]) => (
+            <div key={lbl} style={{ textAlign: 'center' }}>
+              <div style={{ color: '#444', fontSize: 9, letterSpacing: 2, fontFamily: 'monospace' }}>{lbl}</div>
+              <div style={{ color: '#cc4444', fontSize: 24, fontWeight: 'bold', fontFamily: 'monospace' }}>{val}</div>
+            </div>
+          ))}
+        </div>
+        <button
+          style={{ pointerEvents: 'all', cursor: 'pointer', background: 'linear-gradient(135deg, #3a0000, #880000)', color: '#ccc', border: '1px solid #aa2200', borderRadius: 6, padding: '12px 44px', fontSize: 16, letterSpacing: 4, fontFamily: 'monospace' }}
+          onClick={() => { resetGame(); setGamePhase('playing'); }}
+        >
+          RISE AGAIN
+        </button>
       </div>
-      <div
-        className="font-black uppercase mb-2"
-        style={{
-          fontSize: 64,
-          color: '#cc0000',
-          textShadow: '0 0 50px #ff0000, 0 0 100px #880000, 0 6px 10px rgba(0,0,0,0.9)',
-          fontFamily: 'Georgia, serif',
-          letterSpacing: '0.08em',
-        }}
-      >
-        FALLEN
-      </div>
-
-      <div
-        className="flex gap-10 mt-6 mb-8 px-10 py-5"
-        style={{ background: 'rgba(40,10,10,0.6)', border: '1px solid rgba(100,30,30,0.4)' }}
-      >
-        <StatEntry label="Score" value={gameState.score.toLocaleString()} accent="#e8c870" />
-        <StatEntry label="Wave" value={String(gameState.wave)} accent="#cc88ff" />
-        <StatEntry label="Kills" value={String(player.kills)} accent="#ff6644" />
-      </div>
-
-      <button
-        onClick={() => { resetGame(); setGamePhase('playing'); }}
-        className="px-10 py-3.5 font-black uppercase tracking-[0.18em] mb-3 transition-all duration-200"
-        style={{
-          background: 'linear-gradient(180deg, #6b1010, #380404)',
-          border: '2px solid #991100',
-          color: '#ffcc80',
-          cursor: 'pointer',
-          fontFamily: 'Georgia, serif',
-          fontSize: 16,
-        }}
-        onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.04)'; }}
-        onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
-      >
-        RISE AGAIN
-      </button>
-      <button
-        onClick={resetGame}
-        style={{ color: '#553322', cursor: 'pointer', background: 'transparent', border: 'none', fontSize: 12, letterSpacing: '0.15em' }}
-      >
-        MAIN MENU
-      </button>
-    </div>
-  );
-}
-
-function StatEntry({ label, value, accent }: { label: string; value: string; accent: string }) {
-  return (
-    <div className="flex flex-col items-center gap-1">
-      <span className="text-xs tracking-widest uppercase" style={{ color: '#664422' }}>{label}</span>
-      <span className="text-2xl font-black" style={{ color: accent, textShadow: `0 0 12px ${accent}66`, fontFamily: 'Georgia, serif' }}>
-        {value}
-      </span>
     </div>
   );
 }

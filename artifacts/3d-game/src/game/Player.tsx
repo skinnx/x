@@ -2,25 +2,27 @@ import { useRef, useCallback, MutableRefObject } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useKeyboardControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { Controls } from './types';
+import { Controls, SkillId, ENEMY_STATS } from './types';
 import { useGameStore } from './useGameStore';
 import { v4 as uuidv4 } from 'uuid';
 
 const MOVE_SPEED = 7.5;
 const ROT_SPEED = 14;
-const DODGE_SPEED = 19;
+const DODGE_SPEED = 20;
 const DODGE_DURATION = 0.22;
 const DODGE_COOLDOWN = 0.95;
-const ATTACK_COOLDOWN = 0.48;
-const HEAVY_COOLDOWN = 1.05;
+const ATTACK_COOLDOWN = 0.46;
+const HEAVY_COOLDOWN = 1.0;
 const ATTACK_REACH = 3.4;
 const HEAVY_REACH = 4.8;
 const COMBO_WINDOW = 1.0;
 const STAMINA_REGEN = 22;
-const ATK_STA = 18;
-const HEAVY_STA = 35;
-const DODGE_STA = 22;
-const BLOCK_STA_PS = 12;
+const ENERGY_REGEN = 12;
+const ATK_STA = 16;
+const HEAVY_STA = 30;
+const DODGE_STA = 20;
+const BLOCK_STA_PS = 10;
+const CRIT_CHANCE = 0.16;
 
 interface BonesRefs {
   root: MutableRefObject<THREE.Group | null>;
@@ -28,10 +30,8 @@ interface BonesRefs {
   spine: MutableRefObject<THREE.Group | null>;
   chest: MutableRefObject<THREE.Group | null>;
   head: MutableRefObject<THREE.Group | null>;
-  shoulderR: MutableRefObject<THREE.Group | null>;
   upperArmR: MutableRefObject<THREE.Group | null>;
   foreArmR: MutableRefObject<THREE.Group | null>;
-  shoulderL: MutableRefObject<THREE.Group | null>;
   upperArmL: MutableRefObject<THREE.Group | null>;
   foreArmL: MutableRefObject<THREE.Group | null>;
   thighR: MutableRefObject<THREE.Group | null>;
@@ -40,6 +40,8 @@ interface BonesRefs {
   shinL: MutableRefObject<THREE.Group | null>;
   cape: MutableRefObject<THREE.Group | null>;
   swordPivot: MutableRefObject<THREE.Group | null>;
+  auraRing: MutableRefObject<THREE.Mesh | null>;
+  whirlRing: MutableRefObject<THREE.Mesh | null>;
 }
 
 function useBones(): BonesRefs {
@@ -49,10 +51,8 @@ function useBones(): BonesRefs {
     spine: useRef<THREE.Group>(null),
     chest: useRef<THREE.Group>(null),
     head: useRef<THREE.Group>(null),
-    shoulderR: useRef<THREE.Group>(null),
     upperArmR: useRef<THREE.Group>(null),
     foreArmR: useRef<THREE.Group>(null),
-    shoulderL: useRef<THREE.Group>(null),
     upperArmL: useRef<THREE.Group>(null),
     foreArmL: useRef<THREE.Group>(null),
     thighR: useRef<THREE.Group>(null),
@@ -61,12 +61,12 @@ function useBones(): BonesRefs {
     shinL: useRef<THREE.Group>(null),
     cape: useRef<THREE.Group>(null),
     swordPivot: useRef<THREE.Group>(null),
+    auraRing: useRef<THREE.Mesh>(null),
+    whirlRing: useRef<THREE.Mesh>(null),
   };
 }
 
-function lerp(a: number, b: number, t: number) {
-  return a + (b - a) * t;
-}
+function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
 function lerpAngle(from: number, to: number, t: number) {
   let d = to - from;
   while (d > Math.PI) d -= Math.PI * 2;
@@ -74,7 +74,7 @@ function lerpAngle(from: number, to: number, t: number) {
   return from + d * t;
 }
 
-type AnimState = 'idle' | 'walk' | 'run' | 'attack' | 'heavy' | 'dodge' | 'block' | 'stagger';
+type AnimState = 'idle' | 'walk' | 'run' | 'attack' | 'heavy' | 'dodge' | 'block' | 'whirlwind';
 
 export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3, angle: number) => void }) {
   const bones = useBones();
@@ -96,23 +96,24 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
   const trailOpRef = useRef(0);
   const swordGlowRef = useRef<THREE.PointLight>(null);
   const trailMeshRef = useRef<THREE.Mesh>(null);
+  const phantomDashRef = useRef(0);
+  const phantomDirRef = useRef(new THREE.Vector3());
+  const prevKeysRef = useRef<Partial<Record<Controls, boolean>>>({});
   const [, getKeys] = useKeyboardControls<Controls>();
-
   const store = useGameStore;
 
-  const addParticle = useCallback((pos: THREE.Vector3, color: string, count: number) => {
+  const addParticle = useCallback((pos: THREE.Vector3, color: string, count: number, speed = 7) => {
     for (let i = 0; i < count; i++) {
       store.getState().addParticle({
         id: uuidv4(),
-        position: { x: pos.x + (Math.random() - 0.5) * 0.5, y: pos.y + 1 + Math.random() * 0.5, z: pos.z + (Math.random() - 0.5) * 0.5 },
-        velocity: { x: (Math.random() - 0.5) * 8, y: Math.random() * 6 + 2, z: (Math.random() - 0.5) * 8 },
-        life: Math.random() * 0.4 + 0.2,
-        maxLife: 0.6,
-        color,
-        size: Math.random() * 0.1 + 0.04,
+        position: { x: pos.x + (Math.random() - 0.5) * 0.6, y: pos.y + 1 + Math.random() * 0.6, z: pos.z + (Math.random() - 0.5) * 0.6 },
+        velocity: { x: (Math.random() - 0.5) * speed, y: Math.random() * speed * 0.7 + 2, z: (Math.random() - 0.5) * speed },
+        life: Math.random() * 0.4 + 0.2, maxLife: 0.65, color, size: Math.random() * 0.12 + 0.05,
       });
     }
   }, [store]);
+
+  const rollCrit = () => Math.random() < CRIT_CHANCE;
 
   const doAttack = useCallback((heavy: boolean) => {
     const staCost = heavy ? HEAVY_STA : ATK_STA;
@@ -120,26 +121,24 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
     if (!bones.root.current) return;
 
     const now = Date.now();
-    const elapsed = (now - lastAtkRef.current) / 1000;
-    comboRef.current = elapsed < COMBO_WINDOW ? Math.min(comboRef.current + 1, 4) : 1;
+    comboRef.current = ((now - lastAtkRef.current) / 1000 < COMBO_WINDOW) ? Math.min(comboRef.current + 1, 5) : 1;
     lastAtkRef.current = now;
-
     isAtkRef.current = true;
     isHeavyRef.current = heavy;
     atkCDRef.current = heavy ? HEAVY_COOLDOWN : ATTACK_COOLDOWN;
     atkPhaseRef.current = 0;
     trailOpRef.current = 1;
     animStateRef.current = heavy ? 'heavy' : 'attack';
-
     store.getState().setPlayerAttacking(true, heavy, comboRef.current);
 
+    const { player } = store.getState();
     const reach = heavy ? HEAVY_REACH : ATTACK_REACH;
-    const arc = heavy ? Math.PI / 1.6 : Math.PI / 2.2;
+    const arc = heavy ? Math.PI / 1.5 : Math.PI / 2.1;
     const pos = bones.root.current.position;
     const forward = new THREE.Vector3(-Math.sin(rotRef.current), 0, -Math.cos(rotRef.current));
     const { enemies } = store.getState();
-
     let hitAny = false;
+
     enemies.forEach((enemy) => {
       if (enemy.state === 'dead') return;
       const ep = new THREE.Vector3(enemy.position.x, 0, enemy.position.z);
@@ -148,146 +147,198 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
       diff.normalize();
       if (forward.dot(diff) < Math.cos(arc)) return;
 
-      const base = heavy ? 48 : 22;
-      const comboDmg = base + (comboRef.current - 1) * (heavy ? 22 : 13);
-      const killed = store.getState().damageEnemy(enemy.id, comboDmg);
-      addParticle(ep, '#cc2200', heavy ? 18 : 10);
-      addParticle(ep, '#ff8800', 5);
+      const base = heavy ? 50 : 22;
+      const comboDmg = base + (comboRef.current - 1) * (heavy ? 22 : 14);
+      const isCrit = rollCrit();
+      const finalDmg = Math.round(comboDmg * player.damageMultiplier * (isCrit ? 2.0 : 1.0));
+      const killed = store.getState().damageEnemy(enemy.id, finalDmg, isCrit);
+      addParticle(ep, isCrit ? '#ffaa00' : '#cc2200', isCrit ? 18 : 10);
       hitAny = true;
       if (killed) {
         store.getState().incrementKills();
-        const enemyInfo = store.getState().enemies.find(e => e.id === enemy.id);
-        store.getState().addScore((enemyInfo?.maxHealth || 100) * comboRef.current);
+        store.getState().addScore((enemy.maxHealth) * comboRef.current * (isCrit ? 2 : 1));
+        store.getState().addXP(ENEMY_STATS[enemy.type].xpValue);
       }
     });
 
-    if (hitAny) store.getState().triggerScreenShake(heavy ? 0.28 : 0.12);
+    if (hitAny) {
+      store.getState().triggerScreenShake(heavy ? 0.28 : 0.1);
+      store.getState().restoreEnergy(heavy ? 18 : 8);
+    }
 
-    const dur = (heavy ? HEAVY_COOLDOWN : ATTACK_COOLDOWN) * 600;
     setTimeout(() => {
       isAtkRef.current = false;
       isHeavyRef.current = false;
       animStateRef.current = 'idle';
       store.getState().setPlayerAttacking(false);
-    }, dur);
+    }, (heavy ? HEAVY_COOLDOWN : ATTACK_COOLDOWN) * 600);
   }, [bones.root, store, addParticle]);
 
-  function animateBones(dt: number, speed: number, anim: AnimState, t: number, isBlocking: boolean, dodge: boolean) {
-    const s = Math.min(dt * 16, 1);
+  const doSkill = useCallback((id: SkillId) => {
+    const { player } = store.getState();
+    if (!bones.root.current) return;
+    const pos = bones.root.current.position;
+    const forward = new THREE.Vector3(-Math.sin(rotRef.current), 0, -Math.cos(rotRef.current));
 
-    const freq = anim === 'run' ? t * 8 : t * 5;
-    const amp = anim === 'run' ? 1 : anim === 'walk' ? 0.7 : 0.05;
+    if (!store.getState().useSkill(id)) return;
+
+    if (id === 'whirlwind') {
+      animStateRef.current = 'whirlwind';
+      addParticle(pos, '#ff4422', 25, 10);
+      addParticle(pos, '#ff8800', 15, 8);
+      const { enemies } = store.getState();
+      enemies.forEach((enemy) => {
+        if (enemy.state === 'dead') return;
+        const ep = new THREE.Vector3(enemy.position.x, 0, enemy.position.z);
+        const dist = ep.distanceTo(pos);
+        if (dist > 4.8) return;
+        const isCrit = rollCrit();
+        const dmg = Math.round(65 * player.damageMultiplier * (isCrit ? 2 : 1));
+        const killed = store.getState().damageEnemy(enemy.id, dmg, isCrit);
+        addParticle(ep, '#ff6600', 12, 9);
+        if (killed) { store.getState().incrementKills(); store.getState().addScore(enemy.maxHealth * 2); store.getState().addXP(ENEMY_STATS[enemy.type].xpValue); }
+      });
+      store.getState().triggerScreenShake(0.35);
+    }
+
+    if (id === 'phantomStrike') {
+      phantomDirRef.current.copy(forward);
+      phantomDashRef.current = 0.4;
+      addParticle(pos, '#4488ff', 20, 12);
+      addParticle(pos, '#88ccff', 10, 8);
+    }
+
+    if (id === 'bloodRage') {
+      addParticle(pos, '#cc0000', 30, 8);
+      addParticle(pos, '#ff4400', 20, 6);
+      store.getState().triggerScreenShake(0.2);
+      store.getState().triggerHitFlash(0.15);
+    }
+
+    if (id === 'execute') {
+      const { enemies } = store.getState();
+      let executed = 0;
+      enemies.forEach((enemy) => {
+        if (enemy.state === 'dead') return;
+        const ep = new THREE.Vector3(enemy.position.x, 0, enemy.position.z);
+        if (ep.distanceTo(pos) > 5.0) return;
+        const threshold = enemy.health / enemy.maxHealth;
+        const dmg = threshold < 0.3
+          ? enemy.health + 1
+          : Math.round(90 * player.damageMultiplier);
+        const isCrit = threshold < 0.3;
+        const killed = store.getState().damageEnemy(enemy.id, dmg, isCrit);
+        addParticle(ep, '#aa44ff', 18, 10);
+        addParticle(ep, '#8800cc', 10, 8);
+        executed++;
+        if (killed) { store.getState().incrementKills(); store.getState().addScore(enemy.maxHealth * (isCrit ? 3 : 1)); store.getState().addXP(ENEMY_STATS[enemy.type].xpValue * (isCrit ? 2 : 1)); }
+      });
+      if (executed > 0) store.getState().triggerScreenShake(0.4);
+    }
+  }, [bones.root, store, addParticle]);
+
+  function animateBones(dt: number, speed: number, anim: AnimState, t: number, isBlocking: boolean, isRaging: boolean) {
+    const s = Math.min(dt * 15, 1);
+    const isWW = anim === 'whirlwind';
+    const freq = anim === 'run' ? t * 9 : t * 5.5;
+    const amp = anim === 'run' ? 1.1 : anim === 'walk' ? 0.75 : isWW ? 0 : 0.05;
     const walkSwing = Math.sin(freq) * amp;
-    const walkSwing2 = Math.cos(freq) * amp * 0.6;
     const isMoving = anim === 'walk' || anim === 'run';
     const isAtk = anim === 'attack' || anim === 'heavy';
 
+    if (isWW && bones.root.current) {
+      bones.root.current.rotation.y += dt * 12;
+    }
+
     if (bones.hip.current) {
-      const targetY = isMoving ? Math.abs(Math.sin(freq * 2)) * 0.08 : 0;
-      const targetTilt = isBlocking ? -0.12 : isAtk ? 0.1 : 0;
-      bones.hip.current.position.y = lerp(bones.hip.current.position.y, targetY, s);
-      bones.hip.current.rotation.z = lerp(bones.hip.current.rotation.z, isMoving ? walkSwing2 * 0.15 : 0, s);
+      const bobY = isMoving ? Math.abs(Math.sin(freq * 2)) * 0.08 : Math.sin(t * 1.8) * 0.01;
+      bones.hip.current.position.y = lerp(bones.hip.current.position.y, bobY, s);
     }
-
     if (bones.spine.current) {
-      const targetX = isBlocking ? -0.18 : anim === 'heavy' ? 0.15 : 0;
-      bones.spine.current.rotation.x = lerp(bones.spine.current.rotation.x, targetX, s * 0.7);
+      const targetX = isBlocking ? -0.2 : anim === 'heavy' ? 0.18 : 0;
+      bones.spine.current.rotation.x = lerp(bones.spine.current.rotation.x, targetX, s * 0.65);
     }
-
     if (bones.chest.current) {
-      const targetY = isMoving ? -walkSwing2 * 0.12 : 0;
-      const targetZ = isMoving ? walkSwing * 0.06 : 0;
-      bones.chest.current.rotation.y = lerp(bones.chest.current.rotation.y, targetY, s * 0.8);
-      bones.chest.current.rotation.z = lerp(bones.chest.current.rotation.z, targetZ, s * 0.8);
+      bones.chest.current.rotation.y = lerp(bones.chest.current.rotation.y, isMoving ? -Math.cos(freq) * 0.1 : 0, s * 0.8);
     }
-
     if (bones.head.current) {
-      const idleTilt = Math.sin(t * 1.2) * 0.02;
-      const atkTilt = isAtk ? -0.1 : 0;
-      bones.head.current.rotation.x = lerp(bones.head.current.rotation.x, idleTilt + atkTilt, s * 0.5);
-      bones.head.current.rotation.y = lerp(bones.head.current.rotation.y, 0, s * 0.5);
+      bones.head.current.rotation.x = lerp(bones.head.current.rotation.x, isAtk ? -0.12 : Math.sin(t * 1.1) * 0.025, s * 0.5);
     }
 
-    if (bones.thighR.current) {
-      const target = isMoving ? walkSwing * 0.6 : 0;
-      bones.thighR.current.rotation.x = lerp(bones.thighR.current.rotation.x, target, s);
-    }
-    if (bones.shinR.current) {
-      const t2 = isMoving ? Math.max(0, -Math.sin(freq)) * 0.7 : 0;
-      bones.shinR.current.rotation.x = lerp(bones.shinR.current.rotation.x, t2, s);
-    }
-    if (bones.thighL.current) {
-      const target = isMoving ? -walkSwing * 0.6 : 0;
-      bones.thighL.current.rotation.x = lerp(bones.thighL.current.rotation.x, target, s);
-    }
-    if (bones.shinL.current) {
-      const t2 = isMoving ? Math.max(0, Math.sin(freq)) * 0.7 : 0;
-      bones.shinL.current.rotation.x = lerp(bones.shinL.current.rotation.x, t2, s);
-    }
+    if (bones.thighR.current) bones.thighR.current.rotation.x = lerp(bones.thighR.current.rotation.x, isMoving ? walkSwing * 0.65 : 0, s);
+    if (bones.shinR.current) bones.shinR.current.rotation.x = lerp(bones.shinR.current.rotation.x, isMoving ? Math.max(0, -Math.sin(freq)) * 0.72 : 0, s);
+    if (bones.thighL.current) bones.thighL.current.rotation.x = lerp(bones.thighL.current.rotation.x, isMoving ? -walkSwing * 0.65 : 0, s);
+    if (bones.shinL.current) bones.shinL.current.rotation.x = lerp(bones.shinL.current.rotation.x, isMoving ? Math.max(0, Math.sin(freq)) * 0.72 : 0, s);
 
     if (bones.upperArmL.current) {
-      let txL = isBlocking ? -1.2 : isMoving ? -walkSwing * 0.5 : Math.sin(t * 1.1) * 0.02;
-      let tzL = isBlocking ? -0.5 : -0.1;
+      const txL = isBlocking ? -1.25 : isMoving ? -walkSwing * 0.5 : Math.sin(t * 0.9) * 0.02;
+      const tzL = isBlocking ? -0.5 : -0.12;
       bones.upperArmL.current.rotation.x = lerp(bones.upperArmL.current.rotation.x, txL, s);
       bones.upperArmL.current.rotation.z = lerp(bones.upperArmL.current.rotation.z, tzL, s);
     }
     if (bones.foreArmL.current) {
-      const target = isBlocking ? -0.9 : 0;
-      bones.foreArmL.current.rotation.x = lerp(bones.foreArmL.current.rotation.x, target, s);
+      bones.foreArmL.current.rotation.x = lerp(bones.foreArmL.current.rotation.x, isBlocking ? -0.95 : 0, s);
     }
 
     if (bones.swordPivot.current) {
-      atkPhaseRef.current += dt * (isHeavyRef.current ? 5 : 7);
+      atkPhaseRef.current += dt * (isHeavyRef.current ? 5 : 7.5);
       let txR: number, tzR: number, tyR: number;
-      if (isAtk) {
-        const phase = atkPhaseRef.current;
-        if (isHeavyRef.current) {
-          txR = phase < 1 ? lerp(-0.8, -2.0, phase) : lerp(-2.0, 0.8, phase - 1);
-          tzR = Math.sin(phase * Math.PI) * 0.4;
+      if (isAtk || isWW) {
+        const ph = isWW ? t * 8 : atkPhaseRef.current;
+        if (isWW) {
+          txR = -0.6;
+          tzR = Math.sin(ph) * 0.8;
+          tyR = Math.cos(ph) * 0.4;
+        } else if (isHeavyRef.current) {
+          txR = ph < 1 ? lerp(-0.9, -2.2, ph) : lerp(-2.2, 0.9, ph - 1);
+          tzR = Math.sin(ph * Math.PI) * 0.45;
           tyR = 0;
         } else {
-          const combo = comboRef.current;
-          if (combo % 2 === 1) {
-            txR = phase < 0.8 ? lerp(-0.5, -1.8, phase / 0.8) : lerp(-1.8, 0.2, (phase - 0.8) / 1.2);
-            tzR = phase < 0.8 ? lerp(-0.3, 0.5, phase / 0.8) : lerp(0.5, -0.3, (phase - 0.8) / 1.2);
-          } else {
-            txR = phase < 0.8 ? lerp(-0.5, -1.5, phase / 0.8) : lerp(-1.5, 0.2, (phase - 0.8) / 1.2);
-            tzR = phase < 0.8 ? lerp(-0.3, -0.7, phase / 0.8) : lerp(-0.7, -0.3, (phase - 0.8) / 1.2);
-          }
-          tyR = Math.sin(phase * Math.PI) * 0.2;
+          const c = comboRef.current;
+          txR = ph < 0.8 ? lerp(-0.5, -1.9, ph / 0.8) : lerp(-1.9, 0.25, (ph - 0.8) / 1.2);
+          tzR = (c % 2 === 1)
+            ? (ph < 0.8 ? lerp(-0.3, 0.6, ph / 0.8) : lerp(0.6, -0.3, (ph - 0.8) / 1.2))
+            : (ph < 0.8 ? lerp(-0.3, -0.8, ph / 0.8) : lerp(-0.8, -0.3, (ph - 0.8) / 1.2));
+          tyR = Math.sin(ph * Math.PI) * 0.25;
         }
       } else {
-        txR = isMoving ? walkSwing * 0.5 : Math.sin(t * 0.9) * 0.025;
+        txR = isMoving ? walkSwing * 0.52 : Math.sin(t * 0.95) * 0.025;
         tzR = 0.08;
         tyR = 0;
       }
-      bones.swordPivot.current.rotation.x = lerp(bones.swordPivot.current.rotation.x, txR, s * 0.9);
-      bones.swordPivot.current.rotation.z = lerp(bones.swordPivot.current.rotation.z, tzR, s * 0.9);
-      bones.swordPivot.current.rotation.y = lerp(bones.swordPivot.current.rotation.y, tyR, s * 0.9);
-    }
-
-    if (dodge && bones.spine.current) {
-      bones.spine.current.rotation.x = lerp(bones.spine.current.rotation.x, -0.35, s * 2);
+      bones.swordPivot.current.rotation.x = lerp(bones.swordPivot.current.rotation.x, txR, s * 0.88);
+      bones.swordPivot.current.rotation.z = lerp(bones.swordPivot.current.rotation.z, tzR, s * 0.88);
+      bones.swordPivot.current.rotation.y = lerp(bones.swordPivot.current.rotation.y, tyR, s * 0.88);
     }
 
     if (bones.cape.current) {
-      const swingX = isMoving ? (speed * 0.04 + Math.sin(t * 3) * 0.03) : Math.sin(t * 1.5) * 0.01;
-      const swingZ = isMoving ? Math.sin(freq * 0.5) * 0.04 : 0;
-      bones.cape.current.rotation.x = lerp(bones.cape.current.rotation.x, swingX, s * 0.4);
-      bones.cape.current.rotation.z = lerp(bones.cape.current.rotation.z, swingZ, s * 0.3);
+      const sx = isMoving ? speed * 0.045 + Math.sin(t * 3.2) * 0.03 : Math.sin(t * 1.6) * 0.01;
+      bones.cape.current.rotation.x = lerp(bones.cape.current.rotation.x, sx, s * 0.35);
+      bones.cape.current.rotation.z = lerp(bones.cape.current.rotation.z, isMoving ? Math.sin(freq * 0.5) * 0.04 : 0, s * 0.3);
     }
 
     if (trailMeshRef.current) {
       trailOpRef.current = Math.max(0, trailOpRef.current - dt * 5.5);
-      const mat = trailMeshRef.current.material as THREE.MeshBasicMaterial;
-      mat.opacity = trailOpRef.current * 0.55;
+      (trailMeshRef.current.material as THREE.MeshBasicMaterial).opacity = trailOpRef.current * 0.6;
     }
     if (swordGlowRef.current) {
-      swordGlowRef.current.intensity = lerp(
-        swordGlowRef.current.intensity,
-        isAtk ? (isHeavyRef.current ? 6 : 3.5) : 0.6,
-        s
-      );
+      const target = isAtk || isWW ? (isHeavyRef.current ? 7 : 4) : (isRaging ? 2 : 0.7);
+      swordGlowRef.current.intensity = lerp(swordGlowRef.current.intensity, target, s);
+    }
+
+    if (bones.auraRing.current) {
+      const { player } = store.getState();
+      const mat = bones.auraRing.current.material as THREE.MeshBasicMaterial;
+      const targetOp = isRaging ? 0.65 : player.isPhantomStriking ? 0.45 : 0;
+      mat.opacity = lerp(mat.opacity, targetOp, s * 2);
+      bones.auraRing.current.rotation.y = t * (isRaging ? 3 : 5);
+      mat.color.setHex(isRaging ? 0xcc0000 : 0x4488ff);
+    }
+    if (bones.whirlRing.current) {
+      const mat = bones.whirlRing.current.material as THREE.MeshBasicMaterial;
+      mat.opacity = lerp(mat.opacity, isWW ? 0.8 : 0, s * 3);
+      bones.whirlRing.current.rotation.y = t * 15;
+      bones.whirlRing.current.scale.setScalar(isWW ? lerp(bones.whirlRing.current.scale.x, 5, s * 2) : 1);
     }
   }
 
@@ -304,22 +355,48 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
     if (dodgeCDRef.current > 0) dodgeCDRef.current -= dt;
     if (invFrameRef.current > 0) invFrameRef.current -= dt;
 
-    store.getState().restoreStamina(STAMINA_REGEN * dt * (player.isBlocking ? 0.3 : 1));
+    store.getState().restoreStamina(22 * dt * (player.isBlocking ? 0.3 : 1));
+    store.getState().restoreEnergy(ENERGY_REGEN * dt * (player.isRaging ? 0.5 : 1));
+    if (player.isRaging) store.getState().setPlayerHealth(player.health + 4 * dt);
     store.getState().tickEffects(dt);
+    store.getState().tickSkills(dt);
+    store.getState().tickDamageNumbers(dt);
 
     const keys = getKeys();
     const pos = bones.root.current.position;
+
+    if (phantomDashRef.current > 0) {
+      phantomDashRef.current -= dt;
+      pos.addScaledVector(phantomDirRef.current, 24 * dt);
+      const { enemies } = store.getState();
+      enemies.forEach((enemy) => {
+        if (enemy.state === 'dead') return;
+        const ep = new THREE.Vector3(enemy.position.x, 0, enemy.position.z);
+        if (ep.distanceTo(pos) < 2.5) {
+          const isCrit = rollCrit();
+          const dmg = Math.round(90 * player.damageMultiplier * (isCrit ? 2 : 1));
+          const killed = store.getState().damageEnemy(enemy.id, dmg, isCrit);
+          addParticle(ep, '#4488ff', 10, 9);
+          if (killed) { store.getState().incrementKills(); store.getState().addScore(enemy.maxHealth * 2); store.getState().addXP(ENEMY_STATS[enemy.type].xpValue); }
+        }
+      });
+      const r = 28.5;
+      const d = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
+      if (d > r) { const n = new THREE.Vector3(pos.x, 0, pos.z).normalize(); pos.x = n.x * r; pos.z = n.z * r; }
+      onCameraTarget(pos, rotRef.current);
+      animateBones(dt, 20, 'run', t, false, player.isRaging);
+      return;
+    }
 
     if (dodgeTimerRef.current > 0) {
       dodgeTimerRef.current -= dt;
       isDodgingRef.current = true;
       pos.addScaledVector(dodgeDirRef.current, DODGE_SPEED * dt);
       pos.y = 0;
-      const dr = 28.5;
-      const dd2 = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
-      if (dd2 > dr) { const n = new THREE.Vector3(pos.x, 0, pos.z).normalize(); pos.x = n.x * dr; pos.z = n.z * dr; }
+      const r = 28.5; const d = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
+      if (d > r) { const n = new THREE.Vector3(pos.x, 0, pos.z).normalize(); pos.x = n.x * r; pos.z = n.z * r; }
       animStateRef.current = 'dodge';
-      animateBones(dt, DODGE_SPEED, 'dodge', t, false, true);
+      animateBones(dt, DODGE_SPEED, 'dodge', t, false, player.isRaging);
       onCameraTarget(pos, rotRef.current);
       return;
     } else if (isDodgingRef.current) {
@@ -333,7 +410,6 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
     if (keys.back) moveDir.z += 1;
     if (keys.left) moveDir.x -= 1;
     if (keys.right) moveDir.x += 1;
-
     const isMoving = moveDir.lengthSq() > 0;
     const isBlocking = keys.block && !isAtkRef.current;
     if (isBlocking !== player.isBlocking) store.getState().setPlayerBlocking(isBlocking);
@@ -350,35 +426,28 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
         const locked = store.getState().enemies.find(e => e.id === p.lockedTargetId);
         if (locked && locked.state !== 'dead') {
           targetAngle = Math.atan2(-(locked.position.x - pos.x), -(locked.position.z - pos.z));
-        } else {
-          store.getState().setLockTarget(null);
-          targetAngle = Math.atan2(-moveDir.x, -moveDir.z);
-        }
-      } else {
-        targetAngle = Math.atan2(-moveDir.x, -moveDir.z);
-      }
+        } else { store.getState().setLockTarget(null); targetAngle = Math.atan2(-moveDir.x, -moveDir.z); }
+      } else { targetAngle = Math.atan2(-moveDir.x, -moveDir.z); }
       rotRef.current = lerpAngle(rotRef.current, targetAngle, ROT_SPEED * dt);
-      const spd = isAtkRef.current ? 0.3 : 1;
-      velRef.current.lerp(moveDir.multiplyScalar(MOVE_SPEED * spd), 10 * dt);
+      velRef.current.lerp(moveDir.multiplyScalar(MOVE_SPEED * (isAtkRef.current ? 0.3 : 1)), 10 * dt);
       if (!isAtkRef.current) animStateRef.current = velRef.current.length() > 5 ? 'run' : 'walk';
     } else {
       velRef.current.lerp(new THREE.Vector3(), 12 * dt);
-      if (!isAtkRef.current && !isBlocking) animStateRef.current = 'idle';
+      if (!isAtkRef.current && !isBlocking && animStateRef.current !== 'whirlwind') animStateRef.current = 'idle';
     }
 
-    pos.addScaledVector(velRef.current, dt);
-    pos.y = 0;
-    const ar = 28.5;
-    const fd = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
-    if (fd > ar) { const n = new THREE.Vector3(pos.x, 0, pos.z).normalize(); pos.x = n.x * ar; pos.z = n.z * ar; }
-    bones.root.current.rotation.y = rotRef.current;
+    if (!player.isWhirlwinding) {
+      pos.addScaledVector(velRef.current, dt);
+      pos.y = 0;
+      const r = 28.5; const d = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
+      if (d > r) { const n = new THREE.Vector3(pos.x, 0, pos.z).normalize(); pos.x = n.x * r; pos.z = n.z * r; }
+      bones.root.current.rotation.y = rotRef.current;
+    }
 
     if (keys.jump && dodgeCDRef.current <= 0 && player.stamina >= DODGE_STA) {
       if (store.getState().consumeStamina(DODGE_STA)) {
-        const dDir = isMoving
-          ? velRef.current.clone().normalize()
-          : new THREE.Vector3(-Math.sin(rotRef.current), 0, -Math.cos(rotRef.current));
-        dodgeDirRef.current.copy(dDir);
+        const dd = isMoving ? velRef.current.clone().normalize() : new THREE.Vector3(-Math.sin(rotRef.current), 0, -Math.cos(rotRef.current));
+        dodgeDirRef.current.copy(dd);
         dodgeTimerRef.current = DODGE_DURATION;
         dodgeCDRef.current = DODGE_COOLDOWN;
         invFrameRef.current = DODGE_DURATION + 0.12;
@@ -386,41 +455,48 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
       }
     }
 
-    if (keys.heavy && atkCDRef.current <= 0 && !isAtkRef.current) {
-      doAttack(true);
-    } else if (keys.attack && atkCDRef.current <= 0 && !isAtkRef.current) {
-      doAttack(false);
-    }
+    if (keys.heavy && atkCDRef.current <= 0 && !isAtkRef.current) doAttack(true);
+    else if (keys.attack && atkCDRef.current <= 0 && !isAtkRef.current) doAttack(false);
 
-    if (keys.lockOn) {
+    if (keys.lockOn && !prevKeysRef.current.lockOn) {
       const { player: p, enemies } = store.getState();
-      if (p.lockedTargetId) {
-        store.getState().setLockTarget(null);
-      } else {
+      if (p.lockedTargetId) { store.getState().setLockTarget(null); }
+      else {
         const living = enemies.filter(e => e.state !== 'dead');
         if (living.length > 0) {
           const nearest = living.reduce((best, e) => {
-            const d = (e.position.x - pos.x) ** 2 + (e.position.z - pos.z) ** 2;
-            const bd = (best.position.x - pos.x) ** 2 + (best.position.z - pos.z) ** 2;
-            return d < bd ? e : best;
+            const da = (e.position.x - pos.x) ** 2 + (e.position.z - pos.z) ** 2;
+            const db = (best.position.x - pos.x) ** 2 + (best.position.z - pos.z) ** 2;
+            return da < db ? e : best;
           });
           store.getState().setLockTarget(nearest.id);
         }
       }
     }
 
-    animateBones(dt, velRef.current.length(), animStateRef.current, t, isBlocking, false);
+    const SKILL_KEYS: [Controls, SkillId][] = [
+      [Controls.skill1, 'whirlwind'],
+      [Controls.skill2, 'phantomStrike'],
+      [Controls.skill3, 'bloodRage'],
+      [Controls.skill4, 'execute'],
+    ];
+    SKILL_KEYS.forEach(([ctrl, id]) => {
+      if (keys[ctrl] && !prevKeysRef.current[ctrl]) doSkill(id);
+    });
+
+    prevKeysRef.current = { ...keys };
+    animateBones(dt, velRef.current.length(), animStateRef.current, t, isBlocking, player.isRaging);
 
     const { enemies, player: cp } = store.getState();
-    if (invFrameRef.current <= 0) {
+    if (invFrameRef.current <= 0 && !cp.isWhirlwinding) {
       let dmg = 0;
       enemies.forEach(e => {
         if (e.state !== 'attacking') return;
         const d = Math.sqrt((pos.x - e.position.x) ** 2 + (pos.z - e.position.z) ** 2);
-        const atkRange = e.type === 'boss' ? 3.5 : e.type === 'berserker' ? 3.0 : 2.5;
-        if (d < atkRange) {
+        const range = e.type === 'boss' ? 3.5 : e.type === 'berserker' ? 3.0 : 2.5;
+        if (d < range) {
           const raw = e.type === 'scout' ? 5 : e.type === 'berserker' ? 18 : e.type === 'boss' ? 25 : 10;
-          dmg += raw * dt * (cp.isBlocking ? 0.12 : 1);
+          dmg += raw * dt * (cp.isBlocking ? 0.1 : 1);
         }
       });
       if (dmg > 0) {
@@ -428,10 +504,7 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
         if (newHp <= 0) store.getState().setPlayerDead();
         else {
           store.getState().setPlayerHealth(newHp);
-          if (!cp.isBlocking) {
-            store.getState().triggerHitFlash(0.65);
-            store.getState().triggerScreenShake(0.4);
-          }
+          if (!cp.isBlocking) { store.getState().triggerHitFlash(0.7); store.getState().triggerScreenShake(0.42); }
         }
       }
     }
@@ -442,198 +515,243 @@ export function Player({ onCameraTarget }: { onCameraTarget: (pos: THREE.Vector3
   const { player } = useGameStore();
   if (!player.isAlive) return null;
 
+  const isRaging = player.isRaging;
+  const isBlock = player.isBlocking;
+  const isWW = player.isWhirlwinding;
+  const isPhantom = player.isPhantomStriking;
+  const runeEmissive = isRaging ? '#660000' : isPhantom ? '#002244' : '#000000';
+  const runeIntensity = isRaging ? 0.6 : isPhantom ? 0.4 : 0.0;
+
   return (
-    <group ref={bones.root} position={[0, 0, 0]}>
+    <group ref={bones.root}>
       <group ref={bones.hip} position={[0, 0.92, 0]}>
-        <group ref={bones.spine} position={[0, 0, 0]}>
+        <group ref={bones.spine}>
           <group ref={bones.chest} position={[0, 0.52, 0]}>
-
+            {/* Torso */}
             <mesh position={[0, 0.22, 0]} castShadow>
-              <boxGeometry args={[0.72, 0.48, 0.36]} />
-              <meshStandardMaterial color="#7a1515" roughness={0.4} metalness={0.6} />
+              <boxGeometry args={[0.74, 0.5, 0.37]} />
+              <meshStandardMaterial color="#7a1515" roughness={0.38} metalness={0.65} emissive={runeEmissive} emissiveIntensity={runeIntensity} />
             </mesh>
-            <mesh position={[0, 0.22, 0]} castShadow>
-              <boxGeometry args={[0.78, 0.10, 0.38]} />
-              <meshStandardMaterial color="#5a0f0f" roughness={0.4} metalness={0.7} />
+            {/* Chest plate detail */}
+            <mesh position={[0, 0.3, 0.19]} castShadow>
+              <boxGeometry args={[0.56, 0.34, 0.04]} />
+              <meshStandardMaterial color="#8a1818" roughness={0.32} metalness={0.75} emissive={runeEmissive} emissiveIntensity={runeIntensity * 1.5} />
             </mesh>
-            <mesh position={[0, 0.36, 0.0]} castShadow>
-              <boxGeometry args={[0.55, 0.25, 0.08]} />
-              <meshStandardMaterial color="#8a1a1a" roughness={0.45} metalness={0.55} />
+            {/* Rune glyph center */}
+            <mesh position={[0, 0.3, 0.22]}>
+              <planeGeometry args={[0.18, 0.18]} />
+              <meshBasicMaterial color={isRaging ? '#ff2200' : isPhantom ? '#4488ff' : '#440000'} transparent opacity={0.8} />
             </mesh>
-            <mesh position={[0, 0.0, 0]} castShadow>
-              <boxGeometry args={[0.62, 0.42, 0.34]} />
-              <meshStandardMaterial color="#1a0c06" roughness={0.55} metalness={0.4} />
+            {/* Abdomen */}
+            <mesh position={[0, -0.02, 0]} castShadow>
+              <boxGeometry args={[0.62, 0.44, 0.34]} />
+              <meshStandardMaterial color="#1e0e08" roughness={0.6} metalness={0.4} />
             </mesh>
-
-            <group ref={bones.shoulderR} position={[0.44, 0.28, 0]}>
-              <mesh castShadow>
-                <boxGeometry args={[0.22, 0.22, 0.22]} />
-                <meshStandardMaterial color="#6a0e0e" roughness={0.4} metalness={0.65} />
+            {/* Belt */}
+            <mesh position={[0, -0.18, 0]} castShadow>
+              <boxGeometry args={[0.68, 0.16, 0.36]} />
+              <meshStandardMaterial color="#3a2010" roughness={0.5} metalness={0.5} />
+            </mesh>
+            {/* Shoulders */}
+            {[-1, 1].map((side) => (
+              <mesh key={side} position={[side * 0.46, 0.3, 0]} castShadow>
+                <boxGeometry args={[0.24, 0.25, 0.25]} />
+                <meshStandardMaterial color="#7a0f0f" roughness={0.35} metalness={0.7} emissive={runeEmissive} emissiveIntensity={runeIntensity * 0.8} />
               </mesh>
-              <group ref={bones.upperArmR} position={[0.15, -0.1, 0]}>
-                <mesh position={[0, -0.18, 0]} castShadow>
-                  <capsuleGeometry args={[0.1, 0.32, 4, 6]} />
-                  <meshStandardMaterial color="#5a1010" roughness={0.55} metalness={0.4} />
+            ))}
+
+            {/* RIGHT ARM (sword) */}
+            <group position={[0.46, 0.26, 0]}>
+              <group ref={bones.upperArmR} position={[0.14, -0.1, 0]}>
+                <mesh position={[0, -0.2, 0]} castShadow>
+                  <capsuleGeometry args={[0.1, 0.34, 4, 6]} />
+                  <meshStandardMaterial color="#5a1010" roughness={0.55} metalness={0.42} />
                 </mesh>
-                <group ref={bones.foreArmR} position={[0, -0.42, 0]}>
-                  <mesh position={[0, -0.16, 0]} castShadow>
-                    <capsuleGeometry args={[0.085, 0.28, 4, 6]} />
-                    <meshStandardMaterial color="#4a0e0e" roughness={0.55} metalness={0.4} />
+                <group ref={bones.foreArmR} position={[0, -0.44, 0]}>
+                  <mesh position={[0, -0.17, 0]} castShadow>
+                    <capsuleGeometry args={[0.088, 0.3, 4, 6]} />
+                    <meshStandardMaterial color="#4a0e0e" roughness={0.55} metalness={0.42} />
                   </mesh>
-                  <group ref={bones.swordPivot} position={[0, -0.44, 0]}>
-                    <mesh position={[0, -0.38, 0]} castShadow>
-                      <boxGeometry args={[0.06, 0.9, 0.032]} />
-                      <meshStandardMaterial color="#c8d0e0" roughness={0.1} metalness={0.97} envMapIntensity={2.5} />
+                  {/* Gauntlet */}
+                  <mesh position={[0, -0.38, 0]} castShadow>
+                    <boxGeometry args={[0.22, 0.18, 0.22]} />
+                    <meshStandardMaterial color="#6a1010" roughness={0.4} metalness={0.7} emissive={runeEmissive} emissiveIntensity={runeIntensity} />
+                  </mesh>
+                  <group ref={bones.swordPivot} position={[0, -0.52, 0]}>
+                    {/* Sword blade */}
+                    <mesh position={[0, -0.5, 0]} castShadow>
+                      <boxGeometry args={[0.062, 1.05, 0.034]} />
+                      <meshStandardMaterial color="#c8d2e4" roughness={0.08} metalness={0.98} envMapIntensity={3} />
                     </mesh>
-                    <mesh position={[0, -0.05, 0]} castShadow>
-                      <boxGeometry args={[0.26, 0.06, 0.06]} />
-                      <meshStandardMaterial color="#c8a020" roughness={0.2} metalness={0.9} />
+                    {/* Fuller groove */}
+                    <mesh position={[0, -0.5, 0]}>
+                      <boxGeometry args={[0.018, 0.95, 0.006]} />
+                      <meshStandardMaterial color="#dde8ff" roughness={0.05} metalness={1} envMapIntensity={4} />
                     </mesh>
-                    <mesh position={[0, 0.08, 0]} castShadow>
-                      <cylinderGeometry args={[0.032, 0.04, 0.22, 6]} />
-                      <meshStandardMaterial color="#8a6010" roughness={0.35} metalness={0.8} />
+                    {/* Crossguard */}
+                    <mesh position={[0, -0.04, 0]} castShadow>
+                      <boxGeometry args={[0.34, 0.07, 0.07]} />
+                      <meshStandardMaterial color="#c8a022" roughness={0.18} metalness={0.92} />
                     </mesh>
-                    <mesh position={[0, -0.38, 0.016]} castShadow>
-                      <planeGeometry args={[0.06, 0.9]} />
-                      <meshStandardMaterial color="#e0e8ff" roughness={0.05} metalness={1} envMapIntensity={3} />
+                    {/* Pommel */}
+                    <mesh position={[0, 0.12, 0]} castShadow>
+                      <sphereGeometry args={[0.075, 7, 6]} />
+                      <meshStandardMaterial color="#b89020" roughness={0.22} metalness={0.9} />
                     </mesh>
-                    <mesh ref={trailMeshRef} position={[0, -0.4, 0]} rotation={[0, 0, 0]}>
-                      <planeGeometry args={[0.7, 1.2]} />
-                      <meshBasicMaterial
-                        color={isHeavyRef.current ? '#bb44ff' : '#44aaff'}
-                        transparent opacity={0}
-                        side={THREE.DoubleSide}
-                        blending={THREE.AdditiveBlending}
-                        depthWrite={false}
-                      />
+                    {/* Handle */}
+                    <mesh position={[0, 0.0, 0]} castShadow>
+                      <cylinderGeometry args={[0.034, 0.038, 0.24, 7]} />
+                      <meshStandardMaterial color="#3a2010" roughness={0.8} />
                     </mesh>
-                    <pointLight ref={swordGlowRef} color={isHeavyRef.current ? '#9922ff' : '#4488ff'} intensity={0.6} distance={3.5} decay={2} />
+                    {/* Rune on blade */}
+                    <mesh position={[0, -0.5, 0.018]}>
+                      <planeGeometry args={[0.04, 0.35]} />
+                      <meshBasicMaterial color={isRaging ? '#ff2200' : '#4488ff'} transparent opacity={0.75} blending={THREE.AdditiveBlending} depthWrite={false} />
+                    </mesh>
+                    <mesh ref={trailMeshRef} position={[0, -0.5, 0]}>
+                      <planeGeometry args={[0.8, 1.3]} />
+                      <meshBasicMaterial color={isHeavyRef.current ? '#bb44ff' : '#44aaff'} transparent opacity={0}
+                        side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} />
+                    </mesh>
+                    <pointLight ref={swordGlowRef} color={isRaging ? '#ff4400' : isHeavyRef.current ? '#aa44ff' : '#4488ff'} intensity={0.7} distance={3.5} decay={2} />
                   </group>
                 </group>
               </group>
             </group>
 
-            <group ref={bones.shoulderL} position={[-0.44, 0.28, 0]}>
-              <mesh castShadow>
-                <boxGeometry args={[0.22, 0.22, 0.22]} />
-                <meshStandardMaterial color="#6a0e0e" roughness={0.4} metalness={0.65} />
-              </mesh>
-              <group ref={bones.upperArmL} position={[-0.15, -0.1, 0]}>
-                <mesh position={[0, -0.18, 0]} castShadow>
-                  <capsuleGeometry args={[0.1, 0.32, 4, 6]} />
-                  <meshStandardMaterial color="#5a1010" roughness={0.55} metalness={0.4} />
+            {/* LEFT ARM */}
+            <group position={[-0.46, 0.26, 0]}>
+              <group ref={bones.upperArmL} position={[-0.14, -0.1, 0]}>
+                <mesh position={[0, -0.2, 0]} castShadow>
+                  <capsuleGeometry args={[0.1, 0.34, 4, 6]} />
+                  <meshStandardMaterial color="#5a1010" roughness={0.55} metalness={0.42} />
                 </mesh>
-                <group ref={bones.foreArmL} position={[0, -0.42, 0]}>
-                  <mesh position={[0, -0.16, 0]} castShadow>
-                    <capsuleGeometry args={[0.085, 0.28, 4, 6]} />
-                    <meshStandardMaterial color="#4a0e0e" roughness={0.55} metalness={0.4} />
+                <group ref={bones.foreArmL} position={[0, -0.44, 0]}>
+                  <mesh position={[0, -0.17, 0]} castShadow>
+                    <capsuleGeometry args={[0.088, 0.3, 4, 6]} />
+                    <meshStandardMaterial color="#4a0e0e" roughness={0.55} metalness={0.42} />
                   </mesh>
-                  {player.isBlocking && (
-                    <mesh position={[-0.12, -0.3, -0.26]} rotation={[0.3, -0.4, 0.1]} castShadow>
-                      <boxGeometry args={[0.55, 0.75, 0.07]} />
-                      <meshStandardMaterial color="#252535" roughness={0.45} metalness={0.7} />
+                  <mesh position={[0, -0.38, 0]} castShadow>
+                    <boxGeometry args={[0.22, 0.18, 0.22]} />
+                    <meshStandardMaterial color="#6a1010" roughness={0.4} metalness={0.7} />
+                  </mesh>
+                  {isBlock && (
+                    <mesh position={[-0.14, -0.32, -0.28]} rotation={[0.3, -0.45, 0.1]} castShadow>
+                      <boxGeometry args={[0.58, 0.78, 0.07]} />
+                      <meshStandardMaterial color="#22223a" roughness={0.45} metalness={0.72} />
                     </mesh>
                   )}
                 </group>
               </group>
             </group>
 
-            <group ref={bones.head} position={[0, 0.5, 0]}>
+            {/* HEAD */}
+            <group ref={bones.head} position={[0, 0.51, 0]}>
               <mesh position={[0, 0.16, 0]} castShadow>
                 <sphereGeometry args={[0.24, 10, 8]} />
                 <meshStandardMaterial color="#c4905f" roughness={0.45} />
               </mesh>
+              {/* Helmet base */}
               <mesh position={[0, 0.24, 0]} castShadow>
-                <cylinderGeometry args={[0.2, 0.24, 0.12, 8]} />
-                <meshStandardMaterial color="#1a1a2e" roughness={0.3} metalness={0.72} />
+                <cylinderGeometry args={[0.205, 0.24, 0.14, 9]} />
+                <meshStandardMaterial color="#1a1a2e" roughness={0.3} metalness={0.75} emissive={runeEmissive} emissiveIntensity={runeIntensity * 0.8} />
               </mesh>
-              <mesh position={[0, 0.36, 0]} castShadow>
-                <cylinderGeometry args={[0.16, 0.2, 0.08, 8]} />
-                <meshStandardMaterial color="#1e1e38" roughness={0.28} metalness={0.72} />
+              {/* Helmet dome */}
+              <mesh position={[0, 0.35, 0]} castShadow>
+                <sphereGeometry args={[0.205, 9, 6, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+                <meshStandardMaterial color="#181828" roughness={0.28} metalness={0.78} />
               </mesh>
-              <mesh position={[0, 0.30, -0.13]} castShadow>
-                <boxGeometry args={[0.4, 0.3, 0.06]} />
-                <meshStandardMaterial color="#111122" roughness={0.3} metalness={0.75} />
+              {/* Visor T-slit */}
+              <mesh position={[0, 0.25, 0.2]} castShadow>
+                <boxGeometry args={[0.22, 0.08, 0.04]} />
+                <meshStandardMaterial color="#0a0a14" roughness={0.5} metalness={0.6} />
               </mesh>
-              <mesh position={[0, 0.14, 0.2]}>
-                <boxGeometry args={[0.14, 0.08, 0.04]} />
-                <meshStandardMaterial color="#8a1414" roughness={0.35} metalness={0.6} emissive="#330000" emissiveIntensity={0.3} />
+              <mesh position={[0, 0.22, 0.2]}>
+                <boxGeometry args={[0.06, 0.14, 0.04]} />
+                <meshStandardMaterial color="#0a0a14" roughness={0.5} metalness={0.6} />
+              </mesh>
+              {/* Eye glow through visor */}
+              <mesh position={[0, 0.25, 0.21]}>
+                <planeGeometry args={[0.18, 0.05]} />
+                <meshBasicMaterial color={isRaging ? '#ff3300' : '#4488ff'} transparent opacity={0.9} />
+              </mesh>
+              {/* Cheek guards */}
+              {[-1, 1].map((s) => (
+                <mesh key={s} position={[s * 0.18, 0.16, 0.14]} castShadow>
+                  <boxGeometry args={[0.08, 0.2, 0.1]} />
+                  <meshStandardMaterial color="#181828" roughness={0.3} metalness={0.75} />
+                </mesh>
+              ))}
+              {/* Crest plume */}
+              <mesh position={[0, 0.52, 0]} castShadow>
+                <boxGeometry args={[0.06, 0.22, 0.18]} />
+                <meshStandardMaterial color="#880000" roughness={0.9} />
               </mesh>
             </group>
 
-            <group ref={bones.cape} position={[0, 0.1, 0.2]}>
+            {/* Cape */}
+            <group ref={bones.cape} position={[0, 0.08, 0.22]}>
               <mesh castShadow>
-                <planeGeometry args={[0.7, 1.0, 2, 5]} />
-                <meshStandardMaterial color="#600000" roughness={0.92} side={THREE.DoubleSide} />
+                <planeGeometry args={[0.72, 1.05, 2, 6]} />
+                <meshStandardMaterial color="#680000" roughness={0.93} side={THREE.DoubleSide} />
               </mesh>
             </group>
           </group>
 
+          {/* Torso lower */}
           <mesh position={[0, 0.22, 0]} castShadow>
-            <boxGeometry args={[0.6, 0.5, 0.32]} />
-            <meshStandardMaterial color="#1a0c06" roughness={0.55} metalness={0.35} />
-          </mesh>
-          <mesh position={[0, 0.04, 0]} castShadow>
-            <boxGeometry args={[0.66, 0.18, 0.34]} />
-            <meshStandardMaterial color="#3a1806" roughness={0.5} metalness={0.45} />
+            <boxGeometry args={[0.6, 0.52, 0.32]} />
+            <meshStandardMaterial color="#1a0c06" roughness={0.58} metalness={0.38} />
           </mesh>
         </group>
 
-        <group ref={bones.thighR} position={[0.2, -0.02, 0]}>
-          <mesh position={[0, -0.24, 0]} castShadow>
-            <capsuleGeometry args={[0.12, 0.38, 4, 6]} />
-            <meshStandardMaterial color="#1a0c06" roughness={0.6} metalness={0.3} />
-          </mesh>
-          <mesh position={[0.01, -0.15, 0.01]} castShadow>
-            <boxGeometry args={[0.22, 0.32, 0.2]} />
-            <meshStandardMaterial color="#2a1408" roughness={0.55} metalness={0.4} />
-          </mesh>
-          <group ref={bones.shinR} position={[0, -0.5, 0]}>
-            <mesh position={[0, -0.2, 0]} castShadow>
-              <capsuleGeometry args={[0.09, 0.32, 4, 6]} />
-              <meshStandardMaterial color="#1a0c06" roughness={0.6} metalness={0.3} />
+        {/* LEGS */}
+        {[1, -1].map((side) => (
+          <group key={side} ref={side === 1 ? bones.thighR : bones.thighL} position={[side * 0.2, -0.04, 0]}>
+            <mesh position={[0, -0.24, 0]} castShadow>
+              <capsuleGeometry args={[0.12, 0.4, 4, 6]} />
+              <meshStandardMaterial color="#1a0c06" roughness={0.62} metalness={0.3} />
             </mesh>
-            <mesh position={[0, -0.28, 0.04]} castShadow>
-              <boxGeometry args={[0.18, 0.36, 0.09]} />
-              <meshStandardMaterial color="#3a1a0a" roughness={0.5} metalness={0.5} />
+            <mesh position={[side * 0.01, -0.15, 0.02]} castShadow>
+              <boxGeometry args={[0.24, 0.34, 0.21]} />
+              <meshStandardMaterial color="#2a1408" roughness={0.58} metalness={0.42} />
             </mesh>
-            <mesh position={[0, -0.52, 0.02]} castShadow>
-              <boxGeometry args={[0.2, 0.1, 0.3]} />
-              <meshStandardMaterial color="#2e1808" roughness={0.55} metalness={0.4} />
-            </mesh>
+            <group ref={side === 1 ? bones.shinR : bones.shinL} position={[0, -0.52, 0]}>
+              <mesh position={[0, -0.2, 0]} castShadow>
+                <capsuleGeometry args={[0.092, 0.34, 4, 6]} />
+                <meshStandardMaterial color="#1a0c06" roughness={0.62} metalness={0.3} />
+              </mesh>
+              <mesh position={[0, -0.28, 0.045]} castShadow>
+                <boxGeometry args={[0.19, 0.38, 0.09]} />
+                <meshStandardMaterial color="#3a1a0a" roughness={0.52} metalness={0.52} />
+              </mesh>
+              <mesh position={[0, -0.54, 0.02]} castShadow>
+                <boxGeometry args={[0.22, 0.11, 0.32]} />
+                <meshStandardMaterial color="#2e1808" roughness={0.56} metalness={0.42} />
+              </mesh>
+            </group>
           </group>
-        </group>
-
-        <group ref={bones.thighL} position={[-0.2, -0.02, 0]}>
-          <mesh position={[0, -0.24, 0]} castShadow>
-            <capsuleGeometry args={[0.12, 0.38, 4, 6]} />
-            <meshStandardMaterial color="#1a0c06" roughness={0.6} metalness={0.3} />
-          </mesh>
-          <mesh position={[-0.01, -0.15, 0.01]} castShadow>
-            <boxGeometry args={[0.22, 0.32, 0.2]} />
-            <meshStandardMaterial color="#2a1408" roughness={0.55} metalness={0.4} />
-          </mesh>
-          <group ref={bones.shinL} position={[0, -0.5, 0]}>
-            <mesh position={[0, -0.2, 0]} castShadow>
-              <capsuleGeometry args={[0.09, 0.32, 4, 6]} />
-              <meshStandardMaterial color="#1a0c06" roughness={0.6} metalness={0.3} />
-            </mesh>
-            <mesh position={[0, -0.28, 0.04]} castShadow>
-              <boxGeometry args={[0.18, 0.36, 0.09]} />
-              <meshStandardMaterial color="#3a1a0a" roughness={0.5} metalness={0.5} />
-            </mesh>
-            <mesh position={[0, -0.52, 0.02]} castShadow>
-              <boxGeometry args={[0.2, 0.1, 0.3]} />
-              <meshStandardMaterial color="#2e1808" roughness={0.55} metalness={0.4} />
-            </mesh>
-          </group>
-        </group>
+        ))}
       </group>
+
+      {/* SKILL EFFECTS */}
+      <mesh ref={bones.auraRing} position={[0, 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.8, 1.2, 32]} />
+        <meshBasicMaterial color={isRaging ? '#cc0000' : '#4488ff'} transparent opacity={0} blending={THREE.AdditiveBlending} depthWrite={false} side={THREE.DoubleSide} />
+      </mesh>
+      <mesh ref={bones.whirlRing} position={[0, 0.06, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.5, 1.0, 32]} />
+        <meshBasicMaterial color="#ff6622" transparent opacity={0} blending={THREE.AdditiveBlending} depthWrite={false} side={THREE.DoubleSide} />
+      </mesh>
+
+      {isRaging && <pointLight color="#ff2200" intensity={3} distance={8} decay={2} position={[0, 1.5, 0]} />}
+      {isPhantom && <pointLight color="#4488ff" intensity={2.5} distance={6} decay={2} position={[0, 1.5, 0]} />}
+      {isWW && <pointLight color="#ff6622" intensity={4} distance={7} decay={2} position={[0, 0.5, 0]} />}
 
       {player.lockedTargetId && (
         <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <ringGeometry args={[0.48, 0.56, 18]} />
-          <meshBasicMaterial color="#ffcc00" transparent opacity={0.8} />
+          <ringGeometry args={[0.48, 0.58, 18]} />
+          <meshBasicMaterial color="#ffcc00" transparent opacity={0.85} />
         </mesh>
       )}
       <pointLight color="#6688ff" intensity={0.4} distance={5} position={[0, 1.6, 0]} />

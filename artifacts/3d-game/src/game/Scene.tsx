@@ -22,6 +22,10 @@ const KEY_MAP = [
   { name: Controls.heavy, keys: ['KeyG'] },
   { name: Controls.block, keys: ['KeyQ'] },
   { name: Controls.lockOn, keys: ['Tab'] },
+  { name: Controls.skill1, keys: ['KeyZ'] },
+  { name: Controls.skill2, keys: ['KeyX'] },
+  { name: Controls.skill3, keys: ['KeyC'] },
+  { name: Controls.skill4, keys: ['KeyV'] },
 ];
 
 function FollowCamera({ targetRef }: { targetRef: React.MutableRefObject<THREE.Vector3> }) {
@@ -109,7 +113,7 @@ function GameWorld() {
   const playerPosRef = useRef(new THREE.Vector3());
   const { enemies } = useGameStore();
 
-  const handleCameraTarget = useCallback((pos: THREE.Vector3) => {
+  const handleCameraTarget = useCallback((pos: THREE.Vector3, _angle: number) => {
     playerPosRef.current.copy(pos);
   }, []);
 
