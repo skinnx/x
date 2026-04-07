@@ -1,6 +1,6 @@
 import { useRef, useCallback, Suspense } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { KeyboardControls, Stars, Fog } from '@react-three/drei';
+import { KeyboardControls, Stars } from '@react-three/drei';
 import * as THREE from 'three';
 import { Controls } from './types';
 import { Terrain } from './Terrain';
