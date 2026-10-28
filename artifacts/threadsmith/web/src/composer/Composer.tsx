@@ -7,6 +7,7 @@ import {
   CalendarClock,
   Copy,
   Ellipsis,
+  Image as ImageIcon,
   LayoutList,
   LoaderCircle,
   MessageSquareQuote,
@@ -20,14 +21,14 @@ import {
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { joinThread, splitThread, weightedLength } from "../../../shared/thread.ts";
 import type { Health, Post, Segment } from "../../../shared/types.ts";
-import { api } from "../api.ts";
+import { api, ApiError, intentUrl, liveSummary, remainingThread } from "../api.ts";
 import { Popover } from "../components/Popover.tsx";
 import { dismissToast, toast, toastError } from "../components/Toasts.tsx";
 import { useCommands, type Command } from "../lib/commands.ts";
-import { useLiveEvent } from "../lib/live.ts";
+import { copyThread as copyExport, useLiveEvent } from "../lib/live.ts";
 import { adoptPostId, navigate, newDraft } from "../lib/router.ts";
 import { formatWhen } from "../lib/time.ts";
-import { copyText, cx, keys, uid } from "../lib/util.ts";
+import { cx, keys, uid } from "../lib/util.ts";
 import { AiPanel, type AiSection } from "./AiPanel.tsx";
 import { AltTextDialog } from "./AltTextDialog.tsx";
 import { MAX_IMAGES, PostCard, type PendingUpload } from "./PostCard.tsx";
@@ -63,11 +64,27 @@ function splitCard(value: string): string[] {
   return parts;
 }
 
-/** Text mode → segments, keeping ids and images by position so the round trip is lossless. */
-function segmentsFromText(text: string, prev: Segment[]): Segment[] {
+/**
+ * Text mode → segments. Posts left unchanged at the start and end keep their segment (id, images); only the
+ * edited middle maps by position. Matching against `base` (the thread when text mode opened), not the last
+ * keystroke, means an edit that is typed back restores every image where it was.
+ */
+function segmentsFromText(text: string, base: Segment[], prev: Segment[]): Segment[] {
   const parts = splitThread(text);
-  if (!parts.length) return [{ ...(prev[0] ?? blankSegment()), text: "" }];
-  return parts.map((t, i) => (prev[i] ? { ...prev[i], text: t } : blankSegment(t)));
+  if (!parts.length) return [{ ...(base[0] ?? blankSegment()), text: "" }];
+  const same = (t: string, s: Segment | undefined) => s !== undefined && t === s.text.trim();
+  let head = 0;
+  while (head < parts.length && same(parts[head]!, base[head])) head++;
+  let tail = 0;
+  while (tail < parts.length - head && tail < base.length - head && same(parts[parts.length - 1 - tail]!, base[base.length - 1 - tail])) tail++;
+  const oldMid = base.slice(head, base.length - tail);
+  const baseIds = new Set(base.map((s) => s.id));
+  const mid = parts.slice(head, parts.length - tail).map((t, i): Segment => {
+    if (oldMid[i]) return { ...oldMid[i], text: t };
+    const id = prev[head + i]?.id; // a post being typed keeps its id from one keystroke to the next
+    return id && !baseIds.has(id) ? { id, text: t, mediaIds: [] } : blankSegment(t);
+  });
+  return [...base.slice(0, head), ...mid, ...base.slice(base.length - tail)];
 }
 
 interface Props {
@@ -95,6 +112,9 @@ export function Composer(props: Props) {
   const thread = draft.thread;
   const post = draft.post;
   const readOnly = post?.status === "published" || post?.status === "publishing";
+  // A thread that stopped partway on X: its first posts are live, so they can't change (Retry resumes by position).
+  const liveCount = readOnly ? 0 : Math.min(post?.xPostIds.length ?? 0, thread?.length ?? 0);
+  const isLocked = (index: number) => readOnly || index < liveCount;
 
   const [textMode, setTextMode] = useState(() => pref("threadsmith:textMode", false));
   const [aiOpen, setAiOpen] = useState(() => pref("threadsmith:copilot", aiEnabled));
@@ -112,6 +132,8 @@ export function Composer(props: Props) {
   const pendingFocus = useRef<{ id: string; at: "start" | "end" } | null>(null);
   const aiUndo = useRef<Segment[] | null>(null);
   const autoFocused = useRef(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const deleting = useRef<string | null>(null);
 
   useLayoutEffect(() => {
     // A fresh draft focuses its first card so typing starts immediately.
@@ -138,7 +160,7 @@ export function Composer(props: Props) {
 
   useLiveEvent((event) => {
     if (event.type === "post.deleted") {
-      if (event.id === draft.currentId()) {
+      if (event.id === draft.currentId() && event.id !== deleting.current) {
         toast({ title: "This draft was deleted elsewhere" });
         newDraft();
       }
@@ -159,6 +181,7 @@ export function Composer(props: Props) {
   };
 
   const applyAi = (next: Segment[], label: string) => {
+    if (readOnly) return toast({ title: "This post can no longer be edited", tone: "error" });
     aiUndo.current = draft.thread;
     draft.setThread(next);
     toast({ id: "ai-undo", title: label, tone: "success", actions: [{ label: `Undo (${keys.undo})`, onClick: undoAi }], duration: 10_000 });
@@ -193,6 +216,7 @@ export function Composer(props: Props) {
 
   const removePost = (id: string) => {
     const i = segIndex(id);
+    if (isLocked(i)) return;
     edit((prev) => (prev.length > 1 ? prev.filter((s) => s.id !== id) : prev));
     const neighbour = draft.thread?.[i > 0 ? i - 1 : 1];
     if (neighbour) focusCard(neighbour.id, "end");
@@ -206,10 +230,14 @@ export function Composer(props: Props) {
     const atStart = collapsed && el.selectionStart === 0;
     const atEnd = collapsed && el.selectionEnd === el.value.length;
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
-    if (e.key === "Enter" && plain && atEnd && i === list.length - 1 && el.value.endsWith("\n") && el.value.trim()) {
+    const editable = !isLocked(i);
+    // Two Enters make a blank line (a paragraph break); a third at the end of the last post starts a new post.
+    if (editable && e.key === "Enter" && plain && atEnd && i === list.length - 1 && el.value.endsWith("\n\n") && el.value.trim()) {
       e.preventDefault();
       addPost({ id: seg.id, text: el.value.replace(/\n+$/, "") });
-    } else if (e.key === "Backspace" && plain && !el.value && i > 0 && !seg.mediaIds.length) {
+    } else if (e.key === "Enter" && plain && !el.value && i > 0) {
+      e.preventDefault(); // e.g. Enter right after typing "---": don't start the new post with a blank line
+    } else if (editable && e.key === "Backspace" && plain && !el.value && i > 0 && !seg.mediaIds.length) {
       e.preventDefault();
       removePost(seg.id);
     } else if (e.key === "ArrowUp" && plain && atStart && i > 0) {
@@ -270,9 +298,28 @@ export function Composer(props: Props) {
 
   const overLimit = () => (draft.thread ?? []).findIndex((s) => weightedLength(s.text) > maxChars);
 
+  const slotPassed = (at: string) =>
+    toast({
+      title: `${formatWhen(at, health.timezone)} has already passed`,
+      description: "Pick a later time, or use the next free slot.",
+      tone: "error",
+      duration: 10_000,
+      actions: [
+        {
+          label: "Use next free slot",
+          primary: true,
+          onClick: () => {
+            setSlotTarget(null);
+            void actions.current.schedule("next");
+          },
+        },
+      ],
+    });
+
   /** Save, then schedule. "next" lets the server pick the next free slot. */
   const schedule = async (at: string) => {
     if (empty) return toast({ title: "Write something first" });
+    if (at !== "next" && Date.parse(at) < Date.now() - 60_000) return slotPassed(at);
     const over = overLimit();
     if (over >= 0)
       return toast({
@@ -299,9 +346,20 @@ export function Composer(props: Props) {
       void qc.invalidateQueries({ queryKey: ["slots"] });
       newDraft();
     } catch (e) {
-      toastError("Couldn't schedule", e);
+      if (e instanceof ApiError && e.status === 400 && at !== "next" && Date.parse(at) < Date.now()) slotPassed(at);
+      else toastError("Couldn't schedule", e);
       setBusy(null);
     }
+  };
+
+  /** Ctrl+Enter / palette "Add to queue": what the footer's main button does; a scheduled post keeps its time. */
+  const queueShortcut = () => {
+    if (readOnly) return;
+    if (post?.status === "scheduled" && post.scheduledAt) {
+      void draft.flush();
+      return toast({ title: `Saved · still scheduled for ${formatWhen(post.scheduledAt, health.timezone)}`, description: "Use “Change time” to move it." });
+    }
+    void schedule(slotTarget ?? "next");
   };
 
   const unschedule = async () => {
@@ -340,34 +398,28 @@ export function Composer(props: Props) {
   };
 
   /** Starts the clipboard write synchronously (gesture), resolving the text after the save + export. */
-  const copyThread = async () => {
+  const copyThread = async (): Promise<boolean> => {
     if (empty) {
       toast({ title: "Nothing to copy yet" });
-      return;
+      return false;
     }
-    const text = draft
-      .flush()
-      .then(() => api.exportPost(draft.currentId()!))
-      .then((r) => r.text);
-    try {
-      await copyText(text);
-      const n = (draft.thread ?? []).filter((s) => s.text.trim()).length;
-      toast({ title: n > 1 ? `Copied ${n} posts` : "Copied", tone: "success" });
-    } catch (e) {
-      toastError("Couldn't copy", e);
-    }
+    return copyExport(draft.flush().then(() => draft.currentId()!));
   };
 
   const deleteDraft = async () => {
-    setMenuOpen(false);
     const id = draft.currentId();
+    if (id && !confirmDelete) return setConfirmDelete(true);
+    setMenuOpen(false);
     if (!id) return newDraft();
+    deleting.current = id;
     try {
       await api.deletePost(id);
       void qc.invalidateQueries({ queryKey: ["posts"] });
-      toast({ title: "Draft deleted" });
+      toast({ title: post?.status === "draft" ? "Draft deleted" : "Post deleted" });
       newDraft();
     } catch (e) {
+      deleting.current = null;
+      setConfirmDelete(false);
       toastError("Couldn't delete", e);
     }
   };
@@ -389,19 +441,20 @@ export function Composer(props: Props) {
   };
 
   // Latest handlers for global shortcuts and palette commands (registered once).
-  const actions = useRef({ schedule, copyThread, undoAi, toggleText, openAi, publishNow, setPickerOpen, slotTarget });
+  const actions = useRef({ schedule, queueShortcut, copyThread, undoAi, toggleText, openAi, publishNow, setPickerOpen });
   useEffect(() => {
-    actions.current = { schedule, copyThread, undoAi, toggleText, openAi, publishNow, setPickerOpen, slotTarget };
+    actions.current = { schedule, queueShortcut, copyThread, undoAi, toggleText, openAi, publishNow, setPickerOpen };
   });
 
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (!mod || e.defaultPrevented) return;
+      // Shortcuts belong to the composer, not to dialogs on top of it (alt text, palette).
+      if (!mod || e.defaultPrevented || (e.target instanceof Element && e.target.closest("dialog"))) return;
       const a = actions.current;
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        void a.schedule(a.slotTarget ?? "next");
+        a.queueShortcut();
       } else if (e.shiftKey && e.key.toLowerCase() === "c") {
         e.preventDefault();
         void a.copyThread();
@@ -417,7 +470,7 @@ export function Composer(props: Props) {
   const commands = useMemo<Command[]>(() => {
     const a = () => actions.current;
     const list: Command[] = [
-      { id: "queue", group: "Thread", title: "Add to queue", icon: CalendarClock, shortcut: keys.queue, run: () => void a().schedule(a().slotTarget ?? "next") },
+      { id: "queue", group: "Thread", title: "Add to queue", icon: CalendarClock, shortcut: keys.queue, run: () => a().queueShortcut() },
       { id: "pick", group: "Thread", title: "Schedule for a specific time…", icon: CalendarClock, run: () => a().setPickerOpen(true) },
       { id: "copy", group: "Thread", title: "Copy thread", icon: Copy, shortcut: keys.copy, run: () => void a().copyThread() },
       { id: "text", group: "Thread", title: "Toggle text mode", icon: AlignLeft, keywords: "cards markdown plain", run: () => a().toggleText() },
@@ -445,8 +498,11 @@ export function Composer(props: Props) {
     );
 
   const focused = thread?.find((s) => s.id === focusedId) ?? null;
-  const aiTarget = focused && thread ? { index: thread.indexOf(focused), text: focused.text } : null;
-  const firstPost = thread?.[0]?.text ?? "";
+  const focusedIndex = focused && thread ? thread.indexOf(focused) : -1;
+  const aiTarget = focused && !isLocked(focusedIndex) ? { index: focusedIndex, text: focused.text } : null;
+  const showText = textMode && !readOnly && liveCount === 0;
+  // "Open in X" prefills the first post that isn't on X yet, as a reply when earlier posts are live.
+  const openInX = post && thread ? remainingThread({ ...post, thread }).intent : intentUrl(thread?.[0]?.text ?? "");
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -457,17 +513,24 @@ export function Composer(props: Props) {
           {!readOnly && (
             <div role="group" aria-label="Editor mode" className="flex rounded-lg border border-line p-0.5">
               {[
-                { on: !textMode, icon: LayoutList, label: "Cards" },
-                { on: textMode, icon: AlignLeft, label: "Text" },
+                { on: !showText, icon: LayoutList, label: "Cards" },
+                { on: showText, icon: AlignLeft, label: "Text" },
               ].map(({ on, icon: Icon, label }) => (
                 <button
                   key={label}
                   aria-pressed={on}
                   onClick={() => !on && toggleText()}
-                  title={label === "Text" ? "Whole thread as one text, posts separated by ---" : "One card per post"}
+                  disabled={label === "Text" && liveCount > 0}
+                  title={
+                    label === "Cards"
+                      ? "One card per post"
+                      : liveCount > 0
+                        ? `Text mode is off for this thread: ${liveSummary(liveCount)} and can't be changed. Edit the rest as cards.`
+                        : "Whole thread as one text, posts separated by ---"
+                  }
                   className={cx(
-                    "flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors",
-                    on ? "bg-subtle text-ink" : "text-ink-3 hover:text-ink",
+                    "flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                    on ? "bg-subtle text-ink" : "text-ink-3 enabled:hover:text-ink",
                   )}
                 >
                   <Icon size={14} />
@@ -479,6 +542,7 @@ export function Composer(props: Props) {
           <button
             onClick={() => toggleAi()}
             aria-pressed={aiOpen}
+            aria-label="Copilot"
             className={cx(
               "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium transition-colors",
               aiOpen ? "bg-ai-soft text-ai" : "text-ink-2 hover:bg-subtle hover:text-ink",
@@ -488,10 +552,14 @@ export function Composer(props: Props) {
             <span className="max-sm:hidden">Copilot</span>
           </button>
           <div className="relative">
-            <button onClick={() => setMenuOpen(!menuOpen)} aria-label="More" className="grid size-8 place-items-center rounded-lg text-ink-2 hover:bg-subtle">
+            <button onClick={() => (setMenuOpen(!menuOpen), setConfirmDelete(false))} aria-label="More" className="grid size-8 place-items-center rounded-lg text-ink-2 hover:bg-subtle">
               <Ellipsis size={16} />
             </button>
-            <Popover open={menuOpen} onClose={() => setMenuOpen(false)} className="top-full right-0 mt-1 w-52 p-1 max-sm:top-auto">
+            <Popover
+              open={menuOpen}
+              onClose={() => (setMenuOpen(false), setConfirmDelete(false))}
+              className="top-full right-0 mt-1 w-52 p-1 max-sm:top-auto"
+            >
               <button
                 onClick={() => {
                   setMenuOpen(false);
@@ -502,8 +570,14 @@ export function Composer(props: Props) {
                 <Plus size={15} /> New draft
               </button>
               {post && post.status !== "publishing" && post.status !== "published" && (
-                <button onClick={deleteDraft} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-red-600 hover:bg-subtle">
-                  <Trash2 size={15} /> Delete {post.status === "draft" ? "draft" : "post"}
+                <button
+                  onClick={() => void deleteDraft()}
+                  className={cx(
+                    "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm",
+                    confirmDelete ? "bg-red-600 font-medium text-white" : "text-red-600 hover:bg-subtle",
+                  )}
+                >
+                  <Trash2 size={15} /> {confirmDelete ? "Click again to delete" : `Delete ${post.status === "draft" ? "draft" : "post"}`}
                 </button>
               )}
             </Popover>
@@ -512,11 +586,22 @@ export function Composer(props: Props) {
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-[640px] px-3 pt-2 pb-16 sm:px-6">
-            {post && <StatusBanner post={post} health={health} fromReminder={props.fromReminder} onCopy={copyThread} onChange={draft.setPost} />}
+            {post && (
+              <StatusBanner
+                post={post}
+                health={health}
+                fromReminder={props.fromReminder}
+                onCopy={copyThread}
+                onPublish={publishNow}
+                flush={draft.flush}
+                onChange={draft.setPost}
+              />
+            )}
             {slotTarget && !post?.scheduledAt && (
               <p className="mb-3 ml-10 flex flex-wrap items-center gap-x-2 text-xs text-ink-3">
                 <span>
                   Writing for the slot at <span className="font-medium text-ink-2">{formatWhen(slotTarget, health.timezone)}</span>
+                  {Date.parse(slotTarget) < Date.now() && <span className="text-amber-700 dark:text-amber-400"> (already passed)</span>}
                 </span>
                 <button onClick={() => setSlotTarget(null)} className="underline-offset-2 hover:text-ink hover:underline">
                   Use next free slot instead
@@ -524,20 +609,24 @@ export function Composer(props: Props) {
               </p>
             )}
 
+            {textMode && liveCount > 0 && (
+              <p className="mb-3 ml-10 text-xs text-ink-3">Showing cards: text mode is off while part of this thread is live on X.</p>
+            )}
             {!thread ? (
               <div className="ml-10 space-y-3" aria-busy>
                 <div className="h-28 animate-pulse rounded-2xl bg-subtle" />
                 <div className="h-20 animate-pulse rounded-2xl bg-subtle" />
               </div>
-            ) : textMode && !readOnly ? (
-              <TextMode thread={thread} maxChars={maxChars} onChange={(text) => edit((prev) => segmentsFromText(text, prev))} />
+            ) : showText ? (
+              <TextMode thread={thread} maxChars={maxChars} onChange={edit} />
             ) : (
               <Cards
                 thread={thread}
                 onReorder={(e) => {
                   const from = thread.findIndex((s) => s.id === e.active.id);
                   const to = thread.findIndex((s) => s.id === e.over?.id);
-                  if (from >= 0 && to >= 0 && from !== to) edit((prev) => arrayMove(prev, from, to));
+                  // Live posts stay where they are; nothing moves above them.
+                  if (from >= liveCount && to >= liveCount && from !== to) edit((prev) => arrayMove(prev, from, to));
                 }}
               >
                 {thread.map((seg, i) => (
@@ -547,7 +636,8 @@ export function Composer(props: Props) {
                     index={i}
                     total={thread.length}
                     maxChars={maxChars}
-                    readOnly={readOnly}
+                    readOnly={isLocked(i)}
+                    liveUrl={i < liveCount ? `https://x.com/i/status/${post!.xPostIds[i]}` : undefined}
                     uploads={uploads[seg.id] ?? []}
                     aiEnabled={aiEnabled}
                     fitting={fitting === seg.id}
@@ -565,25 +655,30 @@ export function Composer(props: Props) {
               </Cards>
             )}
 
-            {thread && !readOnly && !textMode && (
+            {thread && !readOnly && !showText && (
               <div className="flex items-center gap-3 pl-10">
                 <button
                   onClick={() => addPost()}
-                  className="flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-sm text-ink-2 hover:bg-subtle hover:text-ink"
+                  className="flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-sm whitespace-nowrap text-ink-2 hover:bg-subtle hover:text-ink"
                 >
                   <Plus size={16} /> Add post
                 </button>
                 {busy === null && thread.length === 1 && (
                   <span className="text-xs text-ink-3">
-                    or type <kbd className="rounded border border-line px-1 font-mono">---</kbd> on its own line
+                    or press <kbd className="rounded border border-line px-1 font-sans">Enter</kbd> 3×, or type{" "}
+                    <kbd className="rounded border border-line px-1 font-mono whitespace-nowrap">---</kbd> on its own line
                   </span>
                 )}
               </div>
             )}
             {thread && !readOnly && (
               <p className="mt-10 hidden text-center text-xs text-ink-3 sm:block">
-                <kbd className="font-sans">{keys.queue}</kbd> add to queue · <kbd className="font-sans">{keys.copy}</kbd> copy thread ·{" "}
-                <kbd className="font-sans">{keys.palette}</kbd> commands
+                {post?.status !== "scheduled" && (
+                  <>
+                    <kbd className="font-sans">{keys.queue}</kbd> add to queue ·{" "}
+                  </>
+                )}
+                <kbd className="font-sans">{keys.copy}</kbd> copy thread · <kbd className="font-sans">{keys.palette}</kbd> commands
               </p>
             )}
           </div>
@@ -596,7 +691,8 @@ export function Composer(props: Props) {
                 health={health}
                 post={post}
                 empty={empty}
-                firstPost={firstPost}
+                openInX={openInX}
+                live={liveCount}
                 slotTarget={slotTarget}
                 pickerOpen={pickerOpen}
                 setPickerOpen={setPickerOpen}
@@ -625,10 +721,20 @@ export function Composer(props: Props) {
               onClose={() => toggleAi(false)}
               onThreadify={(posts, mode) => {
                 const fresh = posts.map((t) => blankSegment(t));
-                const keep = (draft.thread ?? []).filter((s) => s.text.trim() || s.mediaIds.length);
-                applyAi(mode === "replace" ? fresh : [...keep, ...fresh], mode === "replace" ? `Wrote ${posts.length} posts` : `Added ${posts.length} posts`);
+                const current = draft.thread ?? [];
+                // Posts already live on X stay first and untouched, whatever the mode.
+                const live = current.slice(0, liveCount);
+                const keep = current.slice(liveCount).filter((s) => s.text.trim() || s.mediaIds.length);
+                applyAi(
+                  mode === "replace" ? [...live, ...fresh] : [...live, ...keep, ...fresh],
+                  mode === "replace" ? `Wrote ${posts.length} posts` : `Added ${posts.length} posts`,
+                );
               }}
-              onReplacePost={(index, text, label) => applyAi((draft.thread ?? []).map((s, i) => (i === index ? { ...s, text } : s)), label)}
+              onReplacePost={(index, text, label) =>
+                isLocked(index)
+                  ? toast({ title: `Post ${index + 1} can't be changed`, description: `${liveSummary(liveCount)}.`, tone: "error" })
+                  : applyAi((draft.thread ?? []).map((s, i) => (i === index ? { ...s, text } : s)), label)
+              }
             />
           </aside>
         </>
@@ -653,13 +759,14 @@ function Cards(p: { thread: Segment[]; onReorder: (e: DragEndEvent) => void; chi
   );
 }
 
-function TextMode(p: { thread: Segment[]; maxChars: number; onChange: (text: string) => void }) {
+function TextMode(p: { thread: Segment[]; maxChars: number; onChange: (thread: Segment[]) => void }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const sig = JSON.stringify(p.thread.map((s) => s.text));
-  // Raw text is local while typing; resync when the thread changes from elsewhere (AI, another device).
-  const [raw, setRaw] = useState(() => ({ text: joinThread(p.thread.map((s) => s.text)), sig }));
+  // Raw text is local while typing; resync (and re-base the image mapping) when the thread changes from
+  // elsewhere (AI, another device).
+  const [raw, setRaw] = useState(() => ({ text: joinThread(p.thread.map((s) => s.text)), sig, base: p.thread }));
   if (raw.sig !== sig && JSON.stringify(splitThread(raw.text)) !== JSON.stringify(p.thread.map((s) => s.text.trim()).filter(Boolean))) {
-    setRaw({ text: joinThread(p.thread.map((s) => s.text)), sig });
+    setRaw({ text: joinThread(p.thread.map((s) => s.text)), sig, base: p.thread });
   }
   useLayoutEffect(() => {
     const el = ref.current!;
@@ -667,6 +774,8 @@ function TextMode(p: { thread: Segment[]; maxChars: number; onChange: (text: str
     el.style.height = `${Math.max(el.scrollHeight, 240)}px`;
   }, [raw.text]);
   const parts = splitThread(raw.text);
+  const kept = new Set(p.thread.flatMap((s) => s.mediaIds));
+  const dropped = raw.base.flatMap((s) => s.mediaIds).filter((m) => !kept.has(m)).length;
   return (
     <div className="ml-10">
       <div className="rounded-2xl border border-line bg-surface px-4 py-3 focus-within:border-line-strong">
@@ -675,8 +784,8 @@ function TextMode(p: { thread: Segment[]; maxChars: number; onChange: (text: str
           autoFocus
           value={raw.text}
           onChange={(e) => {
-            setRaw({ text: e.target.value, sig: raw.sig });
-            p.onChange(e.target.value);
+            setRaw({ ...raw, text: e.target.value });
+            p.onChange(segmentsFromText(e.target.value, raw.base, p.thread));
           }}
           spellCheck
           aria-label="Thread as text"
@@ -687,20 +796,32 @@ function TextMode(p: { thread: Segment[]; maxChars: number; onChange: (text: str
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs tabular-nums">
         {parts.map((t, i) => {
           const n = weightedLength(t);
+          const images = p.thread[i]?.mediaIds.length ?? 0;
           return (
             <span
               key={i}
               className={cx(
-                "rounded-full px-2 py-0.5",
+                "flex items-center gap-1 rounded-full px-2 py-0.5",
                 n > p.maxChars ? "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300" : "bg-subtle text-ink-2",
               )}
             >
               {i + 1} · {n > p.maxChars ? `−${n - p.maxChars}` : n}
+              {images > 0 && (
+                <span className="flex items-center gap-0.5" title={`${images} image${images > 1 ? "s" : ""}`}>
+                  · <ImageIcon size={11} aria-label="images" /> {images}
+                </span>
+              )}
             </span>
           );
         })}
         <span className="px-1 text-ink-3">Separate posts with a line containing only ---</span>
       </div>
+      {dropped > 0 && (
+        <p role="status" className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+          {dropped} image{dropped > 1 ? "s" : ""} belonged to a post you removed and will be dropped. Undo ({keys.undo}) to keep{" "}
+          {dropped > 1 ? "them" : "it"}.
+        </p>
+      )}
     </div>
   );
 }

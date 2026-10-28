@@ -2,7 +2,7 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useQuery } from "@tanstack/react-query";
-import { GripVertical, ImagePlus, LoaderCircle, Scissors, Trash2, X } from "lucide-react";
+import { ExternalLink, GripVertical, ImagePlus, LoaderCircle, Lock, Scissors, Trash2, X } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { weightedLength } from "../../../shared/thread.ts";
 import type { Segment } from "../../../shared/types.ts";
@@ -23,6 +23,8 @@ interface Props {
   total: number;
   maxChars: number;
   readOnly: boolean;
+  /** Set when this post is already live on X (a thread that stopped partway): shown locked, with a link. */
+  liveUrl?: string;
   uploads: PendingUpload[];
   aiEnabled: boolean;
   fitting: boolean;
@@ -76,7 +78,7 @@ export function PostCard(p: Props) {
           ref={setActivatorNodeRef}
           {...attributes}
           {...listeners}
-          aria-label={`Post ${p.index + 1}. Press space to reorder with arrow keys`}
+          aria-label={p.readOnly ? `Post ${p.index + 1}` : `Post ${p.index + 1}. Press space to reorder with arrow keys`}
           disabled={p.readOnly}
           className={cx(
             "relative grid size-7 shrink-0 touch-none place-items-center rounded-full border border-line bg-surface text-xs font-medium text-ink-3 tabular-nums",
@@ -165,6 +167,15 @@ export function PostCard(p: Props) {
           </div>
         )}
 
+        {p.liveUrl && (
+          <div className="mt-1 flex h-8 items-center gap-1.5 text-xs text-ink-3">
+            <Lock size={12} /> Live on X · can't be changed
+            <div className="flex-1" />
+            <a href={p.liveUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 rounded-md px-1.5 py-1 hover:bg-subtle hover:text-ink">
+              View <ExternalLink size={12} />
+            </a>
+          </div>
+        )}
         {!p.readOnly && (
           <div className="mt-1 flex h-8 items-center gap-1 text-ink-3">
             <button
@@ -222,17 +233,23 @@ function Thumb(p: { id: string; single: boolean; readOnly: boolean; onEdit: () =
   const hasAlt = Boolean(media?.alt);
   return (
     <div className={cx("group/img relative overflow-hidden rounded-xl border border-line bg-subtle", p.single ? "aspect-video" : "aspect-square")}>
-      <button onClick={p.onEdit} className="block size-full" aria-label={hasAlt ? `Edit alt text: ${media!.alt}` : "Add alt text"}>
+      {p.readOnly ? (
         <img src={`/media/${p.id}`} alt={media?.alt ?? ""} className="size-full object-cover" draggable={false} />
-      </button>
-      <span
-        className={cx(
-          "pointer-events-none absolute bottom-2 left-2 rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wide",
-          hasAlt ? "bg-black/70 text-white" : "border border-dashed border-white/80 bg-black/40 text-white/90",
-        )}
-      >
-        {hasAlt ? "ALT" : "+ ALT"}
-      </span>
+      ) : (
+        <button onClick={p.onEdit} className="block size-full" aria-label={hasAlt ? `Edit alt text: ${media!.alt}` : "Add alt text"}>
+          <img src={`/media/${p.id}`} alt={media?.alt ?? ""} className="size-full object-cover" draggable={false} />
+        </button>
+      )}
+      {(hasAlt || !p.readOnly) && (
+        <span
+          className={cx(
+            "pointer-events-none absolute bottom-2 left-2 rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wide",
+            hasAlt ? "bg-black/70 text-white" : "border border-dashed border-white/80 bg-black/40 text-white/90",
+          )}
+        >
+          {hasAlt ? "ALT" : "+ ALT"}
+        </span>
+      )}
       {!p.readOnly && (
         <button
           onClick={p.onRemove}

@@ -1,9 +1,9 @@
 // Banner above the thread for posts that need attention: due (copy & post by hand), failed, publishing, published.
 import { useMutation } from "@tanstack/react-query";
-import { CircleAlert, CircleCheck, Copy, ExternalLink, LoaderCircle, RotateCcw } from "lucide-react";
+import { CircleAlert, CircleCheck, Copy, ExternalLink, LoaderCircle, RotateCcw, Send } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import type { Health, Post } from "../../../shared/types.ts";
-import { api, intentUrl } from "../api.ts";
+import { api, liveSummary, remainingThread } from "../api.ts";
 import { Popover } from "../components/Popover.tsx";
 import { toast, toastError } from "../components/Toasts.tsx";
 import { openPost } from "../lib/router.ts";
@@ -15,7 +15,10 @@ interface Props {
   health: Health;
   /** Opened from a reminder (`?copy=1`): lead with the copy button. */
   fromReminder: boolean;
-  onCopy: () => Promise<void>;
+  onCopy: () => Promise<boolean>;
+  onPublish: () => Promise<unknown>;
+  /** Saves pending edits; actions that send the post to X wait for it so the latest text goes out. */
+  flush: () => Promise<void>;
   onChange: (post: Post) => void;
 }
 
@@ -27,10 +30,18 @@ export function StatusBanner(p: Props) {
   const tz = p.health.timezone;
 
   const retry = useMutation({
-    mutationFn: () => api.retry(post.id),
+    mutationFn: async () => {
+      await p.flush();
+      return api.retry(post.id);
+    },
     onSuccess: (r) => {
       p.onChange(r);
-      toast({ title: r.status === "published" ? "Posted to X" : r.status === "due" ? "Ready to post by hand" : "Retried", tone: "success" });
+      toast({
+        id: r.status === "published" ? `published-${r.id}` : undefined, // same id as the live "Posted to X" toast
+        title: r.status === "published" ? "Posted to X" : r.status === "due" ? "Ready to post by hand" : "Retried",
+        tone: "success",
+        actions: r.status === "published" && r.url ? [{ label: "View on X", onClick: () => open(r.url!, "_blank", "noopener") }] : undefined,
+      });
     },
     onError: (e) => toastError("Retry failed", e),
   });
@@ -77,7 +88,8 @@ export function StatusBanner(p: Props) {
               {post.error && <p className="mt-0.5 text-sm break-words opacity-80">{post.error}</p>}
               {post.xPostIds.length > 0 && (
                 <p className="mt-1 text-sm opacity-80">
-                  {post.xPostIds.length} of {post.thread.length} posts are already live; Retry continues from there.
+                  {liveSummary(post.xPostIds.length)} and locked here; you can still edit the posts after{" "}
+                  {post.xPostIds.length > 1 ? "them" : "it"}.
                 </p>
               )}
             </div>
@@ -86,7 +98,7 @@ export function StatusBanner(p: Props) {
             <button onClick={() => retry.mutate()} disabled={retry.isPending} className={primary}>
               {retry.isPending ? <LoaderCircle size={14} className="animate-spin" /> : <RotateCcw size={14} />} Retry
             </button>
-            <MarkPosted post={post} onChange={p.onChange} />
+            <MarkPosted post={post} flush={p.flush} onChange={p.onChange} />
           </div>
         </div>
       </Shell>
@@ -99,53 +111,86 @@ export function StatusBanner(p: Props) {
 function DueBanner(p: Props) {
   const { post } = p;
   const [copied, setCopied] = useState<number | "all" | null>(null);
-  const multi = post.thread.length > 1;
+  const [publishing, setPublishing] = useState(false);
+  // A thread that stopped partway on X: only the rest is posted by hand, as replies under the last live post.
+  const { live, rest, replyToUrl, intent } = remainingThread(post);
+  const multi = rest.length > 1;
+  const apiMode = p.health.x.mode === "api";
   return (
     <Shell tone="due">
       <div className="flex w-full flex-col gap-3">
         <div>
           <p className="font-semibold">{post.status === "due" ? "Time to post" : "Ready to post"}</p>
-          <p className="mt-0.5 text-sm opacity-80">
-            {multi
-              ? "Copy the thread, or copy post by post into X's composer (use + to add each reply), then mark it posted."
-              : "Copy it, post it on X, then mark it posted."}
-          </p>
+          {/* Why a human is needed (e.g. it missed its time); the server's own "already live" note is said below, with a link. */}
+          {post.status === "due" && post.error && !(live > 0 && post.error.includes("already live on X")) && (
+            <p className="mt-0.5 text-sm break-words">{post.error}</p>
+          )}
+          {live > 0 ? (
+            <p className="mt-0.5 text-sm">
+              {liveSummary(live)}. Post the remaining {rest.length} as {multi ? "replies" : "a reply"} to{" "}
+              <a href={replyToUrl!} target="_blank" rel="noopener noreferrer" className="font-medium underline underline-offset-2">
+                post {live} on X
+              </a>
+              , then mark it posted.
+            </p>
+          ) : (
+            <p className="mt-0.5 text-sm opacity-80">
+              {multi
+                ? "Copy the thread, or copy post by post into X's composer (use + to add each reply), then mark it posted."
+                : "Copy it, post it on X, then mark it posted."}
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {apiMode && post.status === "due" && (
+            <button
+              onClick={() => {
+                setPublishing(true);
+                void p.onPublish().finally(() => setPublishing(false));
+              }}
+              disabled={publishing}
+              className={cx(primary, "h-10 px-4")}
+            >
+              {publishing ? <LoaderCircle size={15} className="animate-spin" /> : <Send size={15} />} Publish now
+            </button>
+          )}
           <button
             autoFocus={p.fromReminder}
-            onClick={() => void p.onCopy().then(() => setCopied("all"))}
-            className={cx(primary, "h-10 px-4")}
+            onClick={() => void p.onCopy().then((ok) => ok && setCopied("all"))}
+            className={cx(apiMode && post.status === "due" ? secondary : primary, "h-10 px-4")}
           >
             {copied === "all" ? <CircleCheck size={15} /> : <Copy size={15} />}
-            {copied === "all" ? "Copied" : multi ? "Copy thread" : "Copy post"}
+            {copied === "all" ? "Copied" : live > 0 ? `Copy remaining ${rest.length}` : multi ? "Copy thread" : "Copy post"}
           </button>
-          <a href={intentUrl(post.thread[0]?.text ?? "")} target="_blank" rel="noopener noreferrer" className={cx(secondary, "h-10")}>
-            <ExternalLink size={14} /> Open in X
+          <a href={intent} target="_blank" rel="noopener noreferrer" className={cx(secondary, "h-10")}>
+            <ExternalLink size={14} /> {live > 0 ? `Reply to post ${live} in X` : "Open in X"}
           </a>
-          <MarkPosted post={post} onChange={p.onChange} />
+          <MarkPosted post={post} flush={p.flush} onChange={p.onChange} />
         </div>
         {multi && (
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             <span className="opacity-70">Copy one:</span>
-            {post.thread.map((s, i) => (
-              <button
-                key={s.id}
-                onClick={() =>
-                  copyText(s.text).then(
-                    () => setCopied(i),
-                    (e: unknown) => toastError("Couldn't copy", e),
-                  )
-                }
-                className={cx(
-                  "rounded-full border px-2.5 py-1 tabular-nums transition-colors",
-                  copied === i ? "border-current font-medium" : "border-amber-300/70 hover:border-current dark:border-amber-800",
-                )}
-              >
-                {copied === i ? "✓ " : ""}
-                {i + 1}
-              </button>
-            ))}
+            {rest.map((s, j) => {
+              const i = live + j;
+              return (
+                <button
+                  key={s.id}
+                  onClick={() =>
+                    copyText(s.text).then(
+                      () => setCopied(i),
+                      (e: unknown) => toastError("Couldn't copy", e),
+                    )
+                  }
+                  className={cx(
+                    "rounded-full border px-2.5 py-1 tabular-nums transition-colors",
+                    copied === i ? "border-current font-medium" : "border-amber-300/70 hover:border-current dark:border-amber-800",
+                  )}
+                >
+                  {copied === i ? "✓ " : ""}
+                  {i + 1}
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
@@ -153,11 +198,14 @@ function DueBanner(p: Props) {
   );
 }
 
-function MarkPosted({ post, onChange }: { post: Post; onChange: (p: Post) => void }) {
+function MarkPosted({ post, flush, onChange }: { post: Post; flush: () => Promise<void>; onChange: (p: Post) => void }) {
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
   const mark = useMutation({
-    mutationFn: () => api.markPublished(post.id, url.trim() || undefined),
+    mutationFn: async () => {
+      await flush(); // the stored thread should match what was posted
+      return api.markPublished(post.id, url.trim() || undefined);
+    },
     onSuccess: (r) => {
       onChange(r);
       setOpen(false);

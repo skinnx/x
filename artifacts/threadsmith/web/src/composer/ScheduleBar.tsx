@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { CalendarClock, Copy, ExternalLink, LoaderCircle, Send } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { Health, Post } from "../../../shared/types.ts";
-import { api, intentUrl } from "../api.ts";
+import { api } from "../api.ts";
 import { Popover } from "../components/Popover.tsx";
 import { formatWhen, fromZonedInput, toZonedInput } from "../lib/time.ts";
 import { cx, keys } from "../lib/util.ts";
@@ -14,7 +14,10 @@ interface Props {
   health: Health;
   post: Post | null;
   empty: boolean;
-  firstPost: string;
+  /** X intent for the first post not on X yet (a reply when earlier posts of the thread are live). */
+  openInX: string;
+  /** How many posts are already live on X. */
+  live: number;
   slotTarget: string | null;
   pickerOpen: boolean;
   busy: Busy;
@@ -47,16 +50,26 @@ export function ScheduleBar(p: Props) {
 
   return (
     <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">
-      <button onClick={p.onCopy} disabled={p.empty} className={ghost} title={`Copy thread (${keys.copy})`} aria-label="Copy thread">
+      <button
+        onClick={p.onCopy}
+        disabled={p.empty}
+        className={ghost}
+        title={p.live ? `Copy the posts not on X yet (${keys.copy})` : `Copy thread (${keys.copy})`}
+        aria-label={p.live ? "Copy remaining posts" : "Copy thread"}
+      >
         <Copy size={16} />
       </button>
       <a
-        href={p.empty ? undefined : intentUrl(p.firstPost)}
+        href={p.empty ? undefined : p.openInX}
         target="_blank"
         rel="noopener noreferrer"
         aria-disabled={p.empty}
         className={cx(ghost, p.empty && "pointer-events-none opacity-40")}
-        title="Open in X: the first post, prefilled in X's composer"
+        title={
+          p.live
+            ? `Open in X: post ${p.live + 1} prefilled as a reply to post ${p.live}, which is already live`
+            : "Open in X: the first post, prefilled in X's composer"
+        }
         aria-label="Open in X"
       >
         <ExternalLink size={16} />
@@ -78,6 +91,7 @@ export function ScheduleBar(p: Props) {
         <button
           onClick={() => (confirmPublish ? (setConfirmPublish(false), p.onPublish()) : setConfirmPublish(true))}
           disabled={!apiMode || p.empty || p.busy === "publish"}
+          aria-label={confirmPublish ? "Confirm publish" : "Publish now"}
           className={cx(ghost, confirmPublish && "bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950 dark:text-red-300")}
         >
           {p.busy === "publish" ? <LoaderCircle size={15} className="animate-spin" /> : <Send size={15} />}

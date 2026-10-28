@@ -1,7 +1,7 @@
 // Alt text editor for one image, with AI-written descriptions when a provider is configured.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, Sparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api.ts";
 import { Dialog } from "../components/Dialog.tsx";
 import { toast, toastError } from "../components/Toasts.tsx";
@@ -13,6 +13,12 @@ export function AltTextDialog({ mediaId, aiEnabled, onClose }: { mediaId: string
   const { data: media, isPending } = useQuery({ queryKey: ["media", mediaId], queryFn: () => api.getMedia(mediaId), staleTime: Infinity });
   const [alt, setAlt] = useState("");
   const [undo, setUndo] = useState<string | null>(null);
+  const field = useRef<HTMLTextAreaElement>(null);
+
+  // Runs after the Dialog's showModal() (child effects run first), which would otherwise move focus to Close.
+  useEffect(() => {
+    if (!isPending) field.current?.focus();
+  }, [isPending]);
 
   useEffect(() => {
     if (media?.alt) setAlt(media.alt);
@@ -49,7 +55,7 @@ export function AltTextDialog({ mediaId, aiEnabled, onClose }: { mediaId: string
         <img src={`/media/${mediaId}`} alt="" className="max-h-64 w-full rounded-xl border border-line bg-subtle object-contain" />
         <div className="relative">
           <textarea
-            autoFocus
+            ref={field}
             value={alt}
             disabled={isPending}
             maxLength={ALT_LIMIT}
@@ -59,7 +65,10 @@ export function AltTextDialog({ mediaId, aiEnabled, onClose }: { mediaId: string
               setUndo(null);
             }}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save.mutate();
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault(); // handled here: the composer's Ctrl+Enter (add to queue) must not also run
+                save.mutate();
+              }
             }}
             placeholder="Describe the image for people who can't see it."
             className="w-full resize-none rounded-xl border border-line bg-canvas px-3 py-2 text-sm leading-relaxed focus:border-line-strong"

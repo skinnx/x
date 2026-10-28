@@ -3,12 +3,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, CircleCheck, Copy, ExternalLink, Image, LoaderCircle, Plus, RotateCcw } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Health, Post, QueueDay, QueueItem } from "../../../shared/types.ts";
-import { api, intentUrl, type AppConfig } from "../api.ts";
+import { api, liveSummary, remainingThread, type AppConfig } from "../api.ts";
 import { toast, toastError } from "../components/Toasts.tsx";
 import type { useReminders } from "../connect/Reminders.tsx";
 import { copyThread } from "../lib/live.ts";
 import { navigate, newDraft, openPost } from "../lib/router.ts";
-import { formatDate, formatTime, formatWhen, relativeDay } from "../lib/time.ts";
+import { dayKey, formatDate, formatTime, formatWhen, relativeDay } from "../lib/time.ts";
 import { cx, keys } from "../lib/util.ts";
 
 const STATUS_STYLE: Record<Post["status"], string> = {
@@ -115,19 +115,20 @@ function Upcoming({ health }: { health: Health }) {
 
 function Day({ day, tz }: { day: QueueDay; tz: string }) {
   const rel = relativeDay(day.date, tz);
-  const posts = day.items.filter((i) => i.type === "post").length;
+  // Published, due and failed posts are listed too, but only scheduled ones are still "queued".
+  const queued = day.items.filter((i) => i.type === "post" && i.post.status === "scheduled").length;
   return (
     <section>
       <h2 className="sticky top-0 z-10 -mx-2 flex items-baseline gap-2 bg-canvas/90 px-2 pt-4 pb-2 backdrop-blur">
         <span className="text-sm font-semibold">{rel ?? formatDate(day.date).split(",")[0]}</span>
         <span className="text-sm text-ink-3">{rel ? formatDate(day.date) : formatDate(day.date).split(", ").slice(1).join(", ")}</span>
-        {posts > 0 && <span className="ml-auto text-xs text-ink-3">{posts} queued</span>}
+        {queued > 0 && <span className="ml-auto text-xs text-ink-3">{queued} queued</span>}
       </h2>
       {day.items.length ? (
         <ul className="space-y-1.5">
           {day.items.map((item) => (
             <li key={item.type === "post" ? item.post.id : item.at}>
-              <Row item={item} tz={tz} />
+              <Row item={item} date={day.date} tz={tz} />
             </li>
           ))}
         </ul>
@@ -138,7 +139,7 @@ function Day({ day, tz }: { day: QueueDay; tz: string }) {
   );
 }
 
-function Row({ item, tz }: { item: QueueItem; tz: string }) {
+function Row({ item, date, tz }: { item: QueueItem; date: string; tz: string }) {
   if (item.type === "slot")
     return (
       <button
@@ -152,7 +153,7 @@ function Row({ item, tz }: { item: QueueItem; tz: string }) {
         </span>
       </button>
     );
-  return <PostRow post={item.post} at={item.at} tz={tz} />;
+  return <PostRow post={item.post} at={item.at} date={date} tz={tz} />;
 }
 
 function Preview({ post }: { post: Post }) {
@@ -173,7 +174,7 @@ function Preview({ post }: { post: Post }) {
   );
 }
 
-function PostRow({ post, at, tz }: { post: Post; at: string; tz: string }) {
+function PostRow({ post, at, date, tz }: { post: Post; at: string; date: string; tz: string }) {
   const qc = useQueryClient();
   const retry = useMutation({
     mutationFn: () => api.retry(post.id),
@@ -194,6 +195,10 @@ function PostRow({ post, at, tz }: { post: Post; at: string; tz: string }) {
   const due = post.status === "due";
   const failed = post.status === "failed";
   const action = "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium";
+  // Overdue posts from earlier days are listed under today: show their own date so they don't read as today's.
+  const day = dayKey(at, tz);
+  const otherDay = day !== date;
+  const { live, rest, intent } = remainingThread(post);
 
   return (
     <div
@@ -203,7 +208,10 @@ function PostRow({ post, at, tz }: { post: Post; at: string; tz: string }) {
       )}
     >
       <button onClick={() => openPost(post.id)} className="flex w-full items-start gap-4 rounded-xl px-3 py-2.5 text-left hover:bg-subtle/60">
-        <time className="w-20 shrink-0 pt-0.5 text-sm font-medium whitespace-nowrap tabular-nums">{formatTime(at, tz)}</time>
+        <time dateTime={at} className="w-20 shrink-0 pt-0.5 text-sm font-medium whitespace-nowrap tabular-nums">
+          {otherDay && <span className="block text-xs font-normal text-ink-3">{relativeDay(day, tz) ?? formatDate(day).split(", ").slice(1).join(", ")}</span>}
+          {formatTime(at, tz)}
+        </time>
         <div className="min-w-0 flex-1">
           <Preview post={post} />
         </div>
@@ -219,11 +227,18 @@ function PostRow({ post, at, tz }: { post: Post; at: string; tz: string }) {
       )}
       {due && (
         <div className="flex flex-wrap items-center gap-2 px-3 pb-3 sm:pl-27">
+          {live > 0 ? (
+            <p className="w-full text-xs break-words text-amber-900 dark:text-amber-200">
+              {liveSummary(live)}: post the remaining {rest.length} as {rest.length > 1 ? "replies" : "a reply"} to post {live}.
+            </p>
+          ) : (
+            post.error && <p className="w-full text-xs break-words text-amber-900 dark:text-amber-200">{post.error}</p>
+          )}
           <button onClick={() => void copyThread(post.id)} className={cx(action, "bg-ink text-canvas hover:opacity-90")}>
-            <Copy size={13} /> Copy thread
+            <Copy size={13} /> {live > 0 ? `Copy remaining ${rest.length}` : "Copy thread"}
           </button>
-          <a href={intentUrl(post.thread[0]?.text ?? "")} target="_blank" rel="noopener noreferrer" className={cx(action, "border border-line bg-surface hover:bg-subtle")}>
-            <ExternalLink size={13} /> Open in X
+          <a href={intent} target="_blank" rel="noopener noreferrer" className={cx(action, "border border-line bg-surface hover:bg-subtle")}>
+            <ExternalLink size={13} /> {live > 0 ? `Reply to post ${live} in X` : "Open in X"}
           </a>
           {askUrl ? (
             <form

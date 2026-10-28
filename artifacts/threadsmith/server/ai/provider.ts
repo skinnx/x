@@ -76,10 +76,28 @@ export async function generate<T>(req: GenerateRequest<T>): Promise<T> {
 // ---------- Claude (Anthropic SDK) ----------
 
 let client: Anthropic | undefined;
+let effortSupport: Promise<boolean> | undefined;
+
+/**
+ * Older models (e.g. claude-haiku-4-5, claude-sonnet-4-5) reject `effort`, so ask the Models API once.
+ * If it can't answer, assume a current model (and ask again next time unless the endpoint said 404).
+ */
+function supportsLowEffort(c: Anthropic, model: string): Promise<boolean> {
+  effortSupport ??= c.models.retrieve(model, {}, { timeout: 10_000, maxRetries: 0 }).then(
+    (m) => (m.capabilities?.effort ? m.capabilities.effort.supported && m.capabilities.effort.low.supported : true),
+    (err) => {
+      if (!(err instanceof Anthropic.NotFoundError)) effortSupport = undefined;
+      return true;
+    },
+  );
+  return effortSupport;
+}
 
 async function viaAnthropic<T>(model: string, req: GenerateRequest<T>): Promise<T> {
-  client ??= new Anthropic({ timeout: 120_000 }); // ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN from the environment
+  // One retry, not the SDK's two: a stalled upstream then fails in ~4 min, before HTTP clients (undici: 300 s) give up on us.
+  client ??= new Anthropic({ timeout: 120_000, maxRetries: 1 }); // ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN from the environment
   const format = betaZodOutputFormat(req.schema);
+  const effort = (await supportsLowEffort(client, model)) ? { effort: "low" as const } : {};
   const content: Anthropic.Beta.BetaContentBlockParam[] = [];
   if (req.image) {
     const media_type = req.image.mime as "image/png" | "image/jpeg" | "image/webp" | "image/gif";
@@ -95,7 +113,7 @@ async function viaAnthropic<T>(model: string, req: GenerateRequest<T>): Promise<
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
       system: [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }],
-      output_config: { effort: "low", format },
+      output_config: { ...effort, format },
       messages: [{ role: "user", content }],
     });
   } catch (err) {
@@ -153,7 +171,9 @@ async function viaOpenAICompatible<T>(p: Extract<Provider, { kind: "openai-compa
     throw new AiError("ai_error", `Could not reach ${p.baseUrl}: ${(err as Error).message}`);
   }
   if (!res.ok) throw new AiError("ai_error", `${p.baseUrl} answered ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const data = (await res.json()) as { choices?: { message?: { content?: string | null } }[] };
+  const data = (await res.json().catch(() => {
+    throw new AiError("ai_error", `${p.baseUrl}/chat/completions didn't answer with JSON; check AI_BASE_URL (it usually ends in /v1).`);
+  })) as { choices?: { message?: { content?: string | null } }[] };
   const raw = (data.choices?.[0]?.message?.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "");
   const parsed = (() => {
     try {

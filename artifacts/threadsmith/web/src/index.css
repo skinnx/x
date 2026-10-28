@@ -91,3 +91,9 @@ input:focus-visible {
 kbd {
   font-family: inherit;
 }
+
+/* While a popover from the composer footer (the time picker) is open, toasts move to the top so they never cover it. */
+:root:has(footer [data-popover]) [data-toaster] {
+  top: 1rem;
+  bottom: auto;
+}

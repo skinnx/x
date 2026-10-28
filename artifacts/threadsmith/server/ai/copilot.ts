@@ -27,7 +27,7 @@ function systemPrompt(limit: number): string {
 How X counts characters (the limit here is ${limit} per post):
 - Most Latin letters, digits, spaces and punctuation count 1.
 - Chinese, Japanese and Korean characters count 2, and so does each emoji.
-- Vietnamese letters with a tone mark built in, such as ạ, ả, ấ, ầ, ệ, ố, ở, ữ, count 2, so Vietnamese text fills a post sooner than it looks.
+- Vietnamese letters from Unicode's Latin Extended Additional block, such as ạ, ả, ấ, ầ, ệ, ố, ở, ữ, count 2 (á, à, é, ó, ơ, ư, đ and the like count 1), so Vietnamese text fills a post sooner than it looks.
 - Every link counts 23, however long it is.
 A post over the limit cannot be published, so aim to land around 90% of it.
 
@@ -54,10 +54,18 @@ export function trimToFit(text: string, limit: number): string {
   }
   const floor = Math.floor(lo * 0.5);
   for (let i = lo - 1; i >= floor; i--) {
-    if (/[.!?…。！？]/.test(chars[i]!) && (i + 1 >= chars.length || /\s/.test(chars[i + 1]!))) return chars.slice(0, i + 1).join("").trim();
+    // CJK sentence ends are followed directly by the next sentence; Latin ones need a space ("3.5", "e.g." aren't ends).
+    const end = /[。！？]/.test(chars[i]!) || (/[.!?…]/.test(chars[i]!) && (i + 1 >= chars.length || /\s/.test(chars[i + 1]!)));
+    if (end) return chars.slice(0, i + 1).join("").trim();
   }
   for (let i = lo; i >= floor; i--) if (/\s/.test(chars[i] ?? "")) return chars.slice(0, i).join("").trimEnd() + "…";
-  return chars.slice(0, lo).join("").trimEnd() + "…";
+  // No space to break at (e.g. CJK): cut at the limit, but before a link rather than through it.
+  let cut = lo;
+  for (const m of text.matchAll(/https?:\/\/[\w\-.~!*';:=+,$/%#[\]&|@?()]+/g)) {
+    const start = [...text.slice(0, m.index)].length; // code points, like `chars`
+    if (start > 0 && start < cut && start + m[0].length > cut) cut = start;
+  }
+  return chars.slice(0, cut).join("").trimEnd() + "…";
 }
 
 /** Shorten the posts that are over the limit (one model round), then trim whatever still doesn't fit. */

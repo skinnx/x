@@ -26,6 +26,7 @@ export function Popover(p: { open: boolean; onClose: () => void; children: React
   return (
     <div
       ref={ref}
+      data-popover
       className={cx(
         "absolute z-30 w-80 animate-rise rounded-xl border border-line bg-surface p-3 shadow-xl shadow-black/10 max-sm:fixed max-sm:inset-x-3 max-sm:bottom-24 max-sm:w-auto dark:shadow-black/50",
         p.className,

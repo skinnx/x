@@ -69,6 +69,11 @@ export interface ThreadExport {
   text: string;
   posts: string[];
   intentUrl: string;
+  /** Posts already on X (an API publish stopped partway); the rest are remainingPosts, replies under replyToUrl. */
+  alreadyLive: number;
+  remainingText: string;
+  remainingPosts: string[];
+  replyToUrl: string | null;
 }
 export type SlotRule = { days: string; times: string[] } | { days: string; from: string; to: string; everyMinutes: number };
 export interface AppConfig {
@@ -76,7 +81,10 @@ export interface AppConfig {
   maxChars: number;
   slots: SlotRule[];
   schedulerIntervalSeconds: number;
+  lateGraceMinutes: number;
   voiceCount: number;
+  /** Why the latest edit of threadsmith.config.json was rejected (the previous config stays in use). */
+  configError: string | null;
 }
 export interface Webhook {
   id: string;
@@ -88,8 +96,28 @@ export interface Webhook {
   lastAt: string | null;
 }
 
-/** Same formula as the server's export: X web intent prefilled with the first post. */
-export const intentUrl = (firstPost: string) => `https://x.com/intent/post?text=${encodeURIComponent(firstPost)}`;
+/** Same formula as the server's export: X web intent prefilled with the first post (optionally as a reply). */
+export const intentUrl = (firstPost: string, inReplyTo?: string) =>
+  `https://x.com/intent/post?text=${encodeURIComponent(firstPost)}${inReplyTo ? `&in_reply_to=${inReplyTo}` : ""}`;
+
+/** "Post 1 is already live on X" / "Posts 1–3 are already live on X". */
+export const liveSummary = (live: number) => `${live === 1 ? "Post 1 is" : `Posts 1–${live} are`} already live on X`;
+
+/**
+ * What is left to post by hand. When an API publish stopped partway, the first `live` posts are already on X:
+ * only the rest should be posted, as replies under the last live one (mirrors GET /posts/{id}/export).
+ */
+export function remainingThread(post: Post) {
+  const live = Math.min(post.xPostIds.length, post.thread.length);
+  const lastId = live ? post.xPostIds[live - 1]! : null;
+  const rest = post.thread.slice(live);
+  return {
+    live,
+    rest,
+    replyToUrl: lastId ? `https://x.com/i/status/${lastId}` : null,
+    intent: intentUrl(rest[0]?.text ?? "", lastId ?? undefined),
+  };
+}
 
 const q = (params: Record<string, string | number | undefined>) => {
   const s = new URLSearchParams();

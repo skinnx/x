@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // threadsmith — command-line client for a Threadsmith server (REST API). Plain ESM, zero dependencies, Node ≥ 20.
-// For agents: every command takes --json; exit codes are 0 ok, 1 API or network error, 2 usage error.
+// For agents: every command takes --json; exit codes are 0 ok, 1 API or network error (or a publish that ended
+// in failed), 2 usage error.
 import { spawnSync } from "node:child_process";
 import { fstatSync, readFileSync } from "node:fs";
 import { basename, extname } from "node:path";
@@ -14,18 +15,19 @@ const HELP = `threadsmith — draft, queue and publish X posts and threads on yo
 Usage: threadsmith <command> [args] [--json]
 
 Posts
-  new [text] [--file f|-] [--at next|ISO] [--image [N:]path]... [--title t]
+  new [text] [--file f|-] [--at next|time] [--image [N:]path]... [--title t]
                               Create a draft (or schedule it with --at). Posts are separated by a line "---".
                               --image attaches to post N (default 1); repeat for more images.
   queue [--days 7]            Day-by-day timeline with scheduled posts and free slots
   list [--status s,s]         Posts, newest first (draft, scheduled, due, publishing, published, failed)
   show <id>                   One post in full, with per-post character counts
-  edit <id> [text|--file f]   Replace the text (images stay with their post); --title t to rename
-  schedule <id> <next|ISO>    Queue for the next free slot or a time
+  edit <id> [text] [--file f|-] [--title t]
+                              Replace the text (images stay with their post); with only --title, just rename
+  schedule <id> <next|time>   Queue for the next free slot or a time
   unschedule <id>             Back to drafts
-  publish <id>                Post to X now (needs X API keys on the server)
-  retry <id>                  Retry a failed post; threads resume where they stopped
-  copy <id> [--clipboard]     Print the thread (or copy it) to post by hand
+  publish <id>                Post to X now (needs X API keys on the server); exit 1 if X refused it
+  retry <id>                  Retry a failed post or publish a due one; threads resume where they stopped
+  copy <id> [--clipboard]     Print the thread (or copy it) to post by hand; only the posts not yet live
   posted <id> [--url u]       Mark as posted by hand
   rm <id>                     Delete
   slots [n]                   Next free posting slots
@@ -44,8 +46,11 @@ Other
 Ids can be shortened to any unique prefix. Text can also come from stdin, e.g.
   threadsmith ai threadify --file notes.md | threadsmith new --at next
 
+Times are shown in the server's timezone (threadsmith health), and a time you type is read there too unless it
+has an offset: 2026-11-03T09:00 is 09:00 in that zone; 2026-11-03T09:00+07:00 or ...Z is exact.
+
 Environment: THREADSMITH_URL (default http://127.0.0.1:3000), THREADSMITH_TOKEN (the server's AUTH_TOKEN).
-Exit codes: 0 ok, 1 API or network error, 2 usage error.`;
+Exit codes: 0 ok, 1 API or network error (or publish/retry ended in failed), 2 usage error.`;
 
 class UsageError extends Error {}
 class ApiError extends Error {}
@@ -58,8 +63,13 @@ const LIGHT = [
   [8208, 8223],
   [8242, 8247],
 ];
-const URL_RE =
-  /\bhttps?:\/\/[^\s]+|\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|ai|dev|app|co|me|xyz|vn|gg|so|sh|tv|ly|to|us|uk|de|fr|jp)\b(?:\/[^\s]*)?/gi;
+// A URL is ASCII/Latin/Cyrillic only (it ends before CJK text) and trailing punctuation is not part of it.
+const URL_CHARS = "[\\w\\-.~!*';:=+,$/%#\\[\\]&|@?()\\u00C0-\\u024F\\u0400-\\u04FF\\u1E00-\\u1EFF]";
+const URL_RE = new RegExp(
+  `\\bhttps?:\\/\\/${URL_CHARS}+|\\b(?:[a-z0-9-]+\\.)+(?:com|net|org|io|ai|dev|app|co|me|xyz|vn|gg|so|sh|tv|ly|to|us|uk|de|fr|jp)\\b(?:\\/${URL_CHARS}*)?`,
+  "gi",
+);
+const TRAILING_PUNCT = /[.,!?;:'")\]]+$/;
 const EMOJI_RE = /\p{Extended_Pictographic}/u;
 const segmenter = new Intl.Segmenter();
 
@@ -77,8 +87,9 @@ function weightedLength(raw) {
   let total = 0;
   let last = 0;
   for (const m of text.matchAll(URL_RE)) {
+    const url = m[0].replace(TRAILING_PUNCT, "");
     total += plainWeight(text.slice(last, m.index)) + 23;
-    last = m.index + m[0].length;
+    last = m.index + url.length;
   }
   return total + plainWeight(text.slice(last));
 }
@@ -125,6 +136,9 @@ async function api(method, path, body, form) {
   try {
     res = await fetch(BASE + path, { method, headers, body: form ?? (body === undefined ? undefined : JSON.stringify(body)) });
   } catch (err) {
+    if (err.cause?.code === "UND_ERR_HEADERS_TIMEOUT") {
+      throw Object.assign(new ApiError(`Threadsmith at ${BASE} took too long to answer (no response after 5 minutes).`), { code: "timeout" });
+    }
     throw Object.assign(new ApiError(`Can't reach Threadsmith at ${BASE} (${err.cause?.code ?? err.message}). Is the server running? Set THREADSMITH_URL.`), {
       code: "unreachable",
     });
@@ -137,7 +151,7 @@ async function api(method, path, body, form) {
     data = { message: text.slice(0, 300) };
   }
   if (!res.ok) {
-    const hint = res.status === 401 ? " Set THREADSMITH_TOKEN to the server's AUTH_TOKEN." : "";
+    const hint = res.status === 401 ? " (set THREADSMITH_TOKEN to the server's AUTH_TOKEN)" : "";
     throw Object.assign(new ApiError(`${data.message ?? res.statusText}${hint}`), { status: res.status, code: data.error });
   }
   return data;
@@ -152,12 +166,11 @@ function readFile(path, encoding) {
 }
 
 /** Text from --file, the remaining arguments, or piped stdin. */
-function readText(args, { optional = false } = {}) {
+function readText(args) {
   if (opt.file) return readFile(opt.file, "utf8");
   if (args.length) return args.join(" ");
   const stdin = fstatSync(0);
   if (stdin.isFIFO() || stdin.isFile()) return readFileSync(0, "utf8");
-  if (optional) return undefined;
   throw new UsageError("Give the text as an argument, with --file <path> (- for stdin), or pipe it in.");
 }
 
@@ -175,20 +188,37 @@ const int = (v, name, fallback) => {
   if (!/^\d+$/.test(v)) throw new UsageError(`${name} must be a whole number.`);
   return Number(v);
 };
+let serverConfigPromise;
+/** GET /api/config (timezone, maxChars, configError), fetched once; null if the server can't be asked (`count` works offline). */
+function serverConfig() {
+  serverConfigPromise ??= fetch(`${BASE}/api/config`, {
+    signal: AbortSignal.timeout(3000),
+    headers: TOKEN ? { authorization: `Bearer ${TOKEN}` } : {},
+  })
+    .then((res) => (res.ok ? res.json() : null))
+    .catch(() => null);
+  return serverConfigPromise;
+}
+
+// Times are shown in the server's configured timezone, the zone it reads offset-less input in, so a time shown
+// here can be typed back as-is. Falls back to this machine's zone (and says so) if the config can't be read.
+let TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+async function useServerTimezone(tz) {
+  TZ = tz ?? (await serverConfig())?.timezone ?? TZ;
+}
+
 const when = (iso) =>
-  iso ? new Date(iso).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
-const hhmm = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  iso ? new Date(iso).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: TZ }) : "";
+const whenTz = (iso) => `${when(iso)} ${TZ}`;
+const hhmm = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZone: TZ });
+const dayKey = (iso) => new Date(iso).toLocaleDateString("en-CA", { timeZone: TZ }); // YYYY-MM-DD in TZ
 const short = (id) => id.slice(0, 8);
 const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 const firstLine = (p) => clip((p.thread[0]?.text ?? "").split("\n")[0], 60);
 
 async function maxChars() {
   if (opt.max) return int(opt.max, "--max");
-  try {
-    const res = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(1500), headers: TOKEN ? { authorization: `Bearer ${TOKEN}` } : {} });
-    if (res.ok) return (await res.json()).maxChars ?? 280;
-  } catch {}
-  return 280;
+  return (await serverConfig())?.maxChars ?? 280;
 }
 
 function emit(data, human) {
@@ -201,7 +231,7 @@ function line(p) {
 }
 
 function printPost(p, limit = 280) {
-  console.log(`${p.id}  ${p.status}${p.scheduledAt ? `  ${when(p.scheduledAt)}` : ""}${p.title ? `  [${p.title}]` : ""}`);
+  console.log(`${p.id}  ${p.status}${p.scheduledAt ? `  ${whenTz(p.scheduledAt)}` : ""}${p.title ? `  [${p.title}]` : ""}`);
   p.thread.forEach((s, i) => {
     const n = weightedLength(s.text);
     console.log(`\n[${i + 1}] ${n}/${limit}${n > limit ? " OVER" : ""}${s.mediaIds.length ? `  images: ${s.mediaIds.length}` : ""}`);
@@ -212,7 +242,7 @@ function printPost(p, limit = 280) {
 }
 
 function status(p) {
-  const extra = p.status === "scheduled" ? ` for ${when(p.scheduledAt)}` : p.url ? ` ${p.url}` : p.error ? ` — ${p.error}` : "";
+  const extra = p.status === "scheduled" ? ` for ${whenTz(p.scheduledAt)}` : p.url ? ` ${p.url}` : p.error ? ` — ${p.error}` : "";
   console.log(`${short(p.id)} ${p.status}${extra}`);
 }
 
@@ -266,24 +296,25 @@ const commands = {
       title: opt.title,
       scheduledAt: opt.at,
     });
-    emit(post, (p) => console.log(`${p.scheduledAt ? `Scheduled ${short(p.id)} for ${when(p.scheduledAt)}` : `Saved draft ${short(p.id)}`} (${p.thread.length} post${p.thread.length > 1 ? "s" : ""})`));
+    if (!opt.json) await useServerTimezone();
+    emit(post, (p) => console.log(`${p.scheduledAt ? `Scheduled ${short(p.id)} for ${whenTz(p.scheduledAt)}` : `Saved draft ${short(p.id)}`} (${p.thread.length} post${p.thread.length > 1 ? "s" : ""})`));
     await warnOver(post);
   },
 
   async queue() {
     const q = await api("GET", `/api/queue?days=${int(opt.days, "--days", 7)}`);
+    await useServerTimezone(q.timezone);
     emit(q, () => {
-      const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      if (localTz !== new Intl.DateTimeFormat(undefined, { timeZone: q.timezone }).resolvedOptions().timeZone) console.log(`(times in ${localTz}; the server schedules in ${q.timezone})`);
-      const days = new Map(); // regrouped by local date so headers match the times shown
-      for (const item of q.days.flatMap((d) => d.items)) {
-        const day = new Date(item.at).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-        days.set(day, [...(days.get(day) ?? []), item]);
-      }
-      if (!days.size) console.log("Nothing scheduled and no free slots in this range.");
-      for (const [day, items] of days) {
-        console.log(day);
-        for (const { at, post } of items.filter((i) => i.type === "post")) console.log(`  ${hhmm(at)}  ${post.status.padEnd(10)} ${short(post.id)}  ${firstLine(post)}`);
+      const days = q.days.filter((d) => d.items.length);
+      if (!days.length) return console.log("Nothing scheduled and no free slots in this range.");
+      console.log(`Times in ${TZ}`);
+      for (const { date, items } of days) {
+        console.log(new Date(`${date}T12:00:00Z`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }));
+        for (const { at, post } of items.filter((i) => i.type === "post")) {
+          // Overdue due/failed posts from earlier days are listed under today: show their own date.
+          const time = dayKey(at) === date ? hhmm(at) : `${new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: TZ })} ${hhmm(at)}`;
+          console.log(`  ${time}  ${post.status.padEnd(10)} ${short(post.id)}  ${firstLine(post)}`);
+        }
         const free = items.filter((i) => i.type === "slot").map((i) => hhmm(i.at));
         if (free.length) console.log(`  free: ${free.join(", ")}`);
       }
@@ -294,40 +325,50 @@ const commands = {
     const qs = new URLSearchParams({ limit: "50" });
     if (opt.status) qs.set("status", opt.status);
     const data = await api("GET", `/api/posts?${qs}`);
-    emit(data, ({ posts }) => console.log(posts.length ? posts.map(line).join("\n") : "No posts."));
+    if (!opt.json) await useServerTimezone();
+    emit(data, ({ posts }) => {
+      if (posts.some((p) => p.scheduledAt)) console.log(`Times in ${TZ}`);
+      console.log(posts.length ? posts.map(line).join("\n") : "No posts.");
+    });
   },
 
   async show([ref]) {
     const post = await api("GET", `/api/posts/${await resolveId(ref)}`);
+    if (!opt.json) await useServerTimezone();
     const limit = opt.json ? 0 : await maxChars();
     emit(post, (p) => printPost(p, limit));
   },
 
   async edit([ref, ...rest]) {
     const id = await resolveId(ref);
-    const text = readText(rest, { optional: opt.title !== undefined });
-    const patch = { title: opt.title };
-    if (text !== undefined) {
-      const old = (await api("GET", `/api/posts/${id}`)).thread;
-      patch.thread = splitThread(text).map((t, i) => ({ id: old[i]?.id, text: t, mediaIds: old[i]?.mediaIds ?? [] }));
-    }
-    const post = await api("PATCH", `/api/posts/${id}`, patch);
+    // A title-only rename never reads stdin: in a `while read` loop or under xargs it holds other input, not the text.
+    const text = opt.file || rest.length || opt.title === undefined ? readText(rest) : undefined;
+    if (text !== undefined && !splitThread(text).length) throw new UsageError("The post is empty.");
+    // `text` keeps each post's id and images by position (the server maps them).
+    const post = await api("PATCH", `/api/posts/${id}`, { title: opt.title, text });
     emit(post, (p) => console.log(`Updated ${short(p.id)} (${p.thread.length} post${p.thread.length > 1 ? "s" : ""})`));
     await warnOver(post);
   },
 
   async schedule([ref, at]) {
-    if (!at) throw new UsageError('Usage: threadsmith schedule <id> <next|ISO time>');
-    emit(await api("POST", `/api/posts/${await resolveId(ref)}/schedule`, { at }), status);
+    if (!at) throw new UsageError("Usage: threadsmith schedule <id> <next|time> (e.g. 2026-11-03T09:00, read in the server's timezone)");
+    const post = await api("POST", `/api/posts/${await resolveId(ref)}/schedule`, { at });
+    if (!opt.json) await useServerTimezone();
+    emit(post, status);
   },
   async unschedule([ref]) {
     emit(await api("POST", `/api/posts/${await resolveId(ref)}/unschedule`), status);
   },
   async publish([ref]) {
-    emit(await api("POST", `/api/posts/${await resolveId(ref)}/publish`), status);
+    // X errors come back as a post with status failed (HTTP 200); report them through the exit code too.
+    const post = await api("POST", `/api/posts/${await resolveId(ref)}/publish`);
+    emit(post, status);
+    if (post.status === "failed") process.exitCode = 1;
   },
   async retry([ref]) {
-    emit(await api("POST", `/api/posts/${await resolveId(ref)}/retry`), status);
+    const post = await api("POST", `/api/posts/${await resolveId(ref)}/retry`);
+    emit(post, status);
+    if (post.status === "failed") process.exitCode = 1;
   },
   async posted([ref]) {
     emit(await api("POST", `/api/posts/${await resolveId(ref)}/mark-published`, { url: opt.url }), status);
@@ -339,19 +380,25 @@ const commands = {
 
   async copy([ref]) {
     const data = await api("GET", `/api/posts/${await resolveId(ref)}/export`);
-    const copiedWith = opt.clipboard ? copyToClipboard(data.text) : null;
+    // A thread that failed partway through an API publish: only the posts not yet live, as replies to the last live one.
+    const live = data.alreadyLive ?? 0;
+    const text = live ? data.remainingText : data.text;
+    const count = live ? data.remainingPosts.length : data.posts.length;
+    const copiedWith = opt.clipboard ? copyToClipboard(text) : null;
     emit({ ...data, copied: Boolean(copiedWith) }, () => {
-      if (copiedWith) console.log(`Copied ${data.posts.length} post(s) to the clipboard (${copiedWith}).\nOpen X with the first post: ${data.intentUrl}`);
+      if (live) console.error(`${live} of ${data.posts.length} post(s) are already live on X. Post only the remaining ${count}, as replies to ${data.replyToUrl}`);
+      if (copiedWith) console.log(`Copied ${count} post(s) to the clipboard (${copiedWith}).${live ? "" : `\nOpen X with the first post: ${data.intentUrl}`}`);
       else {
         if (opt.clipboard) console.error("No clipboard tool found (pbcopy, wl-copy, xclip, xsel, clip.exe); printing instead.");
-        console.log(data.text);
+        console.log(text);
       }
     });
   },
 
   async slots([n]) {
     const data = await api("GET", `/api/slots/next?count=${int(n, "n", 5)}`);
-    emit(data, ({ slots }) => console.log(slots.map(when).join("\n")));
+    if (!opt.json) await useServerTimezone();
+    emit(data, ({ slots }) => console.log([`Times in ${TZ}`, ...slots.map(when)].join("\n")));
   },
 
   async count(args) {
@@ -392,13 +439,15 @@ const commands = {
 
   async health() {
     const h = await api("GET", "/api/health");
-    emit(h, () =>
+    const configError = (await serverConfig())?.configError ?? null;
+    emit({ ...h, configError }, () =>
       console.log(
         [
           `Threadsmith ${h.version} at ${BASE}`,
           `X: ${h.x.mode === "api" ? "API (publishes automatically)" : "manual (notify + copy)"}`,
           `AI: ${h.ai.configured ? `${h.ai.provider} · ${h.ai.model}` : "off"}`,
           `Timezone: ${h.timezone} · limit ${h.maxChars} characters · auth ${h.auth.required ? "required" : "off"}`,
+          ...(configError ? [`Config: the last edit was rejected, the previous config is still in use: ${configError}`] : []),
         ].join("\n"),
       ),
     );

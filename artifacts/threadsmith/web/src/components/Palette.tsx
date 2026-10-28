@@ -1,4 +1,6 @@
 // ⌘K command palette: registered commands plus jump-to-draft, filtered as you type, fully keyboard driven.
+// The <dialog> stays mounted and is opened/closed in place: removing a modal dialog while it closes leaves
+// Chromium's focus half-restored, and keystrokes in the composer were silently dropped.
 import { useQuery } from "@tanstack/react-query";
 import { CornerDownLeft, FileText, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -13,11 +15,16 @@ function matches(c: Command, terms: string[]) {
   return terms.every((t) => hay.includes(t));
 }
 
-export function Palette({ onClose }: { onClose: () => void }) {
+export function Palette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const commands = useAllCommands();
-  const { data: drafts } = useQuery({ queryKey: ["posts", "draft"], queryFn: () => api.listPosts({ status: ["draft"], limit: 100 }) });
+  const { data: drafts } = useQuery({
+    queryKey: ["posts", "draft"],
+    queryFn: () => api.listPosts({ status: ["draft"], limit: 100 }),
+    enabled: open,
+  });
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
 
@@ -43,14 +50,19 @@ export function Palette({ onClose }: { onClose: () => void }) {
   });
   useEffect(() => {
     const el = ref.current!;
-    if (!el.open) el.showModal();
     const close = () => onCloseRef.current();
     el.addEventListener("close", close);
-    return () => {
-      el.removeEventListener("close", close);
-      el.close();
-    };
+    return () => el.removeEventListener("close", close);
   }, []);
+  useEffect(() => {
+    const el = ref.current!;
+    if (open && !el.open) {
+      setQuery("");
+      setActive(0);
+      el.showModal();
+      inputRef.current?.focus();
+    } else if (!open && el.open) el.close();
+  }, [open]);
 
   useEffect(() => setActive(0), [query]);
   useEffect(() => {
@@ -74,7 +86,7 @@ export function Palette({ onClose }: { onClose: () => void }) {
       <div className="flex items-center gap-2.5 border-b border-line px-4">
         <Search size={16} className="shrink-0 text-ink-3" />
         <input
-          autoFocus
+          ref={inputRef}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {

@@ -3,19 +3,30 @@ import { getConfig } from "../config.ts";
 import { xConfigured } from "../env.ts";
 
 export function threadGuide(): string {
-  const { maxChars, timezone } = getConfig();
+  const { maxChars, timezone, lateGraceMinutes } = getConfig();
+  const late = !xConfigured
+    ? ""
+    : lateGraceMinutes > 0
+      ? `- A scheduled post that missed its time by more than ${lateGraceMinutes} minutes (Threadsmith was offline) is not posted late unattended:
+  it becomes **due**, with an \`error\` saying why. Ask the person whether to publish it now, copy it, or reschedule it.\n`
+      : "- A scheduled post that missed its time while Threadsmith was offline is published as soon as Threadsmith is back.\n";
   return `# Writing X threads with Threadsmith
 
 ## Format and limits
 - A thread is one text with a line containing only \`---\` between posts (or an array of posts). A single post is a thread of one.
 - Each post may use ${maxChars} characters as X counts them: most Latin letters, digits and punctuation count 1;
-  CJK characters and each emoji count 2; Vietnamese letters with a built-in tone mark (ạ, ấ, ệ, ố, ữ…) count 2; every link counts 23.
-  Check with the \`count_characters\` tool (MCP), \`threadsmith count\` (CLI) before saving or scheduling.
+  CJK characters and each emoji count 2; Vietnamese letters from Unicode's Latin Extended Additional block (ạ, ả, ấ, ệ, ố, ở, ữ…)
+  count 2, while á, à, ã, é, ó, ơ, ư, đ and the like count 1; every link counts 23.
+  Check with the \`count_characters\` tool (MCP) or \`threadsmith count\` (CLI) before saving or scheduling.
 - Up to 4 images per post (png, jpeg, webp, gif; ≤ 5 MB each). Give every image alt text.
-- Times are ISO-8601. \`"next"\` means the next free posting slot from threadsmith.config.json (timezone ${timezone}).
+- Times are ISO-8601 date-times in the future: \`2026-11-03T09:00\` is read in the configured timezone (${timezone});
+  \`2026-11-03T09:00:00+07:00\` or \`2026-11-03T02:00:00Z\` is exact. Dates without a time are rejected. \`"next"\` means the next free posting slot from threadsmith.config.json.
 
 ## How publishing works on this instance
 - X mode: ${xConfigured ? "**api** — scheduled posts are published automatically through the X API." : "**manual** — no X API keys. At the scheduled time the person gets a notification and copies the thread into X by hand; afterwards mark it published."}
+${late}- If a thread fails partway through publishing, the posts already on X (\`xPostIds\`) are locked: they can't be edited, removed or reordered.
+  Fix only the posts after them, then retry; it resumes after the last live post. To finish it by hand, export it and post only
+  the remaining posts (\`remainingText\` / \`remainingPosts\`) as replies under \`replyToUrl\`.
 - On X's pay-per-use API each post costs about $0.015, and a post that contains a link about $0.20. A 6-post thread is 6 posts.
   Avoid gratuitous links; if the person wants a link, put it in the last post (or a reply) rather than the first.
 

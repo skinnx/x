@@ -1,5 +1,6 @@
-// Web Push (VAPID) to subscribed browsers: "Time to post" when a manual-mode post is due, plus published/failed
-// notices. Keys are generated once and kept in kv; dead subscriptions (404/410) are pruned on send.
+// Web Push (VAPID) to subscribed browsers: "Time to post" when a post is due (manual mode, or too late to post
+// unattended), plus published/failed notices. Keys are generated once and kept in kv; dead subscriptions (404/410)
+// are pruned on send.
 import { createRoute, z } from "@hono/zod-openapi";
 import webpush, { type VapidKeys } from "web-push";
 import type { AppEvent } from "../shared/types.ts";
@@ -40,9 +41,10 @@ function payloadFor(event: AppEvent): PushPayload | null {
   const first = preview(post.thread[0]?.text ?? "", 120);
   switch (event.type) {
     case "post.due":
+      // `error` on a due post says why it needs a human (missed its time while offline, part already live).
       return {
         title: "Time to post",
-        body: first || "Your scheduled post is ready to copy.",
+        body: preview([first || "Your scheduled post is ready to copy.", post.error].filter(Boolean).join(" — "), 240),
         url: `/?post=${post.id}&copy=1`,
         postId: post.id,
         tag: `due-${post.id}`,

@@ -22,7 +22,7 @@ llmsRoutes.get("/llms.txt", (c) => {
 > Self-hosted composer and scheduler for X (Twitter) posts and threads. Draft, count characters the way X does, queue posts into time slots, and publish through the X API or by copy-paste when a notification fires. Everything the UI does is available to agents over REST, MCP, a CLI, webhooks and server-sent events.
 
 Base URL: ${base}. ${authLine()}
-Threads are one text with a line containing only \`---\` between posts (or an array of segments). Times are ISO-8601; \`"next"\` means the next free posting slot. Limit: ${getConfig().maxChars} weighted characters per post.
+Threads are one text with a line containing only \`---\` between posts (or an array of segments). Times are ISO-8601 date-times (without an offset they are read in ${getConfig().timezone}); \`"next"\` means the next free posting slot. Limit: ${getConfig().maxChars} weighted characters per post.
 
 ## Docs
 - [Full agent guide](${base}/llms-full.txt): conventions, workflows, every route and MCP tool, CLI usage and writing guidance in one file
@@ -72,11 +72,21 @@ llmsRoutes.get("/llms-full.txt", async (c) => {
 
 ## Conventions
 - Thread format: one string with a line containing only \`---\` between posts, or \`thread: [{text, mediaIds?}]\`. A single post is a thread of one.
-- Counting: X's weighted count. Most Latin text counts 1 per character; CJK, emoji and Vietnamese letters with a built-in tone mark (ạ, ấ, ệ, ố, ữ…) count 2; every URL counts 23.
+- Counting: X's weighted count. Most Latin text counts 1 per character; CJK and emoji count 2; Vietnamese letters from Unicode's
+  Latin Extended Additional block (ạ, ả, ấ, ệ, ố, ở, ữ…) count 2, while á, à, ã, é, ó, ơ, ư, đ and the like count 1; every URL counts 23.
 - Statuses: draft → scheduled → publishing → published, or failed (see \`error\`; retry resumes a thread without duplicates).
-  In manual mode a scheduled post becomes \`due\` at its time, and the person posts it by hand.
-- Times: ISO-8601 (send an offset or Z). \`"next"\` = next free slot from threadsmith.config.json.
-- Retries: send \`Idempotency-Key: <uuid>\` on POSTs you may repeat; the first result is returned again.
+  \`due\` means the post waits for the person: in manual mode every scheduled post becomes due at its time and is posted by hand${
+    config.lateGraceMinutes > 0
+      ? `; in api mode a post that missed its time by more than ${config.lateGraceMinutes} minutes (the server was down) becomes due instead of going out late, with \`error\` saying why`
+      : ""
+  }.
+  With X API keys, \`POST /api/posts/{id}/publish\` or \`/retry\` on a due post publishes it.
+- Partly published threads: if publishing fails mid-thread, the first \`xPostIds.length\` posts are live on X and locked;
+  a PATCH that changes, removes or reorders them answers 409. Edit only the posts after them, then retry.
+- Times: ISO-8601 date-times. With \`Z\` or an offset (\`2026-11-03T09:00:00+07:00\`) they are exact; without one (\`2026-11-03T09:00\`) they are read in ${config.timezone}.
+  Date-only and free-form values and times in the past answer 400. \`"next"\` = next free slot from threadsmith.config.json.
+- Retries: every POST under /api accepts \`Idempotency-Key: <uuid>\`. Repeating a request with the same key on the same path
+  replays the first response (status and JSON body) with the header \`Idempotent-Replayed: true\` instead of acting twice.
 - Attribution: send \`X-Threadsmith-Source: ai\` (or \`cli\`) on writes so the UI shows where a post came from.
 - Errors: JSON \`{error, message}\` with 400 (invalid input), 401 (token), 404, 409 (wrong state, e.g. editing a published post), 500.
 
@@ -86,6 +96,7 @@ llmsRoutes.get("/llms-full.txt", async (c) => {
 3. Show the draft to the person. Only after approval: \`POST /api/posts {text, scheduledAt: "next" | ISO}\`.
 4. Report the scheduled time in their timezone. \`GET /api/queue?days=7\` shows the timeline with free slots.
 5. Manual mode: \`GET /api/posts/{id}/export\` gives text + an X intent URL; after posting, \`POST /api/posts/{id}/mark-published {url?}\`.
+   If \`alreadyLive\` > 0 (a thread that failed partway through an API publish), post only \`remainingText\` / \`remainingPosts\`, as replies under \`replyToUrl\`.
 6. Images: \`POST /api/media\` (multipart \`file\`, \`alt\`) or \`POST /api/media/from-url {url, alt}\`, then put the media id in a segment's \`mediaIds\` (≤ 4 per post).
 Publishing now and deleting are irreversible; only do them when the person asks.
 
@@ -95,6 +106,7 @@ ${routes.join("\n") || "- (no routes registered)"}
 ## MCP
 Endpoint: ${base}/mcp (Streamable HTTP, stateless, JSON responses). Claude Code: \`claude mcp add --transport http threadsmith ${base}/mcp${env.authToken ? ' --header "Authorization: Bearer <AUTH_TOKEN>"' : ""}\`.
 Resource \`threadsmith://guide\` holds the writing guide; prompt \`draft_thread {topic, notes?}\` walks through drafting and queueing.
+There are no AI copilot tools over MCP: you write the text yourself (the copilot is REST-only, at /api/ai/*). Tool errors come back as \`isError\` results with the same messages REST gives.
 ${mcpCatalog()
   .map((t) => `- \`${t.name}\` — ${t.description}`)
   .join("\n")}

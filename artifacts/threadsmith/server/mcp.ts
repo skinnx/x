@@ -5,7 +5,6 @@ import path from "node:path";
 import { McpServer, type ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
-import { TZDate } from "@date-fns/tz";
 import { Hono } from "hono";
 import { z } from "zod";
 import { hasUrl, splitThread, threadToText, weightedLength } from "../shared/thread.ts";
@@ -13,18 +12,18 @@ import { POST_STATUSES, type Post, type Segment } from "../shared/types.ts";
 import { voiceExamples } from "./ai/copilot.ts";
 import { threadGuide } from "./ai/guide.ts";
 import { aiStatus } from "./ai/provider.ts";
-import { buildQueue, getConfig, nextFreeSlots, resolveWhen } from "./config.ts";
+import { buildQueue, getConfig, nextFreeSlots, parseWhen } from "./config.ts";
 import { ROOT, xConfigured } from "./env.ts";
+import { saveImageFromUrl } from "./media.ts";
 import {
+  BadInputError,
   ConflictError,
-  IMAGE_MIMES,
-  MAX_IMAGE_BYTES,
   attemptsFor,
-  createMedia,
   createPost,
+  deleteMedia,
   deletePost,
   listPosts,
-  markPublished,
+  markPublishedManually,
   requirePost,
   schedulePost,
   unschedulePost,
@@ -40,6 +39,7 @@ const INSTRUCTIONS = `Threadsmith is this person's self-hosted composer and sche
 Start with get_settings (timezone, character limit, X mode, their voice). A thread is text with a line containing only --- between posts.
 Run count_characters on every draft, show the person the thread, and ask before scheduling, publishing or deleting.
 schedule "next" uses the configured posting slots. In manual X mode nothing posts automatically: the person is notified at the scheduled time and copies the thread into X.
+A "due" post is waiting for the person (manual mode, or it missed its time while Threadsmith was offline; see its error): publish it, export it, or reschedule it.
 Writing guidance: resource threadsmith://guide.`;
 
 // ---------- views ----------
@@ -76,6 +76,7 @@ function view(p: Post) {
     posts: p.thread.map((s, i) => ({ index: i, text: s.text, chars: weightedLength(s.text), mediaIds: s.mediaIds })),
     url: p.url,
     error: p.error,
+    xPostIds: p.xPostIds,
     publishedAt: p.publishedAt,
     source: p.source,
     updatedAt: p.updatedAt,
@@ -103,6 +104,10 @@ function warnings(p: Post): string[] {
     .filter((c) => !c.fits)
     .map((c) => (c.chars === 0 ? `Post [${c.index}] is empty.` : `Post [${c.index}] is ${c.chars}/${getConfig().maxChars} characters; shorten it.`));
   if (p.status === "scheduled" && !xConfigured) out.push("Manual X mode: at that time the person is notified to copy the thread and post it by hand.");
+  const live = p.xPostIds.length;
+  if (live && EDITABLE.includes(p.status)) {
+    out.push(`Post${live > 1 ? `s [0]–[${live - 1}] are` : " [0] is"} already live on X and can't be changed; edit only the posts after, then retry_post.`);
+  }
   return out;
 }
 
@@ -115,16 +120,8 @@ function result(summary: string, data: Record<string, unknown>): CallToolResult 
   return { content: [{ type: "text", text: `${summary}\n${JSON.stringify(data)}` }], structuredContent: data };
 }
 
-/** "next", an ISO instant, or a local "YYYY-MM-DDTHH:MM" read in the configured timezone → future ISO instant. */
-function toInstant(at: string): string {
-  const s = at.trim();
-  if (s === "next") return resolveWhen(s);
-  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(s);
-  const ms = m ? new TZDate(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!, +(m[6] ?? 0), getConfig().timezone).getTime() : Date.parse(s);
-  if (Number.isNaN(ms)) throw new Error(`Can't read "${at}" as a time; use "next" or ISO-8601 like 2026-11-03T09:00:00+07:00.`);
-  if (ms < Date.now() - 60_000) throw new Error(`${at} is in the past. Pick a future time, use "next", or publish_now.`);
-  return new Date(ms).toISOString();
-}
+/** Same parser as REST: "next" or an ISO-8601 date-time (offset-less = configured timezone) → future UTC instant. */
+const toInstant = (at: string) => parseWhen(at.trim());
 
 /** `text` with --- separators or `posts`; existing segments keep their ids and images by position. */
 function toThread(args: { text?: string; posts?: string[] }, existing: Segment[] = []) {
@@ -132,15 +129,15 @@ function toThread(args: { text?: string; posts?: string[] }, existing: Segment[]
   return parts?.map((text, i) => ({ id: existing[i]?.id, text, mediaIds: existing[i]?.mediaIds ?? [] }));
 }
 
-async function fetchImage(url: string): Promise<{ data: Uint8Array; mime: string; filename?: string }> {
-  const u = new URL(url);
-  if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("Only http(s) image URLs are supported.");
-  const res = await fetch(u, { headers: { accept: "image/*" }, signal: AbortSignal.timeout(20_000) });
-  if (!res.ok) throw new Error(`Image download failed: HTTP ${res.status}`);
-  const mime = res.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
-  if (!IMAGE_MIMES[mime]) throw new Error(`Not a supported image (${mime || "unknown type"}); use png, jpeg, webp or gif.`);
-  if (Number(res.headers.get("content-length") ?? 0) > MAX_IMAGE_BYTES) throw new Error("Image is larger than X's 5 MB limit.");
-  return { data: new Uint8Array(await res.arrayBuffer()), mime, filename: path.basename(u.pathname) || undefined };
+/** The post as it is now, checked that one more image can go on post [postIndex]. */
+function imageTarget(postId: string, postIndex: number): Post {
+  const p = requirePost(postId);
+  if (!EDITABLE.includes(p.status)) throw new ConflictError(`Post is ${p.status} and can no longer be edited.`);
+  const seg = p.thread[postIndex];
+  if (!seg) throw new BadInputError(`postIndex ${postIndex} is out of range; the thread has ${p.thread.length} post(s) (0-based).`);
+  if (postIndex < p.xPostIds.length) throw new ConflictError(`Post [${postIndex}] is already live on X and can't be changed.`);
+  if (seg.mediaIds.length >= MAX_IMAGES_PER_POST) throw new ConflictError(`Post [${postIndex}] already has ${MAX_IMAGES_PER_POST} images, X's maximum.`);
+  return p;
 }
 
 // ---------- tool catalog (also listed in /llms-full.txt) ----------
@@ -174,7 +171,10 @@ const threadArgs = {
 };
 const when = z
   .string()
-  .describe('"next" for the next free posting slot, or an ISO-8601 time, e.g. 2026-11-03T09:00:00+07:00 (without an offset it is read in the configured timezone)');
+  .describe(
+    '"next" for the next free posting slot, or a future ISO-8601 date-time: 2026-11-03T09:00 is read in the configured timezone, ' +
+      "2026-11-03T09:00:00+07:00 or …Z is exact. Dates without a time are rejected.",
+  );
 
 tool(
   "get_settings",
@@ -183,7 +183,8 @@ tool(
     description:
       "Read this instance's settings before drafting or scheduling: timezone and current local time, the per-post character limit (maxChars), " +
       'posting slots, X mode ("api" = Threadsmith publishes automatically at the scheduled time; "manual" = no X API keys, the person is notified ' +
-      "and copies the thread into X by hand), whether the built-in AI copilot is on, and voiceExamples: the person's own past posts. " +
+      "and copies the thread into X by hand), whether the built-in AI copilot is on (it serves the Threadsmith UI and REST; there are no copilot " +
+      "tools here, you write the text), and voiceExamples: the person's own past posts. " +
       "Match their voice and language when you write for them.",
     input: {},
     annotations: READ,
@@ -209,8 +210,9 @@ tool(
   {
     title: "Count characters",
     description:
-      "Count each post of a draft exactly as X does (weighted: CJK characters, emoji and Vietnamese letters with a built-in tone mark count 2, " +
-      "every link counts 23) against this instance's limit. Pass `text` (posts separated by a line containing only ---) or `posts`. " +
+      "Count each post of a draft exactly as X does (weighted: CJK characters and emoji count 2; Vietnamese letters from Unicode's " +
+      "Latin Extended Additional block such as ạ ấ ệ ố ữ count 2, while á à é ó ơ ư đ count 1; every link counts 23) against this instance's limit. " +
+      "Pass `text` (posts separated by a line containing only ---) or `posts`. " +
       "Use it on every draft before create_post or update_post, and shorten any post where fits is false. " +
       "hasLink marks posts containing a URL: those cost more on X's API and usually get less reach.",
     input: threadArgs,
@@ -236,7 +238,7 @@ tool(
     description:
       "Show the posting timeline day by day (in the configured timezone): scheduled, due, failed and published posts, plus the free slots still open. " +
       'Use it to answer "what\'s scheduled?" or to pick a time. Free slots are what schedule "next" fills, earliest first. ' +
-      "Due posts (manual mode) are waiting for the person to copy and post them by hand.",
+      "Due posts are waiting for the person (manual mode, or they missed their time while Threadsmith was offline).",
     input: { days: z.number().int().min(1).max(60).default(7).describe("How many days ahead, starting today") },
     annotations: READ,
   },
@@ -259,7 +261,8 @@ tool(
     title: "List posts",
     description:
       "List posts, most recent first, optionally filtered by status: draft (not queued), scheduled (waiting for its time), publishing, " +
-      "due (manual mode: time arrived, waiting for the person to post it by hand), published, failed (see error, then retry_post). " +
+      "due (waiting for the person: manual mode, or it missed its time while Threadsmith was offline — see error), published, " +
+      "failed (see error, then retry_post). " +
       "Returns previews of the first post; use get_post for the full thread.",
     input: {
       status: z.array(z.enum(POST_STATUSES)).optional().describe("Only these statuses"),
@@ -321,7 +324,8 @@ tool(
     description:
       "Replace the text (and optionally the title) of a draft, scheduled, due or failed post; published posts can't be edited. " +
       "Give the whole new thread as `text` (--- separators) or `posts`. Images stay attached to the post at the same position. " +
-      "The schedule is unchanged. Check counts with count_characters first.",
+      "If a thread failed partway through publishing, the posts already live on X (xPostIds) can't be changed, removed or reordered: " +
+      "edit only the posts after them. The schedule is unchanged. Check counts with count_characters first.",
     input: { id, ...threadArgs, title: z.string().max(200).nullable().optional() },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
@@ -337,7 +341,7 @@ tool(
   {
     title: "Schedule a post",
     description:
-      'Schedule or reschedule a post. at: "next" for the next free slot from the configured posting schedule, or an ISO-8601 time with offset. ' +
+      'Schedule or reschedule a post. at: "next" for the next free slot from the configured posting schedule, or a future ISO-8601 date-time. ' +
       "Works on drafts and on scheduled, due or failed posts. Confirm the time with the person and tell them the result in their timezone.",
     input: { id, at: when },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -378,7 +382,7 @@ tool(
   {
     title: "Publish now",
     description:
-      "Publish a post or thread to X right now through the X API, ignoring its schedule. Public, irreversible and billed per post by X: " +
+      "Publish a draft, scheduled, due or failed post or thread to X right now through the X API, ignoring its schedule. Public, irreversible and billed per post by X: " +
       "only when the person explicitly asks. In manual X mode (no API keys) this fails; use export_thread instead, let the person post it, then mark_published.",
     input: { id },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
@@ -395,10 +399,11 @@ tool(
 tool(
   "retry_post",
   {
-    title: "Retry a failed post",
+    title: "Retry a failed or due post",
     description:
-      "Retry publishing a failed post. A thread resumes after the last post that reached X, so nothing is duplicated. " +
-      "Read the error with get_post first and fix the cause (text over the limit, credentials, a deleted image) before retrying.",
+      "Publish a failed or due post again through the X API. A thread resumes after the last post that reached X, so nothing is duplicated. " +
+      "Read the error with get_post first and fix the cause (text over the limit, credentials, a deleted image) before retrying. " +
+      "In manual X mode it only re-sends the copy & post notification.",
     input: { id },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   },
@@ -413,13 +418,15 @@ tool(
   {
     title: "Mark as posted by hand",
     description:
-      "Record that the person posted this on X themselves (manual mode, or after copying it). Pass the URL of the first post if known. Moves it to published.",
-    input: { id, url: z.string().url().optional().describe("Link to the first post on X") },
+      "Record that the person posted this on X themselves (manual mode, or after copying it). Pass the URL of the first post if known. " +
+      "Moves it to published. Refused while Threadsmith is publishing it through the X API; an already published post is left unchanged.",
+    input: { id, url: z.url({ protocol: /^https?$/ }).optional().describe("Link to the first post on X (http or https)") },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   ({ id, url }) => {
-    requirePost(id);
-    return postResult("Marked as published.", markPublished(id, { url: url ?? null }));
+    const wasPublished = requirePost(id).status === "published";
+    const p = markPublishedManually(id, url);
+    return postResult(wasPublished ? "Already published; nothing changed." : "Marked as published.", p);
   },
 );
 
@@ -446,7 +453,8 @@ tool(
     description:
       "Get a post ready to publish by hand: the full text (posts separated by ---), the individual posts, and an X intent URL that opens " +
       "the X composer with the first post filled in. X's intent link can't create a thread, so the person adds the remaining posts as replies. " +
-      "Use in manual mode or whenever the person wants to post it themselves; afterwards call mark_published.",
+      "If the thread failed partway through an API publish, alreadyLive > 0: then only remainingText / remainingPosts still need posting, " +
+      "as replies under replyToUrl. Use in manual mode or whenever the person wants to post it themselves; afterwards call mark_published.",
     input: { id },
     annotations: READ,
   },
@@ -454,7 +462,23 @@ tool(
     const p = requirePost(id);
     const posts = p.thread.map((s) => s.text);
     const intentUrl = `https://x.com/intent/post?text=${encodeURIComponent(posts[0] ?? "")}`;
-    return result(`${posts.length} post(s) ready to copy.`, { text: threadToText(p.thread), posts, intentUrl });
+    const alreadyLive = Math.min(p.xPostIds.length, posts.length);
+    const remaining = p.thread.slice(alreadyLive);
+    const replyToUrl = alreadyLive ? `https://x.com/i/status/${p.xPostIds[alreadyLive - 1]}` : null;
+    return result(
+      alreadyLive
+        ? `${alreadyLive} of ${posts.length} post(s) are already live on X; ${remaining.length} remaining post(s) to add as replies under ${replyToUrl}.`
+        : `${posts.length} post(s) ready to copy.`,
+      {
+        text: threadToText(p.thread),
+        posts,
+        intentUrl,
+        alreadyLive,
+        remainingText: threadToText(remaining),
+        remainingPosts: remaining.map((s) => s.text),
+        replyToUrl,
+      },
+    );
   },
 );
 
@@ -468,20 +492,23 @@ tool(
     input: {
       postId: id,
       postIndex: z.number().int().min(0).describe("Which post of the thread, 0-based"),
-      url: z.string().url(),
+      url: z.url({ protocol: /^https?$/ }),
       alt: z.string().max(1000).optional().describe("Alt text (X allows up to 1000 characters)"),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
   async ({ postId, postIndex, url, alt }) => {
-    const p = requirePost(postId);
-    if (!EDITABLE.includes(p.status)) throw new ConflictError(`Post is ${p.status} and can no longer be edited.`);
-    const seg = p.thread[postIndex];
-    if (!seg) throw new Error(`postIndex ${postIndex} is out of range; the thread has ${p.thread.length} post(s) (0-based).`);
-    if (seg.mediaIds.length >= MAX_IMAGES_PER_POST) throw new ConflictError(`Post [${postIndex}] already has ${MAX_IMAGES_PER_POST} images, X's maximum.`);
-    const media = createMedia({ ...(await fetchImage(url)), alt: alt ?? null });
-    const thread = p.thread.map((s, i) => (i === postIndex ? { ...s, mediaIds: [...s.mediaIds, media.id] } : s));
-    const updated = updatePost(postId, { thread });
+    imageTarget(postId, postIndex); // fail fast before downloading
+    const media = await saveImageFromUrl(url, alt ?? null); // same streaming 5 MB cap and byte sniffing as REST
+    let updated: Post;
+    try {
+      // Re-read after the download so edits saved meanwhile are kept; no await between this read and the write.
+      const p = imageTarget(postId, postIndex);
+      updated = updatePost(postId, { thread: p.thread.map((s, i) => (i === postIndex ? { ...s, mediaIds: [...s.mediaIds, media.id] } : s)) });
+    } catch (err) {
+      deleteMedia(media.id);
+      throw err;
+    }
     const res = postResult(`Attached image ${media.id} to post [${postIndex}].`, updated);
     return { ...res, structuredContent: { ...res.structuredContent, media } };
   },

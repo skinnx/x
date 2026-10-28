@@ -3,11 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Post, Segment } from "../../../shared/types.ts";
 import { api, ApiError } from "../api.ts";
+import { toastError } from "../components/Toasts.tsx";
 import { uid } from "../lib/util.ts";
 
 export type SaveState = "idle" | "saving" | "saved" | "offline";
 
 const BUFFER_KEY = "threadsmith:unsaved";
+const EDITABLE: Post["status"][] = ["draft", "scheduled", "due", "failed"];
 const DEBOUNCE_MS = 600;
 
 interface Buffer {
@@ -78,8 +80,9 @@ export function useDraft(postId: string | null, onCreated: (post: Post) => void)
           setPost(saved);
         } catch (e) {
           if (e instanceof ApiError && e.status === 409 && r.id) {
-            // Published or publishing meanwhile: stop editing, show the server's version.
+            // Published or publishing meanwhile, or the edit touched posts already live on X: show the server's version.
             const fresh = await api.getPost(r.id).catch(() => null);
+            if (fresh && EDITABLE.includes(fresh.status)) toastError("Your last edit wasn't saved", e);
             if (fresh) {
               setPost(fresh);
               r.latest = fresh.thread;
@@ -133,7 +136,7 @@ export function useDraft(postId: string | null, onCreated: (post: Post) => void)
       const buf = readBuffer();
       const matches = buf && buf.postId === (server?.id ?? null) && !isBlank(buf.thread);
       const newer = matches && (!server || buf.at > Date.parse(server.updatedAt));
-      const editable = !server || ["draft", "scheduled", "due", "failed"].includes(server.status);
+      const editable = !server || EDITABLE.includes(server.status);
       if (buf && matches && newer && editable && signature(buf.thread) !== signature(base)) {
         r.session = buf.session;
         r.latest = buf.thread;

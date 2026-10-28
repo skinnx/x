@@ -83,7 +83,7 @@ aiRoutes.openapi(
   route(
     "/fit",
     "Shorten text to fit the character limit",
-    "Shortens each post that is over the limit (X's weighted count: CJK, emoji and Vietnamese letters with built-in tone marks count 2, links 23). " +
+    "Shortens each post that is over the limit (X's weighted count: CJK, emoji and Vietnamese letters such as ạ, ấ, ệ, ố, ữ count 2, links 23). " +
       "Posts that already fit are returned unchanged. `maxChars` overrides the configured limit, e.g. to leave room for a quote.",
     z.object({ text: Text, maxChars: z.number().int().min(20).max(25_000).optional() }),
     z.object({ text: z.string() }),

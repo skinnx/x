@@ -1,7 +1,7 @@
 // App shell: auth gate, sidebar + view routing, command palette, live events, global shortcuts.
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Bell, CalendarClock, CircleCheck, Inbox, Menu, PenLine, Plug, Plus, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { BookOpen, Bell, CalendarClock, CircleCheck, Inbox, Menu, PenLine, Plug, Plus, Search, Settings2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Health } from "../../shared/types.ts";
 import { api, ApiError, auth } from "./api.ts";
 import { Composer } from "./composer/Composer.tsx";
@@ -32,6 +32,8 @@ export function App() {
   }, [health]);
 
   const unauthorized = health.error instanceof ApiError && health.error.status === 401;
+  // status 0 = no answer at all; anything else means the server runs but reported a problem.
+  const serverError = health.error instanceof ApiError && health.error.status !== 0 ? health.error.message : null;
   return (
     <>
       {health.data && !unauthorized ? (
@@ -42,11 +44,21 @@ export function App() {
         <div className="grid min-h-full place-items-center p-6 text-center">
           <div className="max-w-sm">
             <Logo />
-            <p className="mt-4 font-medium">Can't reach the Threadsmith server</p>
-            <p className="mt-1 text-sm text-ink-2">
-              Start it with <code className="font-mono text-xs">pnpm dev</code> or <code className="font-mono text-xs">pnpm start</code>, then
-              retry.
-            </p>
+            {serverError ? (
+              <>
+                <p className="mt-4 font-medium">The Threadsmith server reported a problem</p>
+                <p className="mt-1 text-sm break-words text-ink-2">{serverError}</p>
+                <p className="mt-1 text-sm text-ink-2">Check the server's log, fix the cause, then retry.</p>
+              </>
+            ) : (
+              <>
+                <p className="mt-4 font-medium">Can't reach the Threadsmith server</p>
+                <p className="mt-1 text-sm text-ink-2">
+                  Start it with <code className="font-mono text-xs">pnpm dev</code> or <code className="font-mono text-xs">pnpm start</code>,
+                  then retry.
+                </p>
+              </>
+            )}
             <button onClick={() => void health.refetch()} className="mt-4 rounded-lg bg-ink px-3.5 py-2 text-sm font-medium text-canvas">
               Retry
             </button>
@@ -66,9 +78,26 @@ export function App() {
 
 const TITLES = { compose: "Write", queue: "Queue", connect: "Connect" } as const;
 
+/** A broken edit of threadsmith.config.json: the server keeps the last good config, so this is a notice, not an outage. */
+function ConfigProblem() {
+  const { data: config } = useQuery({ queryKey: ["config"], queryFn: api.config, staleTime: 15_000, refetchInterval: 30_000 });
+  if (!config?.configError) return null;
+  return (
+    <div role="status" className="flex shrink-0 items-start gap-2.5 border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-950 sm:px-6 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-50">
+      <Settings2 size={16} className="mt-0.5 shrink-0" />
+      <p className="min-w-0 flex-1">
+        <span className="font-medium">Your config file has a problem</span>, so Threadsmith keeps using your previous settings until it's fixed.
+        Changes apply as soon as you save the file.
+        <span className="mt-0.5 block font-mono text-xs break-words opacity-80">{config.configError}</span>
+      </p>
+    </div>
+  );
+}
+
 function Shell({ health }: { health: Health }) {
   const { view, params } = useRoute();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const closePalette = useCallback(() => setPaletteOpen(false), []);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const reminders = useReminders();
   const postId = params.get("post");
@@ -149,6 +178,7 @@ function Shell({ health }: { health: Health }) {
             <Plus size={18} />
           </button>
         </div>
+        <ConfigProblem />
 
         {view === "compose" && (
           <Composer
@@ -164,7 +194,7 @@ function Shell({ health }: { health: Health }) {
         {view === "connect" && <ConnectView health={health} />}
       </main>
 
-      {paletteOpen && <Palette onClose={() => setPaletteOpen(false)} />}
+      <Palette open={paletteOpen} onClose={closePalette} />
     </div>
   );
 }

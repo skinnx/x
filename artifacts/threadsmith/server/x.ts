@@ -1,8 +1,11 @@
 // X API v2 client: OAuth 1.0a user-context signing (HMAC-SHA1 via node:crypto), image upload, thread publishing.
 // Publishing resumes: segments already in post.xPostIds are skipped, and every new tweet id is saved before the
-// next call, so a failure or crash mid-thread never posts the same tweet twice.
+// next call, so a failure or crash mid-thread never posts the same tweet twice. Content problems X would reject
+// (length, empty, too many images) are caught before the first tweet, so they can't leave a half-posted thread.
 import { createHmac, randomBytes } from "node:crypto";
+import { weightedLength } from "../shared/thread.ts";
 import type { Post } from "../shared/types.ts";
+import { getConfig } from "./config.ts";
 import { env } from "./env.ts";
 import { getMedia, readMediaBytes, recordPostedTweets, setXMediaId } from "./repo.ts";
 
@@ -12,6 +15,8 @@ export class XApiError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    /** false when retrying the same thread can't help (e.g. the tweet it replies to is gone). */
+    readonly resumable = true,
   ) {
     super(message);
   }
@@ -101,6 +106,9 @@ function untilText(epochSeconds: number): string {
   return `after ${at.toISOString().replace(/\.\d+Z$/, "Z")} (in ~${minutes} min)`;
 }
 
+/** X's 403 when the tweet being replied to was deleted or is hidden: the thread can't be continued under it. */
+const REPLY_TARGET_GONE = /deleted|not visible/i;
+
 /** Turn an X error response into a sentence that says what happened and what to do. */
 function explain(status: number, headers: Headers, body: XProblem | undefined, raw: string): string {
   const detail = problemText(body) ?? (raw.trim().slice(0, 200) || `HTTP ${status}`);
@@ -113,13 +121,25 @@ function explain(status: number, headers: Headers, body: XProblem | undefined, r
   }
   if (status === 429) return `X rate limit reached (429: ${detail}). Retry ${resetHint(headers)}.`;
   if (status === 403 && /duplicate/i.test(detail)) {
-    return `X refused a duplicate post (403: ${detail}). If an earlier attempt timed out it may already be live, so check your profile; otherwise change the text and Retry.`;
+    return (
+      `X refused a duplicate post (403: ${detail}). If an earlier attempt timed out or was interrupted, this post is probably already live: ` +
+      `check your profile, and if it is there, post the rest of the thread by hand as replies to it and mark this post published. Otherwise change its text and Retry.`
+    );
+  }
+  if (status === 403 && REPLY_TARGET_GONE.test(detail)) {
+    return (
+      `X refused the reply (403: ${detail}): the post this thread continues from was deleted or is no longer visible, so Retry can't continue it. ` +
+      `Duplicate it into a new draft to post it again, or mark it published if you finished it by hand.`
+    );
   }
   if (status === 403 && /client-forbidden|client-not-enrolled|enrol/i.test(haystack)) {
     return `Your X developer app can't use the posting API (403: ${detail}). In the X Developer Console, check the app belongs to a project with API access and has credits, then Retry.`;
   }
-  if (status === 403) {
+  if (status === 403 && /oauth1|permission|not permitted/i.test(haystack)) {
     return `X refused to post (403: ${detail}). The app's permissions must be "Read and write": set it under User authentication settings in the X Developer Console, then regenerate the Access Token and Secret (tokens keep the permissions they were created with), update .env, restart and Retry.`;
+  }
+  if (status === 403) {
+    return `X refused to post (403: ${detail}). Check the post and the account on x.com (reply restrictions, a locked or limited account), then Retry.`;
   }
   if (status === 400) return `X rejected the post (400: ${detail}). Fix the content (too long, empty, bad image?) and Retry.`;
   if (status >= 500) return `X API error ${status} (${detail}). Usually temporary: Retry in a few minutes.`;
@@ -161,7 +181,9 @@ async function xRequest<T extends { data: unknown }>(
   } catch {
     body = undefined;
   }
-  if (!res.ok) throw new XApiError(explain(res.status, res.headers, body, raw), res.status);
+  if (!res.ok) {
+    throw new XApiError(explain(res.status, res.headers, body, raw), res.status, !(res.status === 403 && REPLY_TARGET_GONE.test(raw)));
+  }
   if (!body?.data) throw new XApiError(`X answered ${res.status} without data: ${problemText(body) ?? raw.slice(0, 200)}`, res.status);
   return body as T;
 }
@@ -193,15 +215,17 @@ async function uploadMedia(mediaId: string): Promise<string> {
   if (data.processing_info?.state === "failed") {
     throw new XApiError(`X couldn't process ${m.filename}: ${data.processing_info.error?.message ?? "unknown error"}. Try another image.`);
   }
-  setXMediaId(mediaId, data.id, new Date(Date.now() + (data.expires_after_secs ?? 86_400) * 1000).toISOString());
-
+  // Cache the X media id only once its alt text is set; otherwise the next attempt uploads again and retries the alt.
+  let altSet = true;
   if (m.alt?.trim()) {
     try {
       await xRequest("POST", "/2/media/metadata", { json: { id: data.id, metadata: { alt_text: { text: m.alt.slice(0, 1000) } } } });
     } catch (err) {
+      altSet = false;
       console.warn(`[x] alt text for ${m.filename} not set (posting without it): ${(err as Error).message}`);
     }
   }
+  if (altSet) setXMediaId(mediaId, data.id, new Date(Date.now() + (data.expires_after_secs ?? 86_400) * 1000).toISOString());
   return data.id;
 }
 
@@ -213,9 +237,12 @@ export async function publishToX(post: Post): Promise<{ xPostIds: string[]; url:
   const total = post.thread.length;
   try {
     const pending = post.thread.slice(ids.length);
+    const { maxChars } = getConfig();
     pending.forEach((s, i) => {
       const n = ids.length + i + 1;
+      const length = weightedLength(s.text);
       if (!s.text.trim() && !s.mediaIds.length) throw new XApiError(`Post ${n} is empty; add text or remove it.`);
+      if (length > maxChars) throw new XApiError(`Post ${n} is ${length}/${maxChars} characters; shorten it, then Retry.`);
       if (s.mediaIds.length > 4) throw new XApiError(`Post ${n} has ${s.mediaIds.length} images; X allows at most 4.`);
     });
     // Upload every remaining image before the first tweet so a bad image can't leave the thread half-posted.
@@ -238,10 +265,13 @@ export async function publishToX(post: Post): Promise<{ xPostIds: string[]; url:
       recordPostedTweets(post.id, ids);
     }
   } catch (err) {
-    const progress = ids.length
-      ? `${ids.length} of ${total} posts are live on X; Retry continues with post ${ids.length + 1} without re-posting them.`
-      : `Nothing was posted (0 of ${total}).`;
-    throw new XApiError(`${(err as Error).message} ${progress}`, err instanceof XApiError ? err.status : undefined);
+    const resumable = !(err instanceof XApiError) || err.resumable;
+    const progress = !ids.length
+      ? `Nothing was posted (0 of ${total}).`
+      : resumable
+        ? `${ids.length} of ${total} posts are live on X; Retry continues with post ${ids.length + 1} without re-posting them.`
+        : `${ids.length} of ${total} posts are live on X.`;
+    throw new XApiError(`${(err as Error).message} ${progress}`, err instanceof XApiError ? err.status : undefined, resumable);
   }
   return { xPostIds: ids, url: `https://x.com/i/status/${ids[0]}` };
 }

@@ -1,12 +1,13 @@
 // REST API mounted at /api (documented at /openapi.json), plus /media/:id file serving.
 import { readFile } from "node:fs/promises";
 import { createRoute, z } from "@hono/zod-openapi";
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { threadToText } from "../shared/thread.ts";
 import { APP_EVENT_TYPES, POST_STATUSES, type Health, type PostSource, type PostStatus } from "../shared/types.ts";
 import { aiStatus } from "./ai/provider.ts";
-import { buildQueue, getConfig, nextFreeSlots, parseInstant, parseWhen } from "./config.ts";
+import { buildQueue, configError, getConfig, nextFreeSlots, parseInstant, parseWhen } from "./config.ts";
+import { db } from "./db.ts";
 import { env, VERSION, xConfigured } from "./env.ts";
 import { createRouter } from "./http.ts";
 import { saveImage, saveImageFromUrl } from "./media.ts";
@@ -17,7 +18,6 @@ import {
   deleteMedia,
   deletePost,
   getMedia,
-  idempotent,
   IMAGE_MIMES,
   listPosts,
   markPublishedManually,
@@ -33,7 +33,6 @@ import { publishNow, retryPost } from "./scheduler.ts";
 import { eventStream } from "./sse.ts";
 import { createWebhook, deleteWebhook, listWebhooks, testWebhook } from "./webhooks.ts";
 
-
 // ---------- schemas (named ones become components in /openapi.json) ----------
 
 const When = z
@@ -42,7 +41,9 @@ const When = z
     z.iso.datetime({ offset: true, local: true, error: 'use "next" or an ISO-8601 date-time, e.g. 2026-11-02T09:00:00+07:00, …Z, or 2026-11-02T09:00 (configured timezone)' }),
   ])
   .openapi({
-    description: '"next" takes the next free posting slot from threadsmith.config.json; otherwise an ISO-8601 date-time. Without an offset it is read in the configured timezone (GET /config). Must not be in the past.',
+    description:
+      '"next" takes the next free posting slot from threadsmith.config.json; otherwise an ISO-8601 date-time, with Z or an offset, or without one ' +
+      "for a wall-clock time in the configured timezone (GET /config). A date alone (ambiguous) and a time already past are refused with 400.",
     example: "next",
   });
 const DateFilter = z.string().optional();
@@ -71,7 +72,8 @@ const PostSchema = z
     status: z.enum(POST_STATUSES).openapi({
       description:
         "draft: not queued · scheduled: waits for scheduledAt · publishing: X API calls in flight · " +
-        "due: time arrived but no X API keys, the user must copy & post by hand · published: live on X · " +
+        "due: its time came but it needs a human — no X API keys (manual mode: copy & post by hand), or it was more than lateGraceMinutes " +
+        "late because the server was off (`error` says why; publish, retry or reschedule it) · published: live on X · " +
         "failed: X API error (see `error`; `xPostIds` lists tweets that did go out, retry resumes after them).",
     }),
     thread: z.array(SegmentSchema).openapi({ description: "Posts in thread order; a single post is a one-item thread." }),
@@ -156,7 +158,13 @@ const ConfigSchema = z
       ]),
     ),
     schedulerIntervalSeconds: z.number().int(),
+    lateGraceMinutes: z.number().int().openapi({
+      description: "A scheduled post found more than this many minutes late (the server was off) becomes due instead of posting unattended; 0 = always post.",
+    }),
     voiceCount: z.number().int().openapi({ description: "How many voice samples the AI copilot imitates." }),
+    configError: z.string().nullable().openapi({
+      description: "Why the latest edit of threadsmith.config.json was rejected (the previous valid config stays in use until it is fixed); null when the file is fine.",
+    }),
   })
   .openapi("Config");
 
@@ -218,10 +226,14 @@ const E400 = json(ErrorSchema, "Invalid input; `message` names the field and the
 const E404 = json(ErrorSchema, "Not found.");
 const E409 = json(ErrorSchema, "Not allowed in the current state (e.g. the post is already published or publishing).");
 const IdParam = z.object({ id: z.string().openapi({ description: "Resource id (UUID)." }) });
-const IdemHeaders = z.object({
+const IdemHeader = z.object({
   "Idempotency-Key": z.string().max(200).optional().openapi({
-    description: "Retry-safe creates: a repeat request with the same key returns the first result (header Idempotent-Replayed: true) instead of a duplicate.",
+    description:
+      "Retry-safe POST: a repeat request to the same path with the same key (within 24 h) gets the first successful answer again, " +
+      "same status and body, with header Idempotent-Replayed: true, instead of acting twice. Error answers are not stored.",
   }),
+});
+const IdemHeaders = IdemHeader.extend({
   "X-Threadsmith-Source": z.string().optional().openapi({ description: "Who created the post: ui, cli or ai. Anything else is recorded as api." }),
 });
 
@@ -232,16 +244,48 @@ function sourceOf(c: Context): PostSource {
   return s === "ui" || s === "cli" || s === "ai" ? s : "api";
 }
 
-/** Idempotency-Key support, scoped per path so one key can't replay another endpoint's response. */
-function once<T>(c: Context, fn: () => T): T {
+const IDEMPOTENCY_TTL_MS = 24 * 3600_000;
+const idempotencyInFlight = new Map<string, Promise<unknown>>();
+
+/**
+ * Idempotency-Key on every POST under /api, scoped per path so one key can't replay another endpoint's answer.
+ * The first 2xx JSON answer is stored and replayed; a concurrent repeat waits for the first request to finish.
+ */
+const idempotency: MiddlewareHandler = async (c, next) => {
   const key = c.req.header("idempotency-key");
-  let fresh = false;
-  const out = idempotent(key && `${c.req.path} ${key}`, () => ((fresh = true), fn()));
-  if (key && !fresh) c.header("Idempotent-Replayed", "true");
-  return out;
-}
+  if (c.req.method !== "POST" || !key) return next();
+  if (key.length > 200) throw new BadInputError("Idempotency-Key must be at most 200 characters");
+  const scope = `POST ${c.req.path} ${key}`;
+  for (let p; (p = idempotencyInFlight.get(scope)); ) await p;
+  const hit = db
+    .prepare("SELECT response FROM idempotency WHERE key = ? AND created_at >= ?")
+    .get(scope, new Date(Date.now() - IDEMPOTENCY_TTL_MS).toISOString()) as { response: string } | undefined;
+  if (hit) {
+    const { status, body } = JSON.parse(hit.response) as { status: 200; body: unknown };
+    return c.json(body, status, { "Idempotent-Replayed": "true" });
+  }
+  const run = next();
+  idempotencyInFlight.set(scope, run.catch(() => {}));
+  try {
+    await run;
+  } finally {
+    idempotencyInFlight.delete(scope);
+  }
+  if (c.res.ok && c.res.headers.get("content-type")?.startsWith("application/json")) {
+    const ts = Date.now();
+    db.prepare("DELETE FROM idempotency WHERE created_at < ?").run(new Date(ts - IDEMPOTENCY_TTL_MS).toISOString());
+    db.prepare("INSERT OR IGNORE INTO idempotency (key, response, created_at) VALUES (?, ?, ?)").run(
+      scope,
+      JSON.stringify({ status: c.res.status, body: await c.res.clone().json() }),
+      new Date(ts).toISOString(),
+    );
+  }
+};
 
 const when = parseWhen;
+
+/** List filter bound: a date-time (see parseInstant), or a date alone meaning that day's start in the configured timezone. */
+const bound = (s: string | undefined) => (s ? parseInstant(/^\d{4}-\d{2}-\d{2}$/.test(s.trim()) ? `${s.trim()}T00:00` : s) : undefined);
 
 function checkMedia(thread?: { mediaIds?: string[] }[]) {
   const missing = (thread ?? []).flatMap((s) => s.mediaIds ?? []).filter((id) => !getMedia(id));
@@ -251,6 +295,8 @@ function checkMedia(thread?: { mediaIds?: string[] }[]) {
 // ---------- routes ----------
 
 export const apiRoutes = createRouter();
+// Registered first so it wraps every route; mounted at /api, it also covers the /api/push and /api/ai routers.
+apiRoutes.use("*", idempotency);
 
 // Not used by any route body, but agents need these shapes.
 apiRoutes.openAPIRegistry.register("AppEvent", AppEventSchema);
@@ -276,8 +322,11 @@ apiRoutes.openapi(
           .optional()
           .refine((s) => !s || s.split(",").every((x) => POST_STATUSES.includes(x.trim() as PostStatus)), `comma-separated list of: ${POST_STATUSES.join(", ")}`)
           .openapi({ description: `Comma-separated filter: ${POST_STATUSES.join(", ")}.`, example: "draft,scheduled" }),
-        from: DateFilter.openapi({ description: "scheduledAt ≥ from (ISO-8601 date-time; no offset = configured timezone)." }),
-        to: DateFilter.openapi({ description: "scheduledAt < to (ISO-8601 date-time; no offset = configured timezone)." }),
+        from: DateFilter.openapi({
+          description: "scheduledAt ≥ from: an ISO-8601 date-time (no offset = configured timezone), or a date alone for that day's local midnight.",
+          example: "2026-11-02",
+        }),
+        to: DateFilter.openapi({ description: "scheduledAt < to, same format as `from`.", example: "2026-11-03" }),
         limit: z.coerce.number().int().min(1).max(1000).optional().openapi({ description: "Default 500." }),
       }),
     },
@@ -286,9 +335,7 @@ apiRoutes.openapi(
   (c) => {
     const q = c.req.valid("query");
     const status = q.status?.split(",").map((s) => s.trim() as PostStatus);
-    const from = q.from ? parseInstant(q.from) : undefined;
-    const to = q.to ? parseInstant(q.to) : undefined;
-    return c.json({ posts: listPosts({ status, from, to, limit: q.limit }) }, 200);
+    return c.json({ posts: listPosts({ status, from: bound(q.from), to: bound(q.to), limit: q.limit }) }, 200);
   },
 );
 
@@ -302,17 +349,16 @@ apiRoutes.openapi(
     description:
       "Creates a draft, or queues it when `scheduledAt` is set. Give the content either as `text` (posts separated by a line containing only `---`) " +
       'or as structured `thread` segments. `scheduledAt: "next"` takes the next free slot from the posting schedule in threadsmith.config.json; ' +
-      "an ISO date-time must be in the future (no offset = configured timezone). Posts longer than maxChars (GET /health) are accepted as drafts but fail when publishing, " +
-      "so keep each post within the limit (URLs count 23, emoji 2). Send an `Idempotency-Key` header when you might retry.",
+      "an ISO date-time must be in the future (no offset = configured timezone; a date alone is refused). Posts longer than maxChars (GET /health; URLs count 23, " +
+      "emoji 2) are accepted, but publishing refuses the whole thread before anything is posted (status failed, nothing on X), so keep each post within the limit. " +
+      "Send an `Idempotency-Key` header when you might retry.",
     request: { headers: IdemHeaders, body: body(CreatePostSchema) },
     responses: { 201: json(PostSchema, "The created post."), 400: E400, 409: json(ErrorSchema, 'No free slot for "next".') },
   }),
   (c) => {
     const input = c.req.valid("json");
     checkMedia(input.thread);
-    const post = once(c, () =>
-      createPost({ ...input, scheduledAt: input.scheduledAt ? when(input.scheduledAt) : null, source: sourceOf(c) }),
-    );
+    const post = createPost({ ...input, scheduledAt: input.scheduledAt ? when(input.scheduledAt) : null, source: sourceOf(c) });
     return c.json(post, 201);
   },
 );
@@ -342,8 +388,9 @@ apiRoutes.openapi(
     operationId: "updatePost",
     summary: "Edit a post's content or title",
     description:
-      "Replaces the content (send `text` or `thread`; the whole thread is replaced) and/or the title. Omitted fields stay unchanged. " +
-      "Scheduling is unaffected — use /schedule or /unschedule. Refused with 409 once the post is publishing or published.",
+      "Replaces the content and/or the title; omitted fields stay unchanged. `text` replaces the thread but keeps each post's id and images by position; " +
+      "`thread` is taken as given. Scheduling is unaffected — use /schedule or /unschedule. Refused with 409 once the post is publishing or published, " +
+      "and when it would change, remove or reorder posts of a partly published thread that are already live on X (the first xPostIds.length posts).",
     request: { params: IdParam, body: body(UpdatePostSchema) },
     responses: { 200: json(PostSchema, "The updated post."), 400: E400, 404: E404, 409: E409 },
   }),
@@ -380,8 +427,8 @@ apiRoutes.openapi(
     summary: "Queue a post for a time or the next free slot",
     description:
       'Sets status to scheduled. `at: "next"` picks the next free slot from the config (GET /slots/next previews them); ' +
-      "an ISO date-time must be in the future (no offset = configured timezone). Also reschedules scheduled/due/failed posts.",
-    request: { params: IdParam, body: body(z.object({ at: When })) },
+      "an ISO date-time must be in the future (no offset = configured timezone; a date alone is refused). Also reschedules scheduled/due/failed posts.",
+    request: { params: IdParam, headers: IdemHeader, body: body(z.object({ at: When })) },
     responses: { 200: json(PostSchema, "The scheduled post."), 400: E400, 404: E404, 409: E409 },
   }),
   (c) => c.json(schedulePost(c.req.valid("param").id, when(c.req.valid("json").at)), 200),
@@ -395,7 +442,7 @@ apiRoutes.openapi(
     operationId: "unschedulePost",
     summary: "Move a post back to drafts",
     description: "Removes it from the queue (status draft, scheduledAt null). Content is kept.",
-    request: { params: IdParam },
+    request: { params: IdParam, headers: IdemHeader },
     responses: { 200: json(PostSchema, "The post, now a draft."), 404: E404, 409: E409 },
   }),
   (c) => c.json(unschedulePost(c.req.valid("param").id), 200),
@@ -410,9 +457,11 @@ apiRoutes.openapi(
     summary: "Publish to X right now",
     description:
       "Posts the thread to X immediately via the X API and waits: returns the post as published, or as failed with `error` " +
-      "(X errors are not HTTP errors here — check `status`). Requires X API keys (GET /health → x.mode = api); in manual mode it answers 409 — " +
+      "(X errors are not HTTP errors here — check `status`). Works for draft, scheduled, due and failed posts; posts already live (xPostIds) are not re-sent. " +
+      "An empty post, one over maxChars or with more than 4 images fails the whole thread before anything is posted. " +
+      "Requires X API keys (GET /health → x.mode = api); in manual mode it answers 409 — " +
       "instead get the text from GET /posts/{id}/export, post it by hand, then call POST /posts/{id}/mark-published.",
-    request: { params: IdParam },
+    request: { params: IdParam, headers: IdemHeader },
     responses: { 200: json(PostSchema, "The post after publishing (check status/error)."), 404: E404, 409: E409 },
   }),
   async (c) => c.json(await publishNow(c.req.valid("param").id), 200),
@@ -424,11 +473,12 @@ apiRoutes.openapi(
     path: "/posts/{id}/retry",
     tags: ["Posts"],
     operationId: "retryPost",
-    summary: "Retry a failed post",
+    summary: "Retry a failed post, or publish a due one",
     description:
-      "For failed or due posts only (409 otherwise). With X API keys it publishes again: tweets already posted (xPostIds) are not re-sent, " +
-      "the thread resumes after them. In manual mode it marks the post due again, which re-sends the copy & post notification.",
-    request: { params: IdParam },
+      "For failed or due posts only (409 otherwise). With X API keys it publishes now: tweets already posted (xPostIds) are not re-sent, " +
+      "the thread resumes after them; this also posts a due post that missed its time while the server was off. " +
+      "In manual mode it marks the post due again, which re-sends the copy & post notification.",
+    request: { params: IdParam, headers: IdemHeader },
     responses: { 200: json(PostSchema, "The post after the retry."), 404: E404, 409: E409 },
   }),
   async (c) => c.json(await retryPost(c.req.valid("param").id), 200),
@@ -443,9 +493,10 @@ apiRoutes.openapi(
     summary: "Record that the user posted it by hand",
     description:
       "Manual mode: after the user copied the thread (GET /posts/{id}/export) and posted it on X themselves, mark it published, optionally with the tweet URL. " +
-      "Calling it again on a published post is a no-op.",
+      "Calling it again on a published post is a no-op (returned unchanged, no event). Refused with 409 while an X API publish of it is in flight.",
     request: {
       params: IdParam,
+      headers: IdemHeader,
       body: body(z.object({ url: z.url({ protocol: /^https?$/ }).optional().openapi({ description: "Link to the first tweet." }) }), false),
     },
     responses: { 200: json(PostSchema, "The published post."), 400: E400, 404: E404, 409: E409 },
@@ -464,18 +515,42 @@ apiRoutes.openapi(
     summary: "Get the thread as plain text and an X intent link",
     description:
       "For copy & paste posting: `text` is the whole thread with `---` separators, `posts` the individual posts, " +
-      "`intentUrl` opens X's composer prefilled with the first post (X intents can't create threads or attach images).",
+      "`intentUrl` opens X's composer prefilled with the first post (X intents can't create threads or attach images). " +
+      "When an API publish stopped partway (alreadyLive > 0), post only `remainingPosts`, as replies under `replyToUrl`.",
     request: { params: IdParam },
     responses: {
-      200: json(z.object({ text: z.string(), posts: z.array(z.string()), intentUrl: z.url() }), "Exported text."),
+      200: json(
+        z
+          .object({
+            text: z.string(),
+            posts: z.array(z.string()),
+            intentUrl: z.url(),
+            alreadyLive: z.number().int().openapi({ description: "How many posts of the thread are already live on X (xPostIds); 0 unless an API publish stopped partway." }),
+            remainingText: z.string().openapi({ description: "Like `text`, but only the posts not yet live." }),
+            remainingPosts: z.array(z.string()).openapi({ description: "The posts not yet live, in order." }),
+            replyToUrl: z.url().nullable().openapi({ description: "The last live post, to reply to with remainingPosts[0]; null when alreadyLive is 0." }),
+          })
+          .openapi("ThreadExport"),
+        "Exported text.",
+      ),
       404: E404,
     },
   }),
   (c) => {
     const post = requirePost(c.req.valid("param").id);
     const posts = post.thread.map((s) => s.text);
+    const alreadyLive = Math.min(post.xPostIds.length, posts.length);
+    const remaining = post.thread.slice(alreadyLive);
     return c.json(
-      { text: threadToText(post.thread), posts, intentUrl: `https://x.com/intent/post?text=${encodeURIComponent(posts[0] ?? "")}` },
+      {
+        text: threadToText(post.thread),
+        posts,
+        intentUrl: `https://x.com/intent/post?text=${encodeURIComponent(posts[0] ?? "")}`,
+        alreadyLive,
+        remainingText: threadToText(remaining),
+        remainingPosts: remaining.map((s) => s.text),
+        replyToUrl: alreadyLive ? `https://x.com/i/status/${post.xPostIds[alreadyLive - 1]}` : null,
+      },
       200,
     );
   },
@@ -494,13 +569,11 @@ apiRoutes.openapi(
   }),
   (c) => {
     const src = requirePost(c.req.valid("param").id);
-    const post = once(c, () =>
-      createPost({
-        title: src.title && `${src.title} (copy)`,
-        thread: src.thread.map(({ text, mediaIds }) => ({ text, mediaIds })),
-        source: sourceOf(c),
-      }),
-    );
+    const post = createPost({
+      title: src.title && `${src.title} (copy)`,
+      thread: src.thread.map(({ text, mediaIds }) => ({ text, mediaIds })),
+      source: sourceOf(c),
+    });
     return c.json(post, 201);
   },
 );
@@ -546,12 +619,14 @@ apiRoutes.openapi(
     tags: ["System"],
     operationId: "getConfig",
     summary: "Read the scheduling config",
-    description: "Timezone, character limit and posting slots from threadsmith.config.json (edit that file to change them; it is re-read automatically).",
+    description:
+      "Timezone, character limit and posting slots from threadsmith.config.json (edit that file to change them; it is re-read automatically). " +
+      "If an edit is invalid, the previous config stays in use and `configError` says what is wrong.",
     responses: { 200: json(ConfigSchema, "Current config.") },
   }),
   (c) => {
     const { voice, ...config } = getConfig();
-    return c.json({ ...config, voiceCount: voice.length }, 200);
+    return c.json({ ...config, voiceCount: voice.length, configError }, 200);
   },
 );
 
@@ -594,6 +669,7 @@ apiRoutes.openapi(
       "multipart/form-data with field `file` (PNG, JPEG, WebP or GIF, max 5 MB; the bytes are checked, not the filename) and optional `alt`. " +
       "Attach the returned id via a segment's `mediaIds` (max 4 per post).",
     request: {
+      headers: IdemHeader,
       body: {
         required: true,
         content: {
@@ -624,6 +700,7 @@ apiRoutes.openapi(
     summary: "Import an image from a URL",
     description: "The server downloads the image (http/https only, 15 s timeout, max 5 MB, PNG/JPEG/WebP/GIF) and stores it like an upload.",
     request: {
+      headers: IdemHeader,
       body: body(
         z.object({
           url: z.url({ protocol: /^https?$/, error: "must be an http(s) URL" }),
@@ -737,6 +814,7 @@ apiRoutes.openapi(
       "Verify `X-Threadsmith-Signature: sha256=<hex>` = HMAC-SHA256 of the raw body keyed with the returned `secret` (shown only once). " +
       "Non-2xx answers or no answer within 10 s are retried twice (after 2 s and 10 s); 4xx other than 408/429 are not retried.",
     request: {
+      headers: IdemHeader,
       body: body(
         z.object({
           url: z.url({ protocol: /^https?$/, error: "must be an http(s) URL" }),
@@ -774,7 +852,7 @@ apiRoutes.openapi(
     summary: "Send a test ping",
     description:
       "Delivers one signed `ping` (data: { webhookId, message }) without retries and reports how the endpoint answered. Use it to check reachability and signature verification.",
-    request: { params: IdParam },
+    request: { params: IdParam, headers: IdemHeader },
     responses: {
       200: json(
         z.object({ ok: z.boolean(), status: z.number().int().nullable(), error: z.string().nullable() }).openapi("WebhookTestResult"),

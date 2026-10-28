@@ -16,11 +16,16 @@ Prefer, in this order:
 1. **MCP tools**, if a `threadsmith` MCP server is connected (tools such as `get_settings`, `count_characters`,
    `create_post`, `list_queue`). They return structured results. To connect Claude Code:
    `claude mcp add --transport http threadsmith http://127.0.0.1:3000/mcp`
+   (add `--header "Authorization: Bearer <AUTH_TOKEN>"` when the server has a token). There are no copilot tools
+   over MCP: you write the text yourself.
 2. **The CLI**: `threadsmith <command>` if it's on PATH, otherwise `node <threadsmith-repo>/cli/threadsmith.mjs <command>`.
    It reads `THREADSMITH_URL` (default `http://127.0.0.1:3000`) and `THREADSMITH_TOKEN` (the server's AUTH_TOKEN).
-   Add `--json` for machine-readable output. Exit codes: 0 ok, 1 API or network error, 2 usage error.
+   Add `--json` for machine-readable output. Exit codes: 0 ok, 1 API or network error (also when `publish` or
+   `retry` ends with the post `failed`), 2 usage error.
 3. **REST**, with `Authorization: Bearer $THREADSMITH_TOKEN` when auth is on and `X-Threadsmith-Source: ai` on writes.
-   `GET $THREADSMITH_URL/llms-full.txt` documents every route; `/openapi.json` is the full spec.
+   Every POST under `/api` accepts `Idempotency-Key`: a repeat with the same key on the same path replays the first
+   successful answer instead of acting twice. `GET $THREADSMITH_URL/llms-full.txt` documents every route;
+   `/openapi.json` is the full spec.
 
 Start with `threadsmith health --json` (or `get_settings`) to learn the X mode (`api` or `manual`), the per-post
 limit (`maxChars`), the timezone and whether the server's AI copilot is on. If the server isn't reachable, tell the
@@ -38,9 +43,11 @@ user how to start it (`pnpm start` or `pnpm dev` in the Threadsmith folder) rath
 4. **Show the user the whole thread** (with counts) and ask how to queue it: the next free slot, a specific time,
    or keep it as a draft. Don't schedule, publish or delete without their go-ahead.
 5. **Save**: `threadsmith new --file draft.txt --at next --json` (or `create_post` with `schedule: "next"`).
-   An exact time is ISO-8601 with an offset, e.g. `2026-11-03T09:00:00+07:00`.
-6. **Confirm**: report the post id and the scheduled time in the user's timezone; `threadsmith queue` shows
-   the timeline and the remaining free slots.
+   An exact time is ISO-8601 with an offset, e.g. `2026-11-03T09:00:00+07:00`. Without an offset
+   (`2026-11-03T09:00`) the server reads it in its configured `timezone`; a date alone or a past time is refused.
+6. **Confirm**: report the post id and the scheduled time in the user's timezone. The CLI prints times in the
+   server's timezone and names it (`--json` gives UTC); convert if the user lives elsewhere. `threadsmith queue`
+   shows the timeline and the remaining free slots.
 
 Common follow-ups:
 
@@ -49,10 +56,10 @@ Common follow-ups:
 | What's scheduled? | `threadsmith queue --days 7` | `list_queue` |
 | Open slots | `threadsmith slots 5` | `next_free_slots` |
 | Read a post | `threadsmith show <id>` | `get_post` |
-| Edit text (images stay put) | `threadsmith edit <id> --file new.txt` | `update_post` |
+| Edit text (images stay put) | `threadsmith edit <id> --file new.txt` (`--title t` alone only renames) | `update_post` |
 | Reschedule / unqueue | `threadsmith schedule <id> next` / `unschedule <id>` | `schedule_post` / `unschedule_post` |
 | Post by hand | `threadsmith copy <id> --clipboard`, then `posted <id> --url <link>` | `export_thread`, `mark_published` |
-| Failed post | `threadsmith show <id>` (read `error`), fix, `retry <id>` | `get_post`, `retry_post` |
+| Failed or due post | `threadsmith show <id>` (read `error`), fix, `retry <id>` | `get_post`, `retry_post` |
 | Add an image | `threadsmith new ... --image 2:chart.png` | `attach_image_from_url` |
 
 Ids can be shortened to a unique prefix in the CLI. Piping works: `threadsmith ai threadify --file notes.md | threadsmith new --file -`.
@@ -79,8 +86,9 @@ Ids can be shortened to a unique prefix in the CLI. Piping works: `threadsmith a
 ## Counting and limits
 
 - The limit is `maxChars` from the server: 280 for standard accounts, larger for X Premium.
-- X weighs characters: most Latin text counts 1; CJK characters and each emoji count 2; Vietnamese letters with a
-  built-in tone mark (ạ, ấ, ệ, ố, ữ…) count 2, so Vietnamese posts fill up sooner than they look; every URL counts 23.
+- X weighs characters: most Latin text counts 1; CJK characters and each emoji count 2; every URL counts 23.
+  Vietnamese letters from Unicode's Latin Extended Additional block (ạ, ả, ấ, ầ, ệ, ố, ộ, ở, ữ, ự, ỳ…) count 2,
+  while á, à, ã, é, í, ó, ú, ý, â, ê, ô, ơ, ư, ă, đ count 1, so Vietnamese posts fill up sooner than they look.
   Don't count by eye; use `count` / `count_characters`.
 
 ## Honest constraints
@@ -95,5 +103,11 @@ Ids can be shortened to a unique prefix in the CLI. Piping works: `threadsmith a
 - **Publishing is public and irreversible.** Only use `publish` / `publish_now` when the user explicitly asks to post now.
   Deleting in Threadsmith never removes anything already on X.
 - **Failed threads resume.** `retry` continues after the last post that reached X, so it doesn't duplicate.
+  Posts already live are locked: an edit that changes, removes or reorders them is refused (409); edit only the
+  posts after them. To finish such a thread by hand, `threadsmith copy` (or `export_thread`'s `remainingText`)
+  gives only the posts not yet live, to post as replies under `replyToUrl`.
+- **Missed times are not posted late unattended.** If the server was off when a post was due and it is more than
+  `lateGraceMinutes` (default 60) late, it becomes `due` with `error` explaining why. Ask the user whether to
+  publish it now (`retry` in API mode), post it by hand, or reschedule it.
 - **The server's AI copilot** (`threadsmith ai threadify|hooks|fit|rewrite`) is optional and may be off; you can always
   write the text yourself.

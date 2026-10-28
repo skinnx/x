@@ -16,5 +16,6 @@
     }
   ],
   "schedulerIntervalSeconds": 15,
+  "lateGraceMinutes": 60,
   "voice": []
 }

@@ -30,7 +30,7 @@ export function Webhooks() {
     >
       <p>
         Threadsmith POSTs <code className="font-mono text-xs">{"{ id, type, createdAt, data }"}</code> to your URL, signed with{" "}
-        <code className="font-mono text-xs">X-Threadsmith-Signature: sha256=…</code> (HMAC of the raw body). Failed deliveries retry 3 times.
+        <code className="font-mono text-xs">X-Threadsmith-Signature: sha256=…</code> (HMAC of the raw body). Failed deliveries are retried twice (after 2 s and 10 s); 4xx answers other than 408 and 429 are not retried.
       </p>
 
       {secret && (

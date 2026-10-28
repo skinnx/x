@@ -36,7 +36,8 @@ export function ConnectView({ health }: { health: Health }) {
 
         <Card icon={<Bot size={16} />} title="MCP server" badge="for Claude, Cursor, any MCP client">
           <p>
-            Streamable HTTP endpoint with tools for drafts, the queue, publishing and the copilot. Point any MCP client at it.
+            Streamable HTTP endpoint with tools for drafts, the queue and publishing. Point any MCP client at it. Your agent writes the posts
+            itself; the built-in copilot is on the REST API (<code className="font-mono text-xs">/api/ai/*</code>) and the CLI.
           </p>
           <Code label="Endpoint" value={mcpUrl} />
           <Code label="Claude Code" value={`claude mcp add --transport http threadsmith ${mcpUrl}${authHeader}`} />

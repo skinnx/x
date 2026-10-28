@@ -268,7 +268,8 @@ function Tools(p: Props) {
       </Section>
 
       <p className="px-1 text-xs leading-relaxed text-ink-3">
-        Every AI change can be undone with {keys.undo} or the Undo button. Agents can do all of this too, over MCP.
+        Every AI change can be undone with {keys.undo} or the Undo button. Agents can call the same copilot over the REST API
+        (/api/ai/*) or the CLI.
       </p>
     </>
   );
