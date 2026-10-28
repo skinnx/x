@@ -45,6 +45,17 @@ export const env = {
   vapidSubject: str("VAPID_SUBJECT") ?? "mailto:threadsmith@localhost",
 };
 
+if (env.publicUrl) {
+  let ok = false;
+  try {
+    ok = /^https?:$/.test(new URL(env.publicUrl).protocol);
+  } catch {
+    // reported below
+  }
+  if (!ok) throw new Error(`PUBLIC_URL must be a full http(s) URL such as https://threads.example.com (got "${env.publicUrl}")`);
+  env.publicUrl = env.publicUrl.replace(/\/+$/, "");
+}
+
 export const xConfigured = Boolean(env.x.apiKey && env.x.apiSecret && env.x.accessToken && env.x.accessSecret);
 
 export function publicUrl(): string {

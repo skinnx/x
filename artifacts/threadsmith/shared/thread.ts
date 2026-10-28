@@ -24,9 +24,15 @@ const LIGHT_RANGES: Array<[number, number]> = [
   [8242, 8247],
 ];
 const URL_WEIGHT = 23;
-// Approximation of twitter-text's URL extractor: explicit schemes plus bare domains on common TLDs.
-const URL_RE =
-  /\bhttps?:\/\/[^\s]+|\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|ai|dev|app|co|me|xyz|vn|gg|so|sh|tv|ly|to|us|uk|de|fr|jp)\b(?:\/[^\s]*)?/gi;
+// Approximation of twitter-text's URL extractor: explicit schemes plus bare domains on common TLDs. Like
+// twitter-text, a URL is made of ASCII/Latin/Cyrillic characters only (so "https://x.co/a日本" ends before 日)
+// and trailing punctuation is not part of it.
+const URL_CHARS = "[\\w\\-.~!*';:=+,$/%#\\[\\]&|@?()\\u00C0-\\u024F\\u0400-\\u04FF\\u1E00-\\u1EFF]";
+const URL_RE = new RegExp(
+  `\\bhttps?:\\/\\/${URL_CHARS}+|\\b(?:[a-z0-9-]+\\.)+(?:com|net|org|io|ai|dev|app|co|me|xyz|vn|gg|so|sh|tv|ly|to|us|uk|de|fr|jp)\\b(?:\\/${URL_CHARS}*)?`,
+  "gi",
+);
+const TRAILING_PUNCT = /[.,!?;:'")\]]+$/;
 const EMOJI_RE = /\p{Extended_Pictographic}/u;
 
 const segmenter = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter() : null;
@@ -55,14 +61,14 @@ export function weightedLength(raw: string): number {
   let total = 0;
   let last = 0;
   for (const m of text.matchAll(URL_RE)) {
+    const url = m[0].replace(TRAILING_PUNCT, "");
     total += plainWeight(text.slice(last, m.index)) + URL_WEIGHT;
-    last = m.index! + m[0].length;
+    last = m.index! + url.length;
   }
   return total + plainWeight(text.slice(last));
 }
 
 export function hasUrl(text: string): boolean {
-  URL_RE.lastIndex = 0;
   return new RegExp(URL_RE.source, "i").test(text);
 }
 

@@ -11,6 +11,10 @@ import { bus } from "./events.ts";
 
 export class NotFoundError extends Error {}
 export class ConflictError extends Error {}
+/** Invalid input from a caller; errorResponse maps the status to a 400. */
+export class BadInputError extends Error {
+  status = 400;
+}
 
 const now = () => new Date().toISOString();
 const newId = () => randomUUID();
@@ -55,16 +59,23 @@ export interface SegmentInput {
   mediaIds?: string[];
 }
 
-/** Accepts either structured segments or one string with "---" separators. */
-export function normalizeThread(input: { thread?: SegmentInput[]; text?: string }): Segment[] {
-  const parts: SegmentInput[] = input.thread ?? (input.text !== undefined ? splitThread(input.text).map((text) => ({ text })) : []);
+/**
+ * Accepts either structured segments or one string with "---" separators. When `previous` is given and the
+ * input is plain text, segment ids and images carry over by position, so editing text never drops images.
+ */
+export function normalizeThread(input: { thread?: SegmentInput[]; text?: string }, previous: Segment[] = []): Segment[] {
+  const parts: SegmentInput[] =
+    input.thread ??
+    (input.text !== undefined
+      ? splitThread(input.text).map((text, i) => ({ id: previous[i]?.id, text, mediaIds: previous[i]?.mediaIds }))
+      : []);
   const segments = parts.map((p) => ({ id: p.id ?? newId(), text: p.text, mediaIds: p.mediaIds ?? [] }));
   return segments.length ? segments : [{ id: newId(), text: "", mediaIds: [] }];
 }
 
 function assertTime(iso: string): string {
   const t = new Date(iso);
-  if (Number.isNaN(t.getTime())) throw new ConflictError(`Invalid date: ${iso}`);
+  if (Number.isNaN(t.getTime())) throw new BadInputError(`Invalid date: ${iso}`);
   return t.toISOString();
 }
 
@@ -131,11 +142,26 @@ export function createPost(input: {
 
 const EDITABLE: PostStatus[] = ["draft", "scheduled", "due", "failed"];
 
-/** Autosave target. Editing a published or in-flight post is refused. */
+/**
+ * Autosave target. Editing a published or in-flight post is refused, and so is changing the posts of a
+ * partly published thread that are already live on X (Retry resumes after them by position).
+ */
 export function updatePost(id: string, patch: { thread?: SegmentInput[]; text?: string; title?: string | null }): Post {
   const post = requirePost(id);
   if (!EDITABLE.includes(post.status)) throw new ConflictError(`Post is ${post.status} and can no longer be edited`);
-  const thread = patch.thread !== undefined || patch.text !== undefined ? normalizeThread(patch) : post.thread;
+  const thread = patch.thread !== undefined || patch.text !== undefined ? normalizeThread(patch, post.thread) : post.thread;
+  const live = post.xPostIds.length;
+  for (let i = 0; i < live; i++) {
+    const before = post.thread[i]!;
+    const after = thread[i];
+    if (!after || after.text.trim() !== before.text.trim() || after.mediaIds.join() !== before.mediaIds.join()) {
+      throw new ConflictError(
+        `The first ${live} post${live > 1 ? "s are" : " is"} already live on X and can't be changed, removed or reordered. ` +
+          `Edit only the posts after ${live > 1 ? "them" : "it"}, then Retry.`,
+      );
+    }
+    thread[i] = { ...after, id: before.id };
+  }
   const title = patch.title !== undefined ? patch.title : post.title;
   db.prepare("UPDATE posts SET thread = ?, title = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(thread), title, now(), id);
   const updated = requirePost(id);
@@ -190,11 +216,15 @@ export function claimDuePosts(at = new Date()): Post[] {
   });
 }
 
-/** Claim one specific post for an immediate "publish now". */
+/** Claim one specific post for an immediate "publish now". Its time becomes now, so it shows up on today's queue. */
 export function claimPost(id: string): Post {
   const post = requirePost(id);
   if (!EDITABLE.includes(post.status)) throw new ConflictError(`Post is ${post.status}`);
-  db.prepare("UPDATE posts SET status = 'publishing', updated_at = ? WHERE id = ?").run(now(), id);
+  const ts = now();
+  const res = db
+    .prepare("UPDATE posts SET status = 'publishing', scheduled_at = ?, updated_at = ? WHERE id = ? AND status = ?")
+    .run(ts, ts, id, post.status);
+  if (res.changes !== 1) throw new ConflictError("Post changed while claiming it; try again");
   return requirePost(id);
 }
 
@@ -220,6 +250,18 @@ export function markPublished(id: string, result: { xPostIds?: string[]; url?: s
   return updated;
 }
 
+/**
+ * The user posted it by hand (manual mode). Idempotent: an already published post is returned unchanged
+ * without a second event; an in-flight API publish is refused.
+ */
+export function markPublishedManually(id: string, url?: string | null): Post {
+  const post = requirePost(id);
+  if (post.status === "publishing") throw new ConflictError("Post is being published via the X API right now");
+  if (post.status === "published") return post;
+  if (url != null && !/^https?:\/\/\S+$/i.test(url)) throw new BadInputError("url must be an http(s) link to the post on X");
+  return markPublished(id, { url: url ?? null });
+}
+
 export function markFailed(id: string, error: string): Post {
   db.prepare("UPDATE posts SET status = 'failed', error = ?, updated_at = ? WHERE id = ?").run(error, now(), id);
   logAttempt(id, false, error);
@@ -228,10 +270,13 @@ export function markFailed(id: string, error: string): Post {
   return updated;
 }
 
-/** No way to auto-post: hand over to the human (notification + copy button). */
-export function markDue(id: string): Post {
-  db.prepare("UPDATE posts SET status = 'due', updated_at = ? WHERE id = ?").run(now(), id);
-  logAttempt(id, false, "manual: no X API credentials, waiting for copy & post");
+/**
+ * Hand over to the human (notification + copy button): there are no X keys, or the post missed its time by too
+ * much to go out unattended. `note` explains why and is shown with the post.
+ */
+export function markDue(id: string, note: string | null = null): Post {
+  db.prepare("UPDATE posts SET status = 'due', error = ?, updated_at = ? WHERE id = ?").run(note, now(), id);
+  logAttempt(id, false, note ?? "manual: no X API credentials, waiting for copy & post");
   const updated = requirePost(id);
   bus.emit({ type: "post.due", post: updated });
   return updated;
@@ -279,6 +324,9 @@ export const IMAGE_MIMES: Record<string, string> = {
 };
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // X's limit for images
 
+/** Files live in <DATA_DIR>/media; rows store only the file name so data/ can be moved or restored elsewhere. */
+const mediaFile = (stored: string) => path.join(env.dataDir, "media", path.basename(stored));
+
 function toMedia(r: MediaRow): Media {
   return { id: r.id, filename: r.filename, mime: r.mime, size: r.size, alt: r.alt, url: `/media/${r.id}`, createdAt: r.created_at };
 }
@@ -288,15 +336,15 @@ export function createMedia(input: { data: Uint8Array; mime: string; filename?: 
   if (!ext) throw new ConflictError(`Unsupported image type ${input.mime}; use png, jpeg, webp or gif`);
   if (input.data.byteLength > MAX_IMAGE_BYTES) throw new ConflictError("Image is larger than X's 5 MB limit");
   const id = newId();
-  const file = path.join(env.dataDir, "media", `${id}.${ext}`);
-  writeFileSync(file, input.data);
+  const name = `${id}.${ext}`;
+  writeFileSync(mediaFile(name), input.data);
   db.prepare("INSERT INTO media (id, filename, mime, size, alt, path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
     id,
     input.filename ?? `${id}.${ext}`,
     input.mime,
     input.data.byteLength,
     input.alt ?? null,
-    file,
+    name,
     now(),
   );
   return toMedia(db.prepare("SELECT * FROM media WHERE id = ?").get(id) as unknown as MediaRow);
@@ -304,7 +352,7 @@ export function createMedia(input: { data: Uint8Array; mime: string; filename?: 
 
 export function getMedia(id: string): (Media & { path: string; xMediaId: string | null; xMediaExpiresAt: string | null }) | undefined {
   const r = db.prepare("SELECT * FROM media WHERE id = ?").get(id) as MediaRow | undefined;
-  return r ? { ...toMedia(r), path: r.path, xMediaId: r.x_media_id, xMediaExpiresAt: r.x_media_expires_at } : undefined;
+  return r ? { ...toMedia(r), path: mediaFile(r.path), xMediaId: r.x_media_id, xMediaExpiresAt: r.x_media_expires_at } : undefined;
 }
 
 export function readMediaBytes(id: string): Buffer {
@@ -315,7 +363,8 @@ export function readMediaBytes(id: string): Buffer {
 
 export function updateMediaAlt(id: string, alt: string | null): Media {
   if (!getMedia(id)) throw new NotFoundError(`Media ${id} not found`);
-  db.prepare("UPDATE media SET alt = ? WHERE id = ?").run(alt, id);
+  // X attaches alt text at upload time, so a changed alt needs a fresh upload: drop the cached X media id.
+  db.prepare("UPDATE media SET alt = ?, x_media_id = NULL, x_media_expires_at = NULL WHERE id = ?").run(alt, id);
   return toMedia(db.prepare("SELECT * FROM media WHERE id = ?").get(id) as unknown as MediaRow);
 }
 

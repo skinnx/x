@@ -1,19 +1,18 @@
 // REST API mounted at /api (documented at /openapi.json), plus /media/:id file serving.
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { createRoute, z } from "@hono/zod-openapi";
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { threadToText } from "../shared/thread.ts";
 import { APP_EVENT_TYPES, POST_STATUSES, type Health, type PostSource, type PostStatus } from "../shared/types.ts";
 import { aiStatus } from "./ai/provider.ts";
-import { buildQueue, getConfig, nextFreeSlots, resolveWhen } from "./config.ts";
+import { buildQueue, getConfig, nextFreeSlots, parseInstant, parseWhen } from "./config.ts";
 import { env, VERSION, xConfigured } from "./env.ts";
 import { createRouter } from "./http.ts";
+import { saveImage, saveImageFromUrl } from "./media.ts";
 import {
   attemptsFor,
-  ConflictError,
-  createMedia,
+  BadInputError,
   createPost,
   deleteMedia,
   deletePost,
@@ -21,7 +20,7 @@ import {
   idempotent,
   IMAGE_MIMES,
   listPosts,
-  markPublished,
+  markPublishedManually,
   MAX_IMAGE_BYTES,
   NotFoundError,
   requirePost,
@@ -34,7 +33,6 @@ import { publishNow, retryPost } from "./scheduler.ts";
 import { eventStream } from "./sse.ts";
 import { createWebhook, deleteWebhook, listWebhooks, testWebhook } from "./webhooks.ts";
 
-const FETCH_TIMEOUT_MS = 15_000;
 
 // ---------- schemas (named ones become components in /openapi.json) ----------
 
@@ -47,10 +45,7 @@ const When = z
     description: '"next" takes the next free posting slot from threadsmith.config.json; otherwise an ISO-8601 date-time. Without an offset it is read in the configured timezone (GET /config). Must not be in the past.',
     example: "next",
   });
-const DateFilter = z
-  .string()
-  .refine((s) => !Number.isNaN(Date.parse(s)), "must be an ISO-8601 date or date-time")
-  .optional();
+const DateFilter = z.string().optional();
 
 const ErrorSchema = z
   .object({
@@ -246,65 +241,11 @@ function once<T>(c: Context, fn: () => T): T {
   return out;
 }
 
-function when(at: string): string {
-  let iso: string;
-  try {
-    iso = resolveWhen(at);
-  } catch (err) {
-    throw new ConflictError((err as Error).message); // no free slot left in the horizon
-  }
-  if (Date.parse(iso) < Date.now() - 60_000) {
-    throw badRequest(`${at} is in the past; pick a future time, use "next", or POST /api/posts/{id}/publish to post now`);
-  }
-  return iso;
-}
+const when = parseWhen;
 
 function checkMedia(thread?: { mediaIds?: string[] }[]) {
   const missing = (thread ?? []).flatMap((s) => s.mediaIds ?? []).filter((id) => !getMedia(id));
   if (missing.length) throw badRequest(`Unknown media id(s): ${missing.join(", ")}. Upload images with POST /api/media first.`);
-}
-
-/** Trust the bytes, not the declared type: only real PNG/JPEG/WebP/GIF data is stored and served. */
-function sniffImage(b: Uint8Array): string | undefined {
-  const ascii = (from: number, to: number) => String.fromCharCode(...b.subarray(from, to));
-  if (b[0] === 0x89 && ascii(1, 4) === "PNG") return "image/png";
-  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
-  if (ascii(0, 4) === "GIF8") return "image/gif";
-  if (ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP") return "image/webp";
-}
-
-const tooBig = () => badRequest(`Image is larger than X's ${MAX_IMAGE_BYTES / 1024 / 1024} MB limit`);
-
-function saveImage(data: Uint8Array, declared: string, filename: string | undefined, alt: string | null | undefined) {
-  if (data.byteLength > MAX_IMAGE_BYTES) throw tooBig();
-  const mime = sniffImage(data);
-  if (!mime || !IMAGE_MIMES[mime]) throw badRequest(`Not a PNG, JPEG, WebP or GIF image (declared type: ${declared || "none"})`);
-  return createMedia({ data, mime, filename: filename || undefined, alt });
-}
-
-async function download(url: string): Promise<{ data: Uint8Array; type: string; filename: string }> {
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), headers: { accept: "image/*" } });
-    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-    if (Number(res.headers.get("content-length")) > MAX_IMAGE_BYTES) throw tooBig();
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for (const reader = res.body.getReader(); ; ) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if ((size += value.byteLength) > MAX_IMAGE_BYTES) {
-        reader.cancel().catch(() => {});
-        throw tooBig();
-      }
-      chunks.push(value);
-    }
-    return { data: Buffer.concat(chunks), type: res.headers.get("content-type") ?? "", filename: path.posix.basename(new URL(res.url || url).pathname) };
-  } catch (err) {
-    if (err instanceof HTTPException) throw err;
-    const e = err as Error & { cause?: Error };
-    const reason = e.name === "TimeoutError" ? `no response within ${FETCH_TIMEOUT_MS / 1000}s` : (e.cause?.message ?? e.message);
-    throw badRequest(`Could not fetch ${url}: ${reason}`);
-  }
 }
 
 // ---------- routes ----------
@@ -335,8 +276,8 @@ apiRoutes.openapi(
           .optional()
           .refine((s) => !s || s.split(",").every((x) => POST_STATUSES.includes(x.trim() as PostStatus)), `comma-separated list of: ${POST_STATUSES.join(", ")}`)
           .openapi({ description: `Comma-separated filter: ${POST_STATUSES.join(", ")}.`, example: "draft,scheduled" }),
-        from: DateFilter.openapi({ description: "scheduledAt ≥ from (ISO-8601)." }),
-        to: DateFilter.openapi({ description: "scheduledAt < to (ISO-8601)." }),
+        from: DateFilter.openapi({ description: "scheduledAt ≥ from (ISO-8601 date-time; no offset = configured timezone)." }),
+        to: DateFilter.openapi({ description: "scheduledAt < to (ISO-8601 date-time; no offset = configured timezone)." }),
         limit: z.coerce.number().int().min(1).max(1000).optional().openapi({ description: "Default 500." }),
       }),
     },
@@ -345,7 +286,9 @@ apiRoutes.openapi(
   (c) => {
     const q = c.req.valid("query");
     const status = q.status?.split(",").map((s) => s.trim() as PostStatus);
-    return c.json({ posts: listPosts({ status, from: q.from, to: q.to, limit: q.limit }) }, 200);
+    const from = q.from ? parseInstant(q.from) : undefined;
+    const to = q.to ? parseInstant(q.to) : undefined;
+    return c.json({ posts: listPosts({ status, from, to, limit: q.limit }) }, 200);
   },
 );
 
@@ -508,11 +451,7 @@ apiRoutes.openapi(
     responses: { 200: json(PostSchema, "The published post."), 400: E400, 404: E404, 409: E409 },
   }),
   (c) => {
-    const { id } = c.req.valid("param");
-    const post = requirePost(id);
-    if (post.status === "publishing") throw new ConflictError("Post is being published via the X API right now");
-    if (post.status === "published") return c.json(post, 200);
-    return c.json(markPublished(id, { url: c.req.valid("json").url }), 200);
+    return c.json(markPublishedManually(c.req.valid("param").id, c.req.valid("json").url), 200);
   },
 );
 
@@ -671,8 +610,8 @@ apiRoutes.openapi(
   }),
   async (c) => {
     const { file, alt } = c.req.valid("form");
-    if (file.size > MAX_IMAGE_BYTES) throw tooBig();
-    return c.json(saveImage(new Uint8Array(await file.arrayBuffer()), file.type, file.name, alt), 201);
+    if (file.size > MAX_IMAGE_BYTES) throw new BadInputError(`Image is larger than X's ${MAX_IMAGE_BYTES / 1024 / 1024} MB limit`);
+    return c.json(saveImage({ data: new Uint8Array(await file.arrayBuffer()), declared: file.type, filename: file.name, alt }), 201);
   },
 );
 
@@ -696,8 +635,7 @@ apiRoutes.openapi(
   }),
   async (c) => {
     const { url, alt } = c.req.valid("json");
-    const img = await download(url);
-    return c.json(saveImage(img.data, img.type, img.filename, alt), 201);
+    return c.json(await saveImageFromUrl(url, alt), 201);
   },
 );
 

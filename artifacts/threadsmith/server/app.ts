@@ -7,7 +7,7 @@ import { Scalar } from "@scalar/hono-api-reference";
 import { aiRoutes } from "./ai/routes.ts";
 import { apiRoutes, mediaFileRoutes } from "./api.ts";
 import { guardRequest, requireAuth } from "./auth.ts";
-import { ROOT, VERSION } from "./env.ts";
+import { env, ROOT, VERSION } from "./env.ts";
 import { errorResponse } from "./http.ts";
 import { llmsRoutes } from "./llms.ts";
 import { mcpRoutes } from "./mcp.ts";
@@ -40,7 +40,7 @@ app.doc31("/openapi.json", (c) => ({
       "Compose, queue and publish X threads. Every UI action is available here, over MCP at /mcp, and via the `threadsmith` CLI. " +
       "Threads are arrays of segments, or one string with lines of `---` between posts. Send `Idempotency-Key` on POSTs you might retry.",
   },
-  servers: [{ url: new URL(c.req.url).origin }],
+  servers: [{ url: env.publicUrl ?? new URL(c.req.url).origin }],
   security: [{ bearer: [] }],
   tags: [
     { name: "Posts", description: "Drafts and threads: create, edit (autosave), schedule, publish, export for copy & paste." },
@@ -54,6 +54,10 @@ app.doc31("/openapi.json", (c) => ({
   ],
 }));
 app.get("/docs", Scalar({ url: "/openapi.json", pageTitle: "Threadsmith API" }));
+
+// No OAuth discovery here (auth is a static bearer token); answer JSON 404 instead of the SPA's HTML so MCP clients
+// that probe /.well-known/* fall back cleanly.
+app.all("/.well-known/*", (c) => c.json({ error: "not_found", message: "No OAuth metadata: use Authorization: Bearer <AUTH_TOKEN>" }, 404));
 
 // Built web UI (vite build → dist/web). In dev, Vite serves the UI on :5173 and proxies here.
 const webDir = path.join(ROOT, "dist", "web");
