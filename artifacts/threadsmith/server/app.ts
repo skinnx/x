@@ -6,7 +6,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { Scalar } from "@scalar/hono-api-reference";
 import { aiRoutes } from "./ai/routes.ts";
 import { apiRoutes, mediaFileRoutes } from "./api.ts";
-import { requireAuth } from "./auth.ts";
+import { guardRequest, requireAuth } from "./auth.ts";
 import { ROOT, VERSION } from "./env.ts";
 import { errorResponse } from "./http.ts";
 import { llmsRoutes } from "./llms.ts";
@@ -17,6 +17,7 @@ export { VERSION };
 export const app = new OpenAPIHono();
 app.onError(errorResponse);
 
+app.use("*", guardRequest);
 app.use("/api/*", requireAuth);
 app.use("/mcp", requireAuth);
 app.use("/mcp/*", requireAuth);

@@ -125,7 +125,9 @@ async function api(method, path, body, form) {
   try {
     res = await fetch(BASE + path, { method, headers, body: form ?? (body === undefined ? undefined : JSON.stringify(body)) });
   } catch (err) {
-    throw new ApiError(`Can't reach Threadsmith at ${BASE} (${err.cause?.code ?? err.message}). Is the server running? Set THREADSMITH_URL.`);
+    throw Object.assign(new ApiError(`Can't reach Threadsmith at ${BASE} (${err.cause?.code ?? err.message}). Is the server running? Set THREADSMITH_URL.`), {
+      code: "unreachable",
+    });
   }
   const text = await res.text();
   let data;

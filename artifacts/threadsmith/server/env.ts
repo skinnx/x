@@ -23,6 +23,8 @@ export const env = {
   publicUrl: str("PUBLIC_URL"),
   /** When set, every /api, /mcp and /media request needs `Authorization: Bearer <token>`. */
   authToken: str("AUTH_TOKEN"),
+  /** Extra hostnames accepted in the Host header when no AUTH_TOKEN is set (comma-separated). */
+  allowedHosts: (str("ALLOWED_HOSTS") ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean),
 
   x: {
     apiKey: str("X_API_KEY"),
