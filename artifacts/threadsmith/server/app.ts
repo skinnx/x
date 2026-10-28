@@ -7,15 +7,13 @@ import { Scalar } from "@scalar/hono-api-reference";
 import { aiRoutes } from "./ai/routes.ts";
 import { apiRoutes, mediaFileRoutes } from "./api.ts";
 import { requireAuth } from "./auth.ts";
-import { ROOT } from "./env.ts";
+import { ROOT, VERSION } from "./env.ts";
 import { errorResponse } from "./http.ts";
 import { llmsRoutes } from "./llms.ts";
 import { mcpRoutes } from "./mcp.ts";
 import { pushRoutes } from "./push.ts";
 
-const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")) as { version: string };
-export const VERSION = pkg.version;
-
+export { VERSION };
 export const app = new OpenAPIHono();
 app.onError(errorResponse);
 
@@ -43,6 +41,16 @@ app.doc31("/openapi.json", (c) => ({
   },
   servers: [{ url: new URL(c.req.url).origin }],
   security: [{ bearer: [] }],
+  tags: [
+    { name: "Posts", description: "Drafts and threads: create, edit (autosave), schedule, publish, export for copy & paste." },
+    { name: "Queue", description: "Posting slots from threadsmith.config.json and the day-grouped queue." },
+    { name: "Media", description: "Images attached to posts (PNG, JPEG, WebP, GIF; ≤5 MB; ≤4 per post)." },
+    { name: "AI", description: "Writing copilot (Claude or any OpenAI-compatible model)." },
+    { name: "Events", description: "Server-Sent Events stream of every state change." },
+    { name: "Webhooks", description: "HMAC-signed outbound webhooks for the same events." },
+    { name: "Notifications", description: "Web Push reminders for the browser." },
+    { name: "System", description: "Health, config, version." },
+  ],
 }));
 app.get("/docs", Scalar({ url: "/openapi.json", pageTitle: "Threadsmith API" }));
 

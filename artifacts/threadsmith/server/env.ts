@@ -1,8 +1,9 @@
 // Environment (.env) — secrets and process settings. Scheduling rules live in threadsmith.config.json.
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 export const ROOT = path.resolve(import.meta.dirname, "..");
+export const VERSION = (JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")) as { version: string }).version;
 
 const envFile = path.join(ROOT, ".env");
 if (existsSync(envFile)) process.loadEnvFile(envFile);

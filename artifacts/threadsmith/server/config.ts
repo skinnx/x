@@ -146,9 +146,17 @@ export function nextFreeSlots(count = 1, after = new Date(Date.now() + 60_000), 
   return out;
 }
 
-/** Resolve "next" or an ISO string into a concrete instant. */
+const LOCAL_ISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?$/;
+
+/** Resolve "next", an ISO instant, or an offset-less local time (read in the configured timezone). */
 export function resolveWhen(at: string): string {
-  return at === "next" ? nextFreeSlots(1)[0]!.toISOString() : new Date(at).toISOString();
+  if (at === "next") return nextFreeSlots(1)[0]!.toISOString();
+  const local = LOCAL_ISO.exec(at);
+  if (local) {
+    const [y, mo, d, h, mi, s] = local.slice(1).map((n) => Number(n ?? 0));
+    return new Date(new TZDate(y!, mo! - 1, d!, h!, mi!, s!, getConfig().timezone).getTime()).toISOString();
+  }
+  return new Date(at).toISOString();
 }
 
 /** Day-grouped timeline: scheduled/published posts plus open slots, starting today in the configured timezone. */

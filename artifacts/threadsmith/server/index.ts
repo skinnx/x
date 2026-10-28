@@ -1,8 +1,8 @@
 // Single process: HTTP server + scheduler loop + event fan-out (webhooks, web push).
 import { serve } from "@hono/node-server";
-import { app, VERSION } from "./app.ts";
+import { app } from "./app.ts";
 import { getConfig } from "./config.ts";
-import { env, publicUrl, xConfigured } from "./env.ts";
+import { env, publicUrl, VERSION, xConfigured } from "./env.ts";
 import { startPush } from "./push.ts";
 import { recoverInterrupted } from "./repo.ts";
 import { startScheduler } from "./scheduler.ts";
