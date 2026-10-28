@@ -26,7 +26,7 @@ import { dismissToast, toast, toastError } from "../components/Toasts.tsx";
 import { useCommands, type Command } from "../lib/commands.ts";
 import { useLiveEvent } from "../lib/live.ts";
 import { adoptPostId, navigate, newDraft } from "../lib/router.ts";
-import { formatTime, formatWhen } from "../lib/time.ts";
+import { formatWhen } from "../lib/time.ts";
 import { copyText, cx, keys, uid } from "../lib/util.ts";
 import { AiPanel, type AiSection } from "./AiPanel.tsx";
 import { AltTextDialog } from "./AltTextDialog.tsx";
@@ -168,7 +168,7 @@ export function Composer(props: Props) {
     draft.setThread(aiUndo.current);
     aiUndo.current = null;
     dismissToast("ai-undo");
-    toast({ title: "Reverted the AI change" });
+    toast({ id: "ai-reverted", title: "Reverted the AI change" });
   };
 
   const onCardChange = (id: string, value: string) => {
@@ -514,8 +514,13 @@ export function Composer(props: Props) {
           <div className="mx-auto w-full max-w-[640px] px-3 pt-2 pb-16 sm:px-6">
             {post && <StatusBanner post={post} health={health} fromReminder={props.fromReminder} onCopy={copyThread} onChange={draft.setPost} />}
             {slotTarget && !post?.scheduledAt && (
-              <p className="mb-3 ml-10 text-xs text-ink-3">
-                Writing for the {formatTime(slotTarget, health.timezone)} slot on {formatWhen(slotTarget, health.timezone).split(" · ")[0]}
+              <p className="mb-3 ml-10 flex flex-wrap items-center gap-x-2 text-xs text-ink-3">
+                <span>
+                  Writing for the slot at <span className="font-medium text-ink-2">{formatWhen(slotTarget, health.timezone)}</span>
+                </span>
+                <button onClick={() => setSlotTarget(null)} className="underline-offset-2 hover:text-ink hover:underline">
+                  Use next free slot instead
+                </button>
               </p>
             )}
 
@@ -569,7 +574,7 @@ export function Composer(props: Props) {
                   <Plus size={16} /> Add post
                 </button>
                 {busy === null && thread.length === 1 && (
-                  <span className="text-xs text-ink-3 max-sm:hidden">
+                  <span className="text-xs text-ink-3">
                     or type <kbd className="rounded border border-line px-1 font-mono">---</kbd> on its own line
                   </span>
                 )}
@@ -596,7 +601,6 @@ export function Composer(props: Props) {
                 pickerOpen={pickerOpen}
                 setPickerOpen={setPickerOpen}
                 busy={busy}
-                onClearSlot={() => setSlotTarget(null)}
                 onQueue={() => void schedule(slotTarget ?? "next")}
                 onSchedule={(iso) => void schedule(iso)}
                 onUnschedule={() => void unschedule()}
@@ -677,7 +681,7 @@ function TextMode(p: { thread: Segment[]; maxChars: number; onChange: (text: str
           spellCheck
           aria-label="Thread as text"
           placeholder={"First post\n\n---\n\nSecond post"}
-          className="block w-full resize-none overflow-hidden bg-transparent font-mono text-[15px] leading-relaxed placeholder:text-ink-3"
+          className="block w-full resize-none overflow-hidden bg-transparent text-base leading-relaxed placeholder:text-ink-3 sm:text-[17px]"
         />
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs tabular-nums">

@@ -1,11 +1,11 @@
 // Composer footer: add to queue (showing the real next slot), pick a time, publish now, copy, open in X.
 import { useQuery } from "@tanstack/react-query";
-import { CalendarClock, Copy, ExternalLink, LoaderCircle, Send, X } from "lucide-react";
+import { CalendarClock, Copy, ExternalLink, LoaderCircle, Send } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { Health, Post } from "../../../shared/types.ts";
 import { api, intentUrl } from "../api.ts";
 import { Popover } from "../components/Popover.tsx";
-import { formatTime, formatWhen, fromZonedInput, toZonedInput } from "../lib/time.ts";
+import { formatWhen, fromZonedInput, toZonedInput } from "../lib/time.ts";
 import { cx, keys } from "../lib/util.ts";
 
 export type Busy = "queue" | "publish" | "unschedule" | null;
@@ -19,7 +19,6 @@ interface Props {
   pickerOpen: boolean;
   busy: Busy;
   setPickerOpen: (open: boolean) => void;
-  onClearSlot: () => void;
   onQueue: () => void;
   onSchedule: (iso: string) => void;
   onUnschedule: () => void;
@@ -65,15 +64,6 @@ export function ScheduleBar(p: Props) {
 
       <div className="flex-1" />
 
-      {p.slotTarget && !scheduled && (
-        <span className="flex h-7 items-center gap-1 rounded-full bg-subtle pr-1 pl-2.5 text-xs text-ink-2 max-sm:hidden">
-          For the {formatTime(p.slotTarget, tz)} slot
-          <button onClick={p.onClearSlot} aria-label="Use the next free slot instead" className="rounded-full p-0.5 hover:bg-line">
-            <X size={12} />
-          </button>
-        </span>
-      )}
-
       <div className="relative">
         <button onClick={() => p.setPickerOpen(!p.pickerOpen)} disabled={p.empty} className={ghost} title="Schedule for a specific time">
           <CalendarClock size={15} />
@@ -96,7 +86,7 @@ export function ScheduleBar(p: Props) {
       </span>
 
       {scheduled ? (
-        <div className="flex h-9 items-center gap-1 rounded-lg bg-sky-50 pr-1 pl-3 text-sm text-sky-800 dark:bg-sky-950/60 dark:text-sky-200">
+        <div className="flex h-9 items-center gap-1 rounded-lg bg-sky-50 pr-1 pl-3 text-sm text-sky-800 max-sm:order-last max-sm:h-11 max-sm:w-full max-sm:justify-between dark:bg-sky-950/60 dark:text-sky-200">
           <span className="font-medium">{formatWhen(p.post!.scheduledAt!, tz)}</span>
           <button
             onClick={p.onUnschedule}
@@ -110,11 +100,11 @@ export function ScheduleBar(p: Props) {
         <button
           onClick={p.onQueue}
           disabled={p.empty || p.busy === "queue"}
-          className="flex h-9 items-center gap-2 rounded-lg bg-ink pr-2 pl-3.5 text-sm font-medium text-canvas shadow-sm transition-opacity hover:opacity-90 disabled:opacity-40"
+          className="flex h-9 items-center gap-2 rounded-lg bg-ink pr-2 pl-3.5 text-sm font-medium text-canvas shadow-sm transition-opacity hover:opacity-90 disabled:opacity-40 max-sm:order-last max-sm:h-11 max-sm:w-full max-sm:justify-center"
         >
           {p.busy === "queue" && <LoaderCircle size={15} className="animate-spin" />}
           <span>{p.slotTarget ? "Schedule" : "Add to queue"}</span>
-          {next && <span className="font-normal opacity-60 max-[380px]:hidden">{formatWhen(next, tz)}</span>}
+          {next && <span className="font-normal opacity-60">{formatWhen(next, tz)}</span>}
           <kbd className="rounded bg-canvas/15 px-1.5 py-0.5 text-[11px] opacity-70 max-sm:hidden">{keys.queue}</kbd>
         </button>
       )}

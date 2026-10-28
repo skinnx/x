@@ -59,7 +59,7 @@ export function Sidebar(p: Props) {
         <button
           onClick={p.onOpenPalette}
           title={`Command palette (${keys.palette})`}
-          className="flex h-7 items-center gap-0.5 rounded-md border border-line px-1.5 text-[11px] text-ink-3 hover:border-line-strong hover:text-ink"
+          className="flex h-7 items-center gap-0.5 rounded-md border border-line px-1.5 text-[11px] text-ink-3 hover:border-line-strong hover:text-ink [@media(hover:none)]:hidden"
         >
           {modKey === "⌘" ? <Command size={11} /> : "Ctrl "}K
         </button>

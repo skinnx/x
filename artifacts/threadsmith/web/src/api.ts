@@ -126,7 +126,7 @@ export const api = {
     form.set("file", file);
     return call<Media>("POST", "/api/media", { body: form });
   },
-  /** Metadata (alt text). Not every server version exposes it; null means unknown. */
+  /** Metadata such as alt text; null when the image no longer exists. */
   getMedia: (id: string) =>
     call<Media>("GET", `/api/media/${id}`).catch((e: unknown) => {
       if (e instanceof ApiError && (e.status === 404 || e.status === 405)) return null;
@@ -154,5 +154,3 @@ export const api = {
     altText: (mediaId: string) => call<{ alt: string }>("POST", "/api/ai/alt-text", { body: { mediaId } }),
   },
 };
-
-export const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));

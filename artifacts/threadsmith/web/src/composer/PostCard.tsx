@@ -112,9 +112,12 @@ export function PostCard(p: Props) {
         }}
         className={cx(
           "min-w-0 flex-1 rounded-2xl border bg-surface px-4 pt-3 pb-2 transition-[border-color,box-shadow]",
-          isDragging ? "border-line-strong shadow-xl shadow-black/10" : "border-line",
-          !p.readOnly && "focus-within:border-line-strong focus-within:shadow-sm",
-          over && "border-red-300 focus-within:border-red-400 dark:border-red-900 dark:focus-within:border-red-800",
+          isDragging && "shadow-xl shadow-black/10",
+          over
+            ? "border-red-300 focus-within:border-red-400 dark:border-red-900 dark:focus-within:border-red-700"
+            : isDragging
+              ? "border-line-strong"
+              : cx("border-line", !p.readOnly && "focus-within:border-line-strong focus-within:shadow-sm"),
           dropping && "border-ai ring-2 ring-ai/30",
         )}
       >
