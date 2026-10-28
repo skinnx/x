@@ -1,10 +1,11 @@
 // Queue: the next 14 days grouped by day (posts + open slots), with due/failed actions, and the published list.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleCheck, Copy, ExternalLink, Image, LoaderCircle, Plus, RotateCcw } from "lucide-react";
+import { Bell, CircleCheck, Copy, ExternalLink, Image, LoaderCircle, Plus, RotateCcw } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Health, Post, QueueDay, QueueItem } from "../../../shared/types.ts";
 import { api, intentUrl, type AppConfig } from "../api.ts";
 import { toast, toastError } from "../components/Toasts.tsx";
+import type { useReminders } from "../connect/Reminders.tsx";
 import { copyThread } from "../lib/live.ts";
 import { navigate, newDraft, openPost } from "../lib/router.ts";
 import { formatDate, formatTime, formatWhen, relativeDay } from "../lib/time.ts";
@@ -28,7 +29,13 @@ export function StatusBadge({ status }: { status: Post["status"] }) {
   );
 }
 
-export function QueueView({ health, tab }: { health: Health; tab: "upcoming" | "published" }) {
+interface Props {
+  health: Health;
+  tab: "upcoming" | "published";
+  reminders: ReturnType<typeof useReminders>;
+}
+
+export function QueueView({ health, tab, reminders }: Props) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto w-full max-w-[720px] px-4 pb-24 sm:px-6">
@@ -51,6 +58,21 @@ export function QueueView({ health, tab }: { health: Health; tab: "upcoming" | "
             ))}
           </div>
         </header>
+        {health.x.mode === "manual" && reminders.state === "off" && (
+          <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-line bg-surface px-4 py-3 text-sm">
+            <Bell size={16} className="shrink-0 text-ink-3" />
+            <p className="min-w-0 flex-1 text-ink-2">
+              Manual mode: Threadsmith tells you when it's time to post. Turn on reminders to get them even with this tab closed.
+            </p>
+            <button
+              onClick={() => reminders.enable.mutate()}
+              disabled={reminders.enable.isPending}
+              className="h-8 rounded-lg bg-ink px-3 text-xs font-medium text-canvas hover:opacity-90"
+            >
+              Enable reminders
+            </button>
+          </div>
+        )}
         {tab === "upcoming" ? <Upcoming health={health} /> : <Published health={health} />}
       </div>
     </div>
