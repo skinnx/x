@@ -159,7 +159,7 @@ Threadsmith ký request bằng OAuth 1.0a tự viết bằng `node:crypto`, khô
 MCP không có tool copilot: agent kết nối qua MCP tự viết nội dung (copilot chỉ có qua REST `/api/ai/*`, CLI `threadsmith ai …` và giao diện).
 
 Hai tiện ích cho agent:
-- **`Idempotency-Key`**: gửi header này trên **mọi request POST dưới `/api`** (tạo bài, hẹn giờ, đăng, upload ảnh, tạo webhook…). Gọi lại cùng đường dẫn với cùng key trong vòng 24 giờ sẽ nhận lại đúng status và body JSON của lần thành công đầu tiên, kèm header `Idempotent-Replayed: true`, thay vì làm lại lần nữa. Phản hồi lỗi không được lưu, nên gửi lại sau lỗi là thử lại thật.
+- **`Idempotency-Key`**: gửi header này trên **mọi request POST dưới `/api`** (tạo bài, hẹn giờ, đăng, upload ảnh, tạo webhook…). Gọi lại cùng đường dẫn với cùng key trong vòng 24 giờ sẽ nhận lại đúng status và body JSON của lần thành công đầu tiên, kèm header `Idempotent-Replayed: true`, thay vì làm lại lần nữa. Phản hồi lỗi (4xx/5xx) không được lưu, nên gửi lại sau lỗi đó là thử lại thật. Riêng đăng bài và Retry trả về 200 kể cả khi X từ chối (bài ở trạng thái `failed`); câu trả lời này cũng được lưu, nên muốn thử lại thì dùng key mới hoặc `threadsmith retry`.
 - **`scheduledAt: "next"`**: agent không cần tự tính giờ, chỉ cần xin khung giờ trống kế tiếp.
 
 ### Claude Code
