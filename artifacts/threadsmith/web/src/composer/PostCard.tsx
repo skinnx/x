@@ -1,0 +1,244 @@
+// One post in the thread: chrome-less auto-growing textarea, weighted counter, images, drag handle.
+import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { useQuery } from "@tanstack/react-query";
+import { GripVertical, ImagePlus, LoaderCircle, Scissors, Trash2, X } from "lucide-react";
+import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { weightedLength } from "../../../shared/thread.ts";
+import type { Segment } from "../../../shared/types.ts";
+import { api } from "../api.ts";
+import { cx } from "../lib/util.ts";
+import { CharRing } from "./CharRing.tsx";
+
+export const MAX_IMAGES = 4;
+
+export interface PendingUpload {
+  key: string;
+  url: string;
+}
+
+interface Props {
+  segment: Segment;
+  index: number;
+  total: number;
+  maxChars: number;
+  readOnly: boolean;
+  uploads: PendingUpload[];
+  aiEnabled: boolean;
+  fitting: boolean;
+  textareaRef: (el: HTMLTextAreaElement | null) => void;
+  onChange: (text: string) => void;
+  onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
+  onFocus: () => void;
+  onRemove: () => void;
+  onFiles: (files: File[]) => void;
+  onRemoveImage: (mediaId: string) => void;
+  onEditImage: (mediaId: string) => void;
+  onFit: () => void;
+}
+
+const imageFiles = (list: FileList | null | undefined) => [...(list ?? [])].filter((f) => f.type.startsWith("image/"));
+
+export function PostCard(p: Props) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
+    id: p.segment.id,
+    disabled: p.readOnly,
+  });
+  const local = useRef<HTMLTextAreaElement | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [dropping, setDropping] = useState(false);
+
+  const length = weightedLength(p.segment.text);
+  const over = length > p.maxChars;
+  const imageCount = p.segment.mediaIds.length + p.uploads.length;
+  const canAddImage = !p.readOnly && imageCount < MAX_IMAGES;
+
+  useLayoutEffect(() => {
+    const el = local.current;
+    if (!el) return;
+    const fit = () => {
+      el.style.height = "auto";
+      el.style.height = `${el.scrollHeight}px`;
+    };
+    fit();
+    addEventListener("resize", fit);
+    return () => removeEventListener("resize", fit);
+  }, [p.segment.text]);
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      className={cx("group/card relative flex gap-3 pb-3", isDragging && "z-10")}
+    >
+      <div className="flex w-7 shrink-0 flex-col items-center pt-3">
+        <button
+          ref={setActivatorNodeRef}
+          {...attributes}
+          {...listeners}
+          aria-label={`Post ${p.index + 1}. Press space to reorder with arrow keys`}
+          disabled={p.readOnly}
+          className={cx(
+            "relative grid size-7 shrink-0 touch-none place-items-center rounded-full border border-line bg-surface text-xs font-medium text-ink-3 tabular-nums",
+            !p.readOnly && "cursor-grab hover:border-line-strong hover:text-ink active:cursor-grabbing",
+          )}
+        >
+          <span className={cx(!p.readOnly && "group-hover/card:opacity-0 group-focus-within/card:opacity-0 [@media(hover:none)]:opacity-0")}>
+            {p.index + 1}
+          </span>
+          {!p.readOnly && (
+            <GripVertical
+              size={14}
+              className="absolute opacity-0 group-hover/card:opacity-100 group-focus-within/card:opacity-100 [@media(hover:none)]:opacity-100"
+            />
+          )}
+        </button>
+        {p.index < p.total - 1 && <div className="mt-1.5 -mb-3 w-px flex-1 bg-line" />}
+      </div>
+
+      <div
+        onDragOver={(e) => {
+          if (!canAddImage || !e.dataTransfer.types.includes("Files")) return;
+          e.preventDefault();
+          setDropping(true);
+        }}
+        onDragLeave={() => setDropping(false)}
+        onDrop={(e) => {
+          setDropping(false);
+          const files = imageFiles(e.dataTransfer.files);
+          if (!files.length || !canAddImage) return;
+          e.preventDefault();
+          p.onFiles(files);
+        }}
+        className={cx(
+          "min-w-0 flex-1 rounded-2xl border bg-surface px-4 pt-3 pb-2 transition-[border-color,box-shadow]",
+          isDragging ? "border-line-strong shadow-xl shadow-black/10" : "border-line",
+          !p.readOnly && "focus-within:border-line-strong focus-within:shadow-sm",
+          over && "border-red-300 focus-within:border-red-400 dark:border-red-900 dark:focus-within:border-red-800",
+          dropping && "border-ai ring-2 ring-ai/30",
+        )}
+      >
+        <textarea
+          ref={(el) => {
+            local.current = el;
+            p.textareaRef(el);
+          }}
+          value={p.segment.text}
+          readOnly={p.readOnly}
+          rows={p.index === 0 ? 3 : 2}
+          spellCheck
+          placeholder={p.index === 0 ? "What do you want to say?" : `Post ${p.index + 1}`}
+          aria-label={`Post ${p.index + 1} of ${p.total}`}
+          onChange={(e) => p.onChange(e.target.value)}
+          onKeyDown={p.onKeyDown}
+          onFocus={p.onFocus}
+          onPaste={(e) => {
+            const files = imageFiles(e.clipboardData.files);
+            if (!files.length) return;
+            e.preventDefault();
+            if (canAddImage) p.onFiles(files);
+          }}
+          className="block w-full resize-none overflow-hidden bg-transparent text-base leading-relaxed text-ink placeholder:text-ink-3 sm:text-[17px]"
+        />
+
+        {imageCount > 0 && (
+          <div className={cx("mt-2 grid gap-1.5", imageCount === 1 ? "grid-cols-1" : "grid-cols-2")}>
+            {p.segment.mediaIds.map((id) => (
+              <Thumb
+                key={id}
+                id={id}
+                single={imageCount === 1}
+                readOnly={p.readOnly}
+                onEdit={() => p.onEditImage(id)}
+                onRemove={() => p.onRemoveImage(id)}
+              />
+            ))}
+            {p.uploads.map((u) => (
+              <div key={u.key} className={cx("relative overflow-hidden rounded-xl bg-subtle", imageCount === 1 ? "aspect-video" : "aspect-square")}>
+                <img src={u.url} alt="" className="size-full object-cover opacity-50" />
+                <LoaderCircle size={20} className="absolute inset-0 m-auto animate-spin text-ink-2" />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!p.readOnly && (
+          <div className="mt-1 flex h-8 items-center gap-1 text-ink-3">
+            <button
+              onClick={() => fileInput.current?.click()}
+              disabled={!canAddImage}
+              title={canAddImage ? "Add image (or paste / drop)" : `Up to ${MAX_IMAGES} images per post`}
+              aria-label="Add image"
+              className="rounded-md p-1.5 hover:bg-subtle hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
+            >
+              <ImagePlus size={16} />
+            </button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              multiple
+              hidden
+              onChange={(e) => {
+                const files = imageFiles(e.target.files);
+                e.target.value = "";
+                if (files.length) p.onFiles(files);
+              }}
+            />
+            {over && p.aiEnabled && (
+              <button
+                onClick={p.onFit}
+                disabled={p.fitting}
+                className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-ai hover:bg-ai-soft disabled:opacity-60"
+              >
+                {p.fitting ? <LoaderCircle size={13} className="animate-spin" /> : <Scissors size={13} />}
+                Fit to {p.maxChars}
+              </button>
+            )}
+            <div className="flex-1" />
+            {p.total > 1 && (
+              <button
+                onClick={p.onRemove}
+                aria-label={`Delete post ${p.index + 1}`}
+                title="Delete post"
+                className="rounded-md p-1.5 opacity-0 group-focus-within/card:opacity-100 group-hover/card:opacity-100 hover:bg-subtle hover:text-red-600 focus:opacity-100 [@media(hover:none)]:opacity-100"
+              >
+                <Trash2 size={15} />
+              </button>
+            )}
+            <CharRing length={length} max={p.maxChars} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Thumb(p: { id: string; single: boolean; readOnly: boolean; onEdit: () => void; onRemove: () => void }) {
+  const { data: media } = useQuery({ queryKey: ["media", p.id], queryFn: () => api.getMedia(p.id), staleTime: Infinity });
+  const hasAlt = Boolean(media?.alt);
+  return (
+    <div className={cx("group/img relative overflow-hidden rounded-xl border border-line bg-subtle", p.single ? "aspect-video" : "aspect-square")}>
+      <button onClick={p.onEdit} className="block size-full" aria-label={hasAlt ? `Edit alt text: ${media!.alt}` : "Add alt text"}>
+        <img src={`/media/${p.id}`} alt={media?.alt ?? ""} className="size-full object-cover" draggable={false} />
+      </button>
+      <span
+        className={cx(
+          "pointer-events-none absolute bottom-2 left-2 rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wide",
+          hasAlt ? "bg-black/70 text-white" : "border border-dashed border-white/80 bg-black/40 text-white/90",
+        )}
+      >
+        {hasAlt ? "ALT" : "+ ALT"}
+      </span>
+      {!p.readOnly && (
+        <button
+          onClick={p.onRemove}
+          aria-label="Remove image"
+          className="absolute top-2 right-2 grid size-7 place-items-center rounded-full bg-black/60 text-white opacity-0 backdrop-blur transition-opacity group-hover/img:opacity-100 focus:opacity-100 [@media(hover:none)]:opacity-100"
+        >
+          <X size={14} />
+        </button>
+      )}
+    </div>
+  );
+}
