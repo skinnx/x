@@ -363,7 +363,9 @@ Stack: Node 22+/24, TypeScript chạy bằng `tsx` (không cần bước build c
 - Mới hỗ trợ **X**. Chưa có LinkedIn, Threads, Bluesky.
 - Chưa có thống kê lượt xem hay tương tác (đọc dữ liệu từ X cũng tốn tiền theo lượt).
 - Một người dùng, một tài khoản X cho mỗi instance.
-- Bộ đếm ký tự bám theo quy tắc twitter-text v3. Phần nhận diện URL không có scheme (như `example.com`) chỉ là gần đúng, nên X có thể đếm lệch vài ký tự với tên miền lạ.
+- Bộ đếm ký tự bám theo quy tắc twitter-text v3. Phần nhận diện URL không có scheme (như `example.com`) chỉ là gần đúng, nên X có thể đếm lệch vài ký tự với tên miền lạ. Vì trước khi đăng, server dùng chính bộ đếm này để chặn bài vượt giới hạn (tránh thread bị đăng dở), một bài sát giới hạn có tên miền lạ hiếm khi có thể bị chặn dù X vẫn nhận.
+- **Web Push** đã được kiểm tra với một dịch vụ push giả lập (ký VAPID, mã hóa payload, xóa đăng ký hết hạn), chưa thử nhận thông báo trên trình duyệt thật.
+- **Copilot với Claude** đã được kiểm tra với một Messages API giả lập (header, body, xử lý từ chối và lỗi), chưa gọi Claude thật. Đường tương thích OpenAI cũng chỉ thử với máy chủ giả lập.
 
 ## Nguồn giá
 
