@@ -48,6 +48,14 @@ export function ConnectView({ health }: { health: Health }) {
               : "claude.ai and ChatGPT connectors need this server reachable over public HTTPS."}
             {needsToken && " Replace <AUTH_TOKEN> with the AUTH_TOKEN from your .env."}
           </p>
+          {needsToken && (
+            <>
+              <Code label="Connectors that can't send headers (claude.ai, ChatGPT)" value={`${mcpUrl}?token=<AUTH_TOKEN>`} />
+              <p className="text-xs text-ink-3">
+                Only over HTTPS. A token in a URL can end up in proxy or server logs, so prefer the header wherever a client supports it.
+              </p>
+            </>
+          )}
         </Card>
 
         <Card icon={<FileText size={16} />} title="REST API & docs" badge="OpenAPI 3.1">

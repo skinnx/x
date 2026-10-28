@@ -64,27 +64,86 @@ function splitCard(value: string): string[] {
   return parts;
 }
 
+/** Dice similarity of character bigrams: how alike an edited post is to an old one (0..1). */
+function similarity(a: string, b: string): number {
+  if (a === b) return 1;
+  const grams = (t: string) => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < t.length - 1; i++) m.set(t.slice(i, i + 2), (m.get(t.slice(i, i + 2)) ?? 0) + 1);
+    return m;
+  };
+  const A = grams(a);
+  const B = grams(b);
+  let shared = 0;
+  for (const [g, n] of A) shared += Math.min(n, B.get(g) ?? 0);
+  const total = a.length + b.length - 2;
+  return total > 0 ? (2 * shared) / total : 0;
+}
+
 /**
- * Text mode → segments. Posts left unchanged at the start and end keep their segment (id, images); only the
- * edited middle maps by position. Matching against `base` (the thread when text mode opened), not the last
- * keystroke, means an edit that is typed back restores every image where it was.
+ * Text mode → segments, keeping each post's segment (id, images) wherever it can tell which post is which:
+ * 1. posts whose text is unchanged (longest common subsequence against `base`, the thread when text mode opened,
+ *    so an edit typed back restores every image where it was);
+ * 2. unchanged posts that were moved;
+ * 3. edited posts, matched within each gap between the anchors above to the most similar old post there.
+ * Anything left is a new post without images.
  */
 function segmentsFromText(text: string, base: Segment[], prev: Segment[]): Segment[] {
   const parts = splitThread(text);
   if (!parts.length) return [{ ...(base[0] ?? blankSegment()), text: "" }];
-  const same = (t: string, s: Segment | undefined) => s !== undefined && t === s.text.trim();
-  let head = 0;
-  while (head < parts.length && same(parts[head]!, base[head])) head++;
-  let tail = 0;
-  while (tail < parts.length - head && tail < base.length - head && same(parts[parts.length - 1 - tail]!, base[base.length - 1 - tail])) tail++;
-  const oldMid = base.slice(head, base.length - tail);
+  const old = base.map((s) => s.text.trim());
+  const n = parts.length;
+  const m = old.length;
+
+  const lcs = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--) lcs[i]![j] = parts[i] === old[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
+  const match = new Array<number>(n).fill(-1);
+  for (let i = 0, j = 0; i < n && j < m; ) {
+    if (parts[i] === old[j]) match[i++] = j++;
+    else if (lcs[i + 1]![j]! >= lcs[i]![j + 1]!) i++;
+    else j++;
+  }
+  const used = new Set(match.filter((j) => j >= 0));
+
+  parts.forEach((t, i) => {
+    if (match[i]! >= 0) return;
+    const j = old.findIndex((o, k) => !used.has(k) && o === t);
+    if (j >= 0) {
+      match[i] = j;
+      used.add(j);
+    }
+  });
+
+  for (let i = 0, lastBase = -1; i < n; ) {
+    if (match[i]! >= 0) {
+      lastBase = Math.max(lastBase, match[i]!);
+      i++;
+      continue;
+    }
+    let end = i;
+    while (end < n && match[end]! < 0) end++;
+    const nextBase = end < n ? match[end]! : m;
+    const free: number[] = [];
+    for (let j = lastBase + 1; j < nextBase; j++) if (!used.has(j)) free.push(j);
+    const pairs = free
+      .flatMap((j) => Array.from({ length: end - i }, (_, k) => ({ k: i + k, j, score: similarity(parts[i + k]!, old[j]!) })))
+      .sort((a, b) => b.score - a.score || Math.abs(a.k - i - (a.j - lastBase - 1)) - Math.abs(b.k - i - (b.j - lastBase - 1)));
+    for (const { k, j } of pairs) {
+      if (match[k]! < 0 && !used.has(j)) {
+        match[k] = j;
+        used.add(j);
+      }
+    }
+    i = end;
+  }
+
   const baseIds = new Set(base.map((s) => s.id));
-  const mid = parts.slice(head, parts.length - tail).map((t, i): Segment => {
-    if (oldMid[i]) return { ...oldMid[i], text: t };
-    const id = prev[head + i]?.id; // a post being typed keeps its id from one keystroke to the next
+  return parts.map((t, i): Segment => {
+    if (match[i]! >= 0) return { ...base[match[i]!]!, text: t };
+    const id = prev[i]?.id; // a post being typed keeps its id from one keystroke to the next
     return id && !baseIds.has(id) ? { id, text: t, mediaIds: [] } : blankSegment(t);
   });
-  return [...base.slice(0, head), ...mid, ...base.slice(base.length - tail)];
 }
 
 interface Props {
@@ -357,7 +416,11 @@ export function Composer(props: Props) {
     if (readOnly) return;
     if (post?.status === "scheduled" && post.scheduledAt) {
       void draft.flush();
-      return toast({ title: `Saved · still scheduled for ${formatWhen(post.scheduledAt, health.timezone)}`, description: "Use “Change time” to move it." });
+      return toast({
+        id: "still-scheduled",
+        title: `Saved · still scheduled for ${formatWhen(post.scheduledAt, health.timezone)}`,
+        description: "Use “Change time” to move it.",
+      });
     }
     void schedule(slotTarget ?? "next");
   };
@@ -449,8 +512,10 @@ export function Composer(props: Props) {
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      // Shortcuts belong to the composer, not to dialogs on top of it (alt text, palette).
-      if (!mod || e.defaultPrevented || (e.target instanceof Element && e.target.closest("dialog"))) return;
+      // Shortcuts belong to the thread editor or the page, not to other fields (mark-posted URL, time picker,
+      // copilot prompt) or dialogs on top of it (alt text, palette), which handle their own keys.
+      const field = e.target instanceof Element ? e.target.closest("input, textarea, select, [contenteditable='true'], dialog") : null;
+      if (!mod || e.defaultPrevented || (field && !field.closest("[data-thread-editor]"))) return;
       const a = actions.current;
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
@@ -612,6 +677,7 @@ export function Composer(props: Props) {
             {textMode && liveCount > 0 && (
               <p className="mb-3 ml-10 text-xs text-ink-3">Showing cards: text mode is off while part of this thread is live on X.</p>
             )}
+            <div data-thread-editor>
             {!thread ? (
               <div className="ml-10 space-y-3" aria-busy>
                 <div className="h-28 animate-pulse rounded-2xl bg-subtle" />
@@ -654,6 +720,7 @@ export function Composer(props: Props) {
                 ))}
               </Cards>
             )}
+            </div>
 
             {thread && !readOnly && !showText && (
               <div className="flex items-center gap-3 pl-10">

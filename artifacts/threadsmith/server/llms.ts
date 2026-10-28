@@ -30,7 +30,7 @@ Threads are one text with a line containing only \`---\` between posts (or an ar
 - [OpenAPI 3.1 spec](${base}/openapi.json): machine-readable; each route says what it does and when to use it
 
 ## Agent interfaces
-- [MCP endpoint](${base}/mcp): Streamable HTTP, stateless. Claude Code: \`claude mcp add --transport http threadsmith ${base}/mcp${env.authToken ? ' --header "Authorization: Bearer <AUTH_TOKEN>"' : ""}\`${env.authToken ? ". Clients that can't send headers (claude.ai / ChatGPT connectors) use ${base}/mcp?token=<AUTH_TOKEN> over HTTPS" : ""}
+- [MCP endpoint](${base}/mcp): Streamable HTTP, stateless. Claude Code: \`claude mcp add --transport http threadsmith ${base}/mcp${env.authToken ? ' --header "Authorization: Bearer <AUTH_TOKEN>"' : ""}\`${env.authToken ? `. Clients that can't send headers (claude.ai / ChatGPT connectors) use ${base}/mcp?token=<AUTH_TOKEN> over HTTPS` : ""}
 - [CLI](${base}/llms-full.txt): zero-dependency Node script \`cli/threadsmith.mjs\` (\`threadsmith new "text" --at next\`, \`threadsmith queue\`, \`--json\` everywhere); set THREADSMITH_URL and THREADSMITH_TOKEN
 - [Health](${base}/api/health): version, X mode (api or manual), AI copilot status, timezone and limit
 

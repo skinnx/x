@@ -245,7 +245,11 @@ export function buildQueue(days = 14): Queue {
 
   const posts = listPosts({ status: [...OCCUPYING], from: start.toISOString(), to: end.toISOString(), limit: 5000 });
   // Overdue manual posts and failures from before today stay visible on today's card.
-  const stale = listPosts({ status: ["due", "failed"], to: start.toISOString(), limit: 200 });
+  const stale = [
+    ...listPosts({ status: ["due", "failed"], to: start.toISOString(), limit: 200 }),
+    // Rows from before publish-now stamped a time have none; keep them visible (the Queue badge counts them).
+    ...listPosts({ status: ["due", "failed"], limit: 200 }).filter((p) => !p.scheduledAt),
+  ];
 
   const byDay = new Map<string, QueueItem[]>();
   const dayKey = (iso: string) => localDay(new Date(iso).getTime(), config.timezone).key;
@@ -256,7 +260,7 @@ export function buildQueue(days = 14): Queue {
     push(dayKey(p.scheduledAt!), { type: "post", at: p.scheduledAt!, post: p });
     taken.add(minuteKey(p.scheduledAt!));
   }
-  for (const p of stale) push(first.key, { type: "post", at: p.scheduledAt!, post: p });
+  for (const p of stale) push(first.key, { type: "post", at: p.scheduledAt ?? p.updatedAt, post: p });
 
   const out: QueueDay[] = [];
   for (let i = 0; i < days; i++) {
