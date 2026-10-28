@@ -1,0 +1,12 @@
+{
+  "timezone": "Asia/Ho_Chi_Minh",
+  "maxChars": 280,
+  "slots": [
+    { "days": "mon-fri", "from": "09:00", "to": "16:00", "everyMinutes": 60 },
+    { "days": "sat,sun", "times": ["10:00"] }
+  ],
+  "schedulerIntervalSeconds": 15,
+  "voice": [
+    "Paste 3–10 of your own best posts here. The AI copilot matches their tone, length and formatting."
+  ]
+}
