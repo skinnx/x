@@ -66,7 +66,7 @@ export function Toaster() {
   return (
     <div
       aria-live="polite"
-      className="pointer-events-none fixed inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 flex flex-col items-center gap-2 px-4 sm:bottom-6"
+      className="pointer-events-none fixed inset-x-0 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-50 flex flex-col items-center gap-2 px-4 sm:inset-x-auto sm:right-5 sm:items-end"
     >
       {items.map((t) => {
         const Icon = ICONS[t.tone ?? "default"];
@@ -74,7 +74,7 @@ export function Toaster() {
           <div
             key={t.id}
             role={t.tone === "error" ? "alert" : "status"}
-            className="pointer-events-auto flex w-full max-w-md animate-rise items-start gap-3 rounded-xl border border-line bg-surface/95 px-4 py-3 shadow-lg shadow-black/5 backdrop-blur dark:shadow-black/40"
+            className="pointer-events-auto flex w-full max-w-md animate-rise sm:w-96 items-start gap-3 rounded-xl border border-line bg-surface/95 px-4 py-3 shadow-lg shadow-black/5 backdrop-blur dark:shadow-black/40"
           >
             <Icon
               size={18}

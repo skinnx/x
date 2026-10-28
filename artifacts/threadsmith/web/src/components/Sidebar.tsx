@@ -6,7 +6,7 @@ import type { Health, Post } from "../../../shared/types.ts";
 import { api } from "../api.ts";
 import { navigate, newDraft, openPost, type View } from "../lib/router.ts";
 import { timeAgo } from "../lib/time.ts";
-import { cx, firstLine, modKey } from "../lib/util.ts";
+import { cx, firstLine, keys, modKey } from "../lib/util.ts";
 import { toastError } from "./Toasts.tsx";
 
 export function Logo() {
@@ -58,7 +58,7 @@ export function Sidebar(p: Props) {
         <div className="flex-1" />
         <button
           onClick={p.onOpenPalette}
-          title={`Command palette (${modKey}K)`}
+          title={`Command palette (${keys.palette})`}
           className="flex h-7 items-center gap-0.5 rounded-md border border-line px-1.5 text-[11px] text-ink-3 hover:border-line-strong hover:text-ink"
         >
           {modKey === "⌘" ? <Command size={11} /> : "Ctrl "}K

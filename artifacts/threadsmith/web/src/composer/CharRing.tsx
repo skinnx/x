@@ -20,7 +20,7 @@ export function CharRing({ length, max }: { length: number; max: number }) {
         </span>
       )}
       <svg width="22" height="22" viewBox="0 0 22 22" className={cx("-rotate-90 transition-transform", near && "scale-110")}>
-        <circle cx="11" cy="11" r={r} fill="none" strokeWidth="2" className="stroke-line" />
+        <circle cx="11" cy="11" r={r} fill="none" strokeWidth="2" className="stroke-line-strong opacity-60" />
         {length > 0 && (
           <circle
             cx="11"
@@ -33,7 +33,7 @@ export function CharRing({ length, max }: { length: number; max: number }) {
             strokeDashoffset={c * (1 - progress)}
             className={cx(
               "transition-[stroke-dashoffset] duration-150",
-              over ? "stroke-red-500" : near ? "stroke-amber-500" : "stroke-ink-3",
+              over ? "stroke-red-500" : near ? "stroke-amber-500" : "stroke-sky-500",
             )}
           />
         )}

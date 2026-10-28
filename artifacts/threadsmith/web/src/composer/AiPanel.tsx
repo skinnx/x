@@ -7,7 +7,7 @@ import type { Health, Segment } from "../../../shared/types.ts";
 import { api } from "../api.ts";
 import { toastError } from "../components/Toasts.tsx";
 import { navigate } from "../lib/router.ts";
-import { cx, modKey } from "../lib/util.ts";
+import { cx, keys } from "../lib/util.ts";
 
 export type AiSection = "threadify" | "hooks" | "rewrite";
 
@@ -268,7 +268,7 @@ function Tools(p: Props) {
       </Section>
 
       <p className="px-1 text-xs leading-relaxed text-ink-3">
-        Every AI change can be undone with {modKey}Z or the Undo button. Agents can do all of this too, over MCP.
+        Every AI change can be undone with {keys.undo} or the Undo button. Agents can do all of this too, over MCP.
       </p>
     </>
   );

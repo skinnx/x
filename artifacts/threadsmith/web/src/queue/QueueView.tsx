@@ -9,7 +9,7 @@ import type { useReminders } from "../connect/Reminders.tsx";
 import { copyThread } from "../lib/live.ts";
 import { navigate, newDraft, openPost } from "../lib/router.ts";
 import { formatDate, formatTime, formatWhen, relativeDay } from "../lib/time.ts";
-import { cx, firstLine, modKey } from "../lib/util.ts";
+import { cx, keys } from "../lib/util.ts";
 
 const STATUS_STYLE: Record<Post["status"], string> = {
   draft: "bg-subtle text-ink-2",
@@ -99,7 +99,7 @@ function Upcoming({ health }: { health: Health }) {
         <div className="mb-4 rounded-2xl border border-dashed border-line-strong p-4 text-sm text-ink-2">
           <p className="font-medium text-ink">Nothing queued yet</p>
           <p className="mt-1 leading-relaxed">
-            The faint rows are your posting slots. Write a draft and press <kbd className="font-sans font-medium">{modKey}↵</kbd> to drop it into
+            The faint rows are your posting slots. Write a draft and press <kbd className="font-sans font-medium">{keys.queue}</kbd> to drop it into
             the next free one, or click a slot to write for it.
           </p>
         </div>
@@ -145,7 +145,7 @@ function Row({ item, tz }: { item: QueueItem; tz: string }) {
         onClick={() => newDraft(item.at)}
         className="group flex w-full items-center gap-4 rounded-xl border border-dashed border-transparent px-3 py-2 text-left text-sm text-ink-3 transition-colors hover:border-line-strong hover:bg-surface hover:text-ink-2"
       >
-        <time className="w-16 shrink-0 tabular-nums">{formatTime(item.at, tz)}</time>
+        <time className="w-20 shrink-0 whitespace-nowrap tabular-nums">{formatTime(item.at, tz)}</time>
         <span className="flex-1">Empty slot</span>
         <span className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
           <Plus size={14} /> Write for this slot
@@ -203,14 +203,14 @@ function PostRow({ post, at, tz }: { post: Post; at: string; tz: string }) {
       )}
     >
       <button onClick={() => openPost(post.id)} className="flex w-full items-start gap-4 rounded-xl px-3 py-2.5 text-left hover:bg-subtle/60">
-        <time className="w-16 shrink-0 pt-0.5 text-sm font-medium tabular-nums">{formatTime(at, tz)}</time>
+        <time className="w-20 shrink-0 pt-0.5 text-sm font-medium whitespace-nowrap tabular-nums">{formatTime(at, tz)}</time>
         <div className="min-w-0 flex-1">
           <Preview post={post} />
         </div>
         <StatusBadge status={post.status} />
       </button>
       {failed && (
-        <div className="flex flex-wrap items-center gap-2 px-3 pb-3 sm:pl-23">
+        <div className="flex flex-wrap items-center gap-2 px-3 pb-3 sm:pl-27">
           <p className="w-full text-xs break-words text-red-700 dark:text-red-300">{post.error ?? "Publishing failed."}</p>
           <button onClick={() => retry.mutate()} disabled={retry.isPending} className={cx(action, "bg-ink text-canvas")}>
             {retry.isPending ? <LoaderCircle size={13} className="animate-spin" /> : <RotateCcw size={13} />} Retry
@@ -218,7 +218,7 @@ function PostRow({ post, at, tz }: { post: Post; at: string; tz: string }) {
         </div>
       )}
       {due && (
-        <div className="flex flex-wrap items-center gap-2 px-3 pb-3 sm:pl-23">
+        <div className="flex flex-wrap items-center gap-2 px-3 pb-3 sm:pl-27">
           <button onClick={() => void copyThread(post.id)} className={cx(action, "bg-ink text-canvas hover:opacity-90")}>
             <Copy size={13} /> Copy thread
           </button>

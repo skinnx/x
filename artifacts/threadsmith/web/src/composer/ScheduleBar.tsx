@@ -6,7 +6,7 @@ import type { Health, Post } from "../../../shared/types.ts";
 import { api, intentUrl } from "../api.ts";
 import { Popover } from "../components/Popover.tsx";
 import { formatTime, formatWhen, fromZonedInput, toZonedInput } from "../lib/time.ts";
-import { cx, modKey } from "../lib/util.ts";
+import { cx, keys } from "../lib/util.ts";
 
 export type Busy = "queue" | "publish" | "unschedule" | null;
 
@@ -48,9 +48,8 @@ export function ScheduleBar(p: Props) {
 
   return (
     <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">
-      <button onClick={p.onCopy} disabled={p.empty} className={ghost} title={`Copy thread (${modKey}⇧C)`}>
-        <Copy size={15} />
-        <span className="max-sm:hidden">Copy</span>
+      <button onClick={p.onCopy} disabled={p.empty} className={ghost} title={`Copy thread (${keys.copy})`} aria-label="Copy thread">
+        <Copy size={16} />
       </button>
       <a
         href={p.empty ? undefined : intentUrl(p.firstPost)}
@@ -58,10 +57,10 @@ export function ScheduleBar(p: Props) {
         rel="noopener noreferrer"
         aria-disabled={p.empty}
         className={cx(ghost, p.empty && "pointer-events-none opacity-40")}
-        title="Open the first post in X's composer"
+        title="Open in X: the first post, prefilled in X's composer"
+        aria-label="Open in X"
       >
-        <ExternalLink size={15} />
-        <span className="max-sm:hidden">Open in X</span>
+        <ExternalLink size={16} />
       </a>
 
       <div className="flex-1" />
@@ -116,7 +115,7 @@ export function ScheduleBar(p: Props) {
           {p.busy === "queue" && <LoaderCircle size={15} className="animate-spin" />}
           <span>{p.slotTarget ? "Schedule" : "Add to queue"}</span>
           {next && <span className="font-normal opacity-60 max-[380px]:hidden">{formatWhen(next, tz)}</span>}
-          <kbd className="rounded bg-canvas/15 px-1.5 py-0.5 text-[11px] opacity-70 max-sm:hidden">{modKey}↵</kbd>
+          <kbd className="rounded bg-canvas/15 px-1.5 py-0.5 text-[11px] opacity-70 max-sm:hidden">{keys.queue}</kbd>
         </button>
       )}
     </div>

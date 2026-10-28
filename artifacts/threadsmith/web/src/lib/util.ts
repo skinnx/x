@@ -45,6 +45,14 @@ export async function copyText(source: string | Promise<string>): Promise<void> 
 export const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 export const modKey = isMac ? "⌘" : "Ctrl";
 
+/** Shortcut labels as each platform writes them. */
+export const keys = {
+  queue: isMac ? "⌘↵" : "Ctrl+Enter",
+  copy: isMac ? "⌘⇧C" : "Ctrl+Shift+C",
+  palette: isMac ? "⌘K" : "Ctrl+K",
+  undo: isMac ? "⌘Z" : "Ctrl+Z",
+};
+
 /** First non-empty line, trimmed — used as a draft's title. */
 export function firstLine(text: string, max = 80): string {
   const line = text.split("\n").find((l) => l.trim())?.trim() ?? "";

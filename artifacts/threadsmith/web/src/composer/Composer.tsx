@@ -27,7 +27,7 @@ import { useCommands, type Command } from "../lib/commands.ts";
 import { useLiveEvent } from "../lib/live.ts";
 import { adoptPostId, navigate, newDraft } from "../lib/router.ts";
 import { formatTime, formatWhen } from "../lib/time.ts";
-import { copyText, cx, modKey, uid } from "../lib/util.ts";
+import { copyText, cx, keys, uid } from "../lib/util.ts";
 import { AiPanel, type AiSection } from "./AiPanel.tsx";
 import { AltTextDialog } from "./AltTextDialog.tsx";
 import { MAX_IMAGES, PostCard, type PendingUpload } from "./PostCard.tsx";
@@ -161,7 +161,7 @@ export function Composer(props: Props) {
   const applyAi = (next: Segment[], label: string) => {
     aiUndo.current = draft.thread;
     draft.setThread(next);
-    toast({ id: "ai-undo", title: label, tone: "success", actions: [{ label: `Undo (${modKey}Z)`, onClick: undoAi }], duration: 10_000 });
+    toast({ id: "ai-undo", title: label, tone: "success", actions: [{ label: `Undo (${keys.undo})`, onClick: undoAi }], duration: 10_000 });
   };
   const undoAi = () => {
     if (!aiUndo.current) return;
@@ -341,7 +341,10 @@ export function Composer(props: Props) {
 
   /** Starts the clipboard write synchronously (gesture), resolving the text after the save + export. */
   const copyThread = async () => {
-    if (empty) return toast({ title: "Nothing to copy yet" });
+    if (empty) {
+      toast({ title: "Nothing to copy yet" });
+      return;
+    }
     const text = draft
       .flush()
       .then(() => api.exportPost(draft.currentId()!))
@@ -414,9 +417,9 @@ export function Composer(props: Props) {
   const commands = useMemo<Command[]>(() => {
     const a = () => actions.current;
     const list: Command[] = [
-      { id: "queue", group: "Thread", title: "Add to queue", icon: CalendarClock, shortcut: `${modKey}↵`, run: () => void a().schedule(a().slotTarget ?? "next") },
+      { id: "queue", group: "Thread", title: "Add to queue", icon: CalendarClock, shortcut: keys.queue, run: () => void a().schedule(a().slotTarget ?? "next") },
       { id: "pick", group: "Thread", title: "Schedule for a specific time…", icon: CalendarClock, run: () => a().setPickerOpen(true) },
-      { id: "copy", group: "Thread", title: "Copy thread", icon: Copy, shortcut: `${modKey}⇧C`, run: () => void a().copyThread() },
+      { id: "copy", group: "Thread", title: "Copy thread", icon: Copy, shortcut: keys.copy, run: () => void a().copyThread() },
       { id: "text", group: "Thread", title: "Toggle text mode", icon: AlignLeft, keywords: "cards markdown plain", run: () => a().toggleText() },
       { id: "ai-threadify", group: "AI", title: "Threadify notes into a thread…", icon: Rows3, keywords: "copilot generate", run: () => a().openAi("threadify") },
       { id: "ai-hooks", group: "AI", title: "Suggest opening hooks", icon: MessageSquareQuote, keywords: "copilot first post", run: () => a().openAi("hooks") },
@@ -574,8 +577,8 @@ export function Composer(props: Props) {
             )}
             {thread && !readOnly && (
               <p className="mt-10 hidden text-center text-xs text-ink-3 sm:block">
-                <kbd className="font-sans">{modKey}↵</kbd> add to queue · <kbd className="font-sans">{modKey}⇧C</kbd> copy thread ·{" "}
-                <kbd className="font-sans">{modKey}K</kbd> commands
+                <kbd className="font-sans">{keys.queue}</kbd> add to queue · <kbd className="font-sans">{keys.copy}</kbd> copy thread ·{" "}
+                <kbd className="font-sans">{keys.palette}</kbd> commands
               </p>
             )}
           </div>

@@ -703,6 +703,26 @@ apiRoutes.openapi(
 
 apiRoutes.openapi(
   createRoute({
+    method: "get",
+    path: "/media/{id}",
+    tags: ["Media"],
+    operationId: "getMedia",
+    summary: "Get an image's metadata",
+    description: "Filename, type, size and alt text. The bytes themselves are served at the returned `url` (/media/{id}).",
+    request: { params: IdParam },
+    responses: { 200: json(MediaSchema, "The image's metadata."), 404: E404 },
+  }),
+  (c) => {
+    const id = c.req.valid("param").id;
+    const m = getMedia(id);
+    if (!m) throw new NotFoundError(`Media ${id} not found`);
+    const { id: mid, filename, mime, size, alt, url, createdAt } = m;
+    return c.json({ id: mid, filename, mime, size, alt, url, createdAt }, 200);
+  },
+);
+
+apiRoutes.openapi(
+  createRoute({
     method: "patch",
     path: "/media/{id}",
     tags: ["Media"],

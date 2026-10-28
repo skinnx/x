@@ -14,7 +14,7 @@ import { TokenPrompt } from "./components/TokenPrompt.tsx";
 import { useCommands, type Command } from "./lib/commands.ts";
 import { useLiveEvents } from "./lib/live.ts";
 import { composerKey, navigate, newDraft, useRoute } from "./lib/router.ts";
-import { modKey } from "./lib/util.ts";
+import { keys } from "./lib/util.ts";
 import { QueueView } from "./queue/QueueView.tsx";
 
 export function App() {
@@ -140,7 +140,7 @@ function Shell({ health }: { health: Health }) {
           <div className="flex-1" />
           <button
             onClick={() => setPaletteOpen(true)}
-            aria-label={`Commands (${modKey}K)`}
+            aria-label={`Commands (${keys.palette})`}
             className="grid size-9 place-items-center rounded-lg text-ink-2 hover:bg-subtle"
           >
             <Search size={18} />
