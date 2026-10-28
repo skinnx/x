@@ -4,7 +4,7 @@
 import type { Post } from "../shared/types.ts";
 import { formatLocal, getConfig } from "./config.ts";
 import { xConfigured } from "./env.ts";
-import { claimDuePosts, claimPost, ConflictError, listPosts, markDue, markFailed, markPublished, requirePost } from "./repo.ts";
+import { claimNextDuePost, claimPost, ConflictError, markDue, markFailed, markPublished, requirePost } from "./repo.ts";
 import { publishToX } from "./x.ts";
 
 const manualModeMessage = (id: string) =>
@@ -61,14 +61,12 @@ async function handleDue(post: Post): Promise<void> {
 }
 
 /**
- * Claim the earliest due post (with any due at the same instant) rather than all of them, so a restart mid-tick
- * leaves the others `scheduled` instead of `publishing` (which recovery would mark failed).
+ * Claim one due post at a time rather than all of them, so a restart mid-tick leaves the others `scheduled`
+ * instead of `publishing` (which recovery would mark failed).
  */
 function claimNext(): Post[] {
-  const [next] = listPosts({ status: ["scheduled"], to: new Date(Date.now() + 1).toISOString(), limit: 1 });
-  if (!next?.scheduledAt) return [];
-  const claimed = claimDuePosts(new Date(next.scheduledAt));
-  return claimed.length ? claimed : claimDuePosts();
+  const post = claimNextDuePost();
+  return post ? [post] : [];
 }
 
 function intervalMs(): number {

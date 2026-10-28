@@ -16,6 +16,7 @@ import { pushRoutes } from "./push.ts";
 export { VERSION };
 export const app = new OpenAPIHono();
 app.onError(errorResponse);
+app.notFound((c) => c.json({ error: "not_found", message: `No route for ${c.req.method} ${c.req.path}` }, 404));
 
 app.use("*", guardRequest);
 app.use("/api/*", requireAuth);

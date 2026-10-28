@@ -381,7 +381,8 @@ const commands = {
   async copy([ref]) {
     const data = await api("GET", `/api/posts/${await resolveId(ref)}/export`);
     // A thread that failed partway through an API publish: only the posts not yet live, as replies to the last live one.
-    const live = data.alreadyLive ?? 0;
+    // A fully published thread has nothing left to post: copy all of it.
+    const live = (data.alreadyLive ?? 0) < data.posts.length ? (data.alreadyLive ?? 0) : 0;
     const text = live ? data.remainingText : data.text;
     const count = live ? data.remainingPosts.length : data.posts.length;
     const copiedWith = opt.clipboard ? copyToClipboard(text) : null;

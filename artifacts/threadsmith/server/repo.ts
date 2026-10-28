@@ -199,20 +199,17 @@ export function unschedulePost(id: string): Post {
 }
 
 /**
- * Atomically move every due `scheduled` post to `publishing` and return them.
- * The status guard in the UPDATE is what prevents double-publishing.
+ * Atomically move the single earliest due `scheduled` post to `publishing`. Claiming one at a time means a restart
+ * mid-tick strands only the post in flight; the rest stay `scheduled` for the next tick.
  */
-export function claimDuePosts(at = new Date()): Post[] {
+export function claimNextDuePost(at = new Date()): Post | undefined {
   return tx(() => {
-    const rows = db
-      .prepare("SELECT id FROM posts WHERE status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at")
-      .all(at.toISOString()) as { id: string }[];
-    const claimed: Post[] = [];
-    for (const { id } of rows) {
-      const res = db.prepare("UPDATE posts SET status = 'publishing', updated_at = ? WHERE id = ? AND status = 'scheduled'").run(now(), id);
-      if (res.changes === 1) claimed.push(requirePost(id));
-    }
-    return claimed;
+    const row = db
+      .prepare("SELECT id FROM posts WHERE status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at, created_at LIMIT 1")
+      .get(at.toISOString()) as { id: string } | undefined;
+    if (!row) return undefined;
+    db.prepare("UPDATE posts SET status = 'publishing', updated_at = ? WHERE id = ? AND status = 'scheduled'").run(now(), row.id);
+    return requirePost(row.id);
   });
 }
 
