@@ -66,11 +66,11 @@ const LIGHT = [
 // A URL is ASCII/Latin/Cyrillic only (it ends before CJK text) and trailing punctuation is not part of it.
 const URL_CHARS = "[\\w\\-.~!*';:=+,$/%#\\[\\]&|@?()\\u00C0-\\u024F\\u0400-\\u04FF\\u1E00-\\u1EFF]";
 const URL_RE = new RegExp(
-  `\\bhttps?:\\/\\/${URL_CHARS}+|\\b(?:[a-z0-9-]+\\.)+(?:com|net|org|io|ai|dev|app|co|me|xyz|vn|gg|so|sh|tv|ly|to|us|uk|de|fr|jp)\\b(?:\\/${URL_CHARS}*)?`,
+  `\\bhttps?:\\/\\/${URL_CHARS}+|(?<![\\w@./:-])(?:[a-z0-9-]+\\.)+(?:com|net|org|io|ai|dev|app|co|me|xyz|vn|gg|so|sh|tv|ly|to|us|uk|de|fr|jp)\\b(?:\\/${URL_CHARS}*)?`,
   "gi",
 );
 const TRAILING_PUNCT = /[.,!?;:'")\]]+$/;
-const EMOJI_RE = /\p{Extended_Pictographic}/u;
+const EMOJI_RE = /\p{Extended_Pictographic}|\p{Regional_Indicator}/u;
 const segmenter = new Intl.Segmenter();
 
 function plainWeight(text) {

@@ -288,7 +288,8 @@ export function recoverInterrupted(): number {
   for (const p of stuck) {
     markFailed(
       p.id,
-      `Interrupted while publishing (process restarted). ${p.xPostIds.length} of ${p.thread.length} posts were confirmed on X; check your profile, then Retry to post the rest.`,
+      `Interrupted while publishing (process restarted). ${p.xPostIds.length} of ${p.thread.length} posts were confirmed on X. ` +
+        `Check your profile first: if post ${p.xPostIds.length + 1} is already there, Retry would be refused as a duplicate, so post the rest by hand as replies and mark it published; otherwise Retry posts the rest.`,
     );
   }
   return stuck.length;
@@ -382,15 +383,4 @@ export function deleteMedia(id: string): void {
   } catch {
     // already gone
   }
-}
-
-// ---------- idempotency (agents retry; the same Idempotency-Key returns the first result) ----------
-
-export function idempotent<T>(key: string | undefined, fn: () => T): T {
-  if (!key) return fn();
-  const hit = db.prepare("SELECT response FROM idempotency WHERE key = ?").get(key) as { response: string } | undefined;
-  if (hit) return JSON.parse(hit.response) as T;
-  const out = fn();
-  db.prepare("INSERT OR IGNORE INTO idempotency (key, response, created_at) VALUES (?, ?, ?)").run(key, JSON.stringify(out), now());
-  return out;
 }

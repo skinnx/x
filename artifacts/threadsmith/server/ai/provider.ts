@@ -80,13 +80,13 @@ let effortSupport: Promise<boolean> | undefined;
 
 /**
  * Older models (e.g. claude-haiku-4-5, claude-sonnet-4-5) reject `effort`, so ask the Models API once.
- * If it can't answer, assume a current model (and ask again next time unless the endpoint said 404).
+ * If it can't answer, assume a current model, and ask again in 5 minutes (never, if the endpoint said 404).
  */
 function supportsLowEffort(c: Anthropic, model: string): Promise<boolean> {
   effortSupport ??= c.models.retrieve(model, {}, { timeout: 10_000, maxRetries: 0 }).then(
     (m) => (m.capabilities?.effort ? m.capabilities.effort.supported && m.capabilities.effort.low.supported : true),
     (err) => {
-      if (!(err instanceof Anthropic.NotFoundError)) effortSupport = undefined;
+      if (!(err instanceof Anthropic.NotFoundError)) setTimeout(() => (effortSupport = undefined), 300_000).unref();
       return true;
     },
   );

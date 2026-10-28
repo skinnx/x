@@ -38,7 +38,8 @@ import { createWebhook, deleteWebhook, listWebhooks, testWebhook } from "./webho
 const When = z
   .union([
     z.literal("next"),
-    z.iso.datetime({ offset: true, local: true, error: 'use "next" or an ISO-8601 date-time, e.g. 2026-11-02T09:00:00+07:00, …Z, or 2026-11-02T09:00 (configured timezone)' }),
+    // Parsed by config.parseWhen, the same parser MCP uses, so both surfaces accept and reject the same values.
+    z.string().min(1),
   ])
   .openapi({
     description:
@@ -230,7 +231,8 @@ const IdemHeader = z.object({
   "Idempotency-Key": z.string().max(200).optional().openapi({
     description:
       "Retry-safe POST: a repeat request to the same path with the same key (within 24 h) gets the first successful answer again, " +
-      "same status and body, with header Idempotent-Replayed: true, instead of acting twice. Error answers are not stored.",
+      "same status and body, with header Idempotent-Replayed: true, instead of acting twice. Error answers (4xx/5xx) are not stored. " +
+      "Note that publish and retry answer 200 even when X rejected the post (status \"failed\"); that answer is replayed too, so use a new key to try again.",
   }),
 });
 const IdemHeaders = IdemHeader.extend({
@@ -264,21 +266,24 @@ const idempotency: MiddlewareHandler = async (c, next) => {
     const { status, body } = JSON.parse(hit.response) as { status: 200; body: unknown };
     return c.json(body, status, { "Idempotent-Replayed": "true" });
   }
-  const run = next();
-  idempotencyInFlight.set(scope, run.catch(() => {}));
+  // No await between the in-flight check above and this set, so two concurrent requests can't both get here.
+  let release!: () => void;
+  idempotencyInFlight.set(scope, new Promise<void>((r) => (release = r)));
   try {
-    await run;
+    await next();
+    if (c.res.ok && c.res.headers.get("content-type")?.startsWith("application/json")) {
+      const ts = Date.now();
+      db.prepare("DELETE FROM idempotency WHERE created_at < ?").run(new Date(ts - IDEMPOTENCY_TTL_MS).toISOString());
+      db.prepare("INSERT OR IGNORE INTO idempotency (key, response, created_at) VALUES (?, ?, ?)").run(
+        scope,
+        JSON.stringify({ status: c.res.status, body: await c.res.clone().json() }),
+        new Date(ts).toISOString(),
+      );
+    }
   } finally {
+    // Released only after the answer is stored, so a waiting repeat finds it.
     idempotencyInFlight.delete(scope);
-  }
-  if (c.res.ok && c.res.headers.get("content-type")?.startsWith("application/json")) {
-    const ts = Date.now();
-    db.prepare("DELETE FROM idempotency WHERE created_at < ?").run(new Date(ts - IDEMPOTENCY_TTL_MS).toISOString());
-    db.prepare("INSERT OR IGNORE INTO idempotency (key, response, created_at) VALUES (?, ?, ?)").run(
-      scope,
-      JSON.stringify({ status: c.res.status, body: await c.res.clone().json() }),
-      new Date(ts).toISOString(),
-    );
+    release();
   }
 };
 

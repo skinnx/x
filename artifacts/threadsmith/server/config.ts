@@ -189,12 +189,21 @@ export function parseInstant(input: string): string {
   const m = DATE_TIME.exec(input.trim());
   if (!m) throw new BadInputError(`"${input}" is not an ISO-8601 date-time (e.g. 2026-11-02T09:00, 2026-11-02T09:00:00+07:00 or …Z)`);
   if (m[7]) {
-    const t = new Date(input.trim());
+    const [y, mo, d, h, mi, sec] = m.slice(1, 7).map((n) => Number(n ?? 0)) as [number, number, number, number, number, number];
+    if (mo < 1 || mo > 12 || d < 1 || d > new Date(Date.UTC(y, mo, 0)).getUTCDate() || h > 23 || mi > 59 || sec > 59) {
+      throw new BadInputError(`"${input}" is not a real date-time`);
+    }
+    const t = new Date(input.trim().replace(" ", "T"));
     if (Number.isNaN(t.getTime())) throw new BadInputError(`"${input}" is not a valid date-time`);
     return t.toISOString();
   }
-  const [y, mo, d, h, mi, sec] = m.slice(1, 7).map((n) => Number(n ?? 0));
-  return new Date(new TZDate(y!, mo! - 1, d!, h!, mi!, sec!, getConfig().timezone).getTime()).toISOString();
+  const [y, mo, d, h, mi, sec] = m.slice(1, 7).map((n) => Number(n ?? 0)) as [number, number, number, number, number, number];
+  // Reject impossible values (2026-11-31, 25:00, :75) instead of letting Date roll them into another day.
+  const daysInMonth = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  if (mo < 1 || mo > 12 || d < 1 || d > daysInMonth || h > 23 || mi > 59 || sec > 59) {
+    throw new BadInputError(`"${input}" is not a real date-time`);
+  }
+  return new Date(new TZDate(y, mo - 1, d, h, mi, sec, getConfig().timezone).getTime()).toISOString();
 }
 
 /** Resolve "next" or a date-time (see parseInstant) into a UTC ISO string. */

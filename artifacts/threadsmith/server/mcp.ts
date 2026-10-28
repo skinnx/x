@@ -466,9 +466,11 @@ tool(
     const remaining = p.thread.slice(alreadyLive);
     const replyToUrl = alreadyLive ? `https://x.com/i/status/${p.xPostIds[alreadyLive - 1]}` : null;
     return result(
-      alreadyLive
-        ? `${alreadyLive} of ${posts.length} post(s) are already live on X; ${remaining.length} remaining post(s) to add as replies under ${replyToUrl}.`
-        : `${posts.length} post(s) ready to copy.`,
+      p.status === "published"
+        ? `Already published${p.url ? ` at ${p.url}` : ""}; ${posts.length} post(s) below for reference.`
+        : alreadyLive
+          ? `${alreadyLive} of ${posts.length} post(s) are already live on X; ${remaining.length} remaining post(s) to add as replies under ${replyToUrl}.`
+          : `${posts.length} post(s) ready to copy.`,
       {
         text: threadToText(p.thread),
         posts,

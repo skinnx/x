@@ -25,15 +25,16 @@ const LIGHT_RANGES: Array<[number, number]> = [
 ];
 const URL_WEIGHT = 23;
 // Approximation of twitter-text's URL extractor: explicit schemes plus bare domains on common TLDs. Like
-// twitter-text, a URL is made of ASCII/Latin/Cyrillic characters only (so "https://x.co/a日本" ends before 日)
-// and trailing punctuation is not part of it.
+// twitter-text, a URL is made of ASCII/Latin/Cyrillic characters only (so "https://x.co/a日本" ends before 日),
+// trailing punctuation is not part of it, and a bare domain inside an email or another URL is not a link.
 const URL_CHARS = "[\\w\\-.~!*';:=+,$/%#\\[\\]&|@?()\\u00C0-\\u024F\\u0400-\\u04FF\\u1E00-\\u1EFF]";
 const URL_RE = new RegExp(
-  `\\bhttps?:\\/\\/${URL_CHARS}+|\\b(?:[a-z0-9-]+\\.)+(?:com|net|org|io|ai|dev|app|co|me|xyz|vn|gg|so|sh|tv|ly|to|us|uk|de|fr|jp)\\b(?:\\/${URL_CHARS}*)?`,
+  `\\bhttps?:\\/\\/${URL_CHARS}+|(?<![\\w@./:-])(?:[a-z0-9-]+\\.)+(?:com|net|org|io|ai|dev|app|co|me|xyz|vn|gg|so|sh|tv|ly|to|us|uk|de|fr|jp)\\b(?:\\/${URL_CHARS}*)?`,
   "gi",
 );
 const TRAILING_PUNCT = /[.,!?;:'")\]]+$/;
-const EMOJI_RE = /\p{Extended_Pictographic}/u;
+// Emoji (incl. flags, which are pairs of regional indicators) count 2 per grapheme.
+const EMOJI_RE = /\p{Extended_Pictographic}|\p{Regional_Indicator}/u;
 
 const segmenter = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter() : null;
 
