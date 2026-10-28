@@ -123,8 +123,8 @@ function Tools(p: Props) {
     if (p.focus.section === "threadify") notesRef.current?.focus();
     if (p.focus.section === "rewrite") instructionRef.current?.focus();
     if (p.focus.section === "hooks" && firstPost) hooks.mutate();
-    // Re-run only when the palette asks again (nonce).
-  }, [p.focus?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Runs only when the palette asks again (new nonce), not on every edit.
+  }, [p.focus?.nonce]);
 
   const target = p.target && p.target.text.trim() ? p.target : null;
   const runRewrite = (text: string, label: string) =>

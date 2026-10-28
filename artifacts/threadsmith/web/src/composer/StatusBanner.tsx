@@ -1,7 +1,7 @@
 // Banner above the thread for posts that need attention: due (copy & post by hand), failed, publishing, published.
 import { useMutation } from "@tanstack/react-query";
 import { CircleAlert, CircleCheck, Copy, ExternalLink, LoaderCircle, RotateCcw } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { Health, Post } from "../../../shared/types.ts";
 import { api, intentUrl } from "../api.ts";
 import { Popover } from "../components/Popover.tsx";
@@ -198,7 +198,7 @@ function MarkPosted({ post, onChange }: { post: Post; onChange: (p: Post) => voi
   );
 }
 
-function Shell({ tone, children }: { tone: "info" | "ok" | "error" | "due"; children: React.ReactNode }) {
+function Shell({ tone, children }: { tone: "info" | "ok" | "error" | "due"; children: ReactNode }) {
   return (
     <div
       className={cx(

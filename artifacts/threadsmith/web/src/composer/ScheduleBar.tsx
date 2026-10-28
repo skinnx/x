@@ -43,7 +43,8 @@ export function ScheduleBar(p: Props) {
     return () => clearTimeout(t);
   }, [confirmPublish]);
 
-  const closePicker = useCallback(() => p.setPickerOpen(false), [p]);
+  const { setPickerOpen } = p;
+  const closePicker = useCallback(() => setPickerOpen(false), [setPickerOpen]);
 
   return (
     <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">

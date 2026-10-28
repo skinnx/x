@@ -17,10 +17,10 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { joinThread, splitThread, weightedLength } from "../../../shared/thread.ts";
 import type { Health, Post, Segment } from "../../../shared/types.ts";
-import { api, errorMessage } from "../api.ts";
+import { api } from "../api.ts";
 import { Popover } from "../components/Popover.tsx";
 import { dismissToast, toast, toastError } from "../components/Toasts.tsx";
 import { useCommands, type Command } from "../lib/commands.ts";
@@ -111,8 +111,14 @@ export function Composer(props: Props) {
   const textareas = useRef(new Map<string, HTMLTextAreaElement>());
   const pendingFocus = useRef<{ id: string; at: "start" | "end" } | null>(null);
   const aiUndo = useRef<Segment[] | null>(null);
+  const autoFocused = useRef(false);
 
   useLayoutEffect(() => {
+    // A fresh draft focuses its first card so typing starts immediately.
+    if (thread && !autoFocused.current) {
+      autoFocused.current = true;
+      if (!props.postId && isBlank(thread)) pendingFocus.current = { id: thread[0]!.id, at: "end" };
+    }
     const f = pendingFocus.current;
     if (!f) return;
     const el = textareas.current.get(f.id);
@@ -123,12 +129,6 @@ export function Composer(props: Props) {
     el.setSelectionRange(pos, pos);
     el.scrollIntoView({ block: "nearest", behavior: "smooth" });
   });
-
-  // Focus the first card of a fresh draft so typing starts immediately.
-  useEffect(() => {
-    if (thread && !props.postId && isBlank(thread)) pendingFocus.current = { id: thread[0]!.id, at: "end" };
-    // Only on the first render with a thread.
-  }, [Boolean(thread)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep the drafts sidebar title in sync without waiting for the SSE round trip.
   useEffect(() => {
@@ -632,7 +632,7 @@ export function Composer(props: Props) {
   );
 }
 
-function Cards(p: { thread: Segment[]; onReorder: (e: DragEndEvent) => void; children: React.ReactNode }) {
+function Cards(p: { thread: Segment[]; onReorder: (e: DragEndEvent) => void; children: ReactNode }) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -728,5 +728,3 @@ function StatusLabel({ post, saveState, tz }: { post: Post | null; saveState: Sa
     </div>
   );
 }
-
-export { errorMessage };
