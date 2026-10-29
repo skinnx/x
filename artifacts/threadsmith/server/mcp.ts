@@ -43,7 +43,7 @@ const VERSION = (JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"
 const EDITABLE = ["draft", "scheduled", "due", "failed"];
 const MAX_IMAGES_PER_POST = 4;
 
-const INSTRUCTIONS = `Threadsmith is this person's self-hosted composer and scheduler for posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord.
+const INSTRUCTIONS = `Threadsmith is this person's publishing layer for you, the agent: you draft, check, schedule and publish posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord through it, read how they perform, and continue threads. The person connects accounts and approves; you never see their credentials.
 Start with get_settings (timezone, X limit, X mode, connected accounts, their voice). A thread is text with a line containing only --- between posts.
 Destinations: create_post/update_post take \`to\` (connected accounts by id, label, handle or platform name; list_accounts shows them) and optional per-account \`versions\`.
 A post without destinations uses the legacy single-X mode (the X API keys in .env, or manual copy & post).

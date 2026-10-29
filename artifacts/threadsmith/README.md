@@ -1,29 +1,163 @@
 # Threadsmith
 
-Công cụ soạn và lên lịch thread tự host cho **X, Bluesky, Mastodon, Threads, LinkedIn, Telegram và Discord**, thay thế Typefully và Postiz. Toàn bộ chạy trong **một tiến trình**, dữ liệu lưu trong **một file SQLite**, không cần tài khoản và chạy được trên localhost hoặc VPS.
+**Công cụ đăng bài cho AI agent.** Agent của bạn (Claude Code, Claude Desktop, Cursor, một script chạy theo lịch…) soạn, kiểm tra, xếp lịch và đăng bài lên **X, Bluesky, Mastodon, Threads, LinkedIn, Telegram, Discord**. Threadsmith lo những phần agent không tự làm được hoặc dễ làm sai: giữ thông tin đăng nhập, đếm ký tự đúng luật từng nền tảng, đăng thread không trùng, đăng tiếp khi lỗi giữa chừng, nhắc giờ và lấy số liệu tương tác. Bạn giữ quyền duyệt.
 
-Thay vì làm một ứng dụng lịch có gắn thêm AI, Threadsmith coi AI agent là người dùng ngang hàng với bạn. Mọi thao tác trên giao diện đều làm được qua REST và OpenAPI, MCP, CLI, webhooks, luồng sự kiện SSE và `llms.txt`. Claude Code còn dùng được Threadsmith qua một Agent Skill có sẵn. Ngoài ra có một copilot viết bài chạy bằng Claude.
+Tự host trong **một tiến trình** với **một file SQLite** (hoặc một container Docker), không cần tài khoản người dùng.
+
+```bash
+# 1. chạy server (xem "Chạy nhanh" hoặc "Chạy bằng Docker")
+# 2. nối agent của bạn
+claude mcp add --transport http threadsmith http://127.0.0.1:3000/mcp
+# 3. nói với agent: "viết thread về X, gửi tôi xem, rồi xếp vào khung giờ trống kế tiếp trên Bluesky và X"
+```
 
 > **Trạng thái.** Bản 0.2. Phần đăng lên cả 7 nền tảng đã được kiểm tra với máy chủ giả lập mô phỏng theo tài liệu API chính thức (đăng thread nối tiếp, upload ảnh, lỗi giữa chừng rồi đăng tiếp phần còn lại). Phần này **chưa** được chạy với tài khoản thật trên bất kỳ nền tảng nào vì lúc xây dựng chưa có thông tin đăng nhập. Xem thêm [Giới hạn](#giới-hạn-đã-biết).
 
 ---
 
-## So với Postiz
+## Vì sao một agent nên đăng bài qua Threadsmith
 
-| | Threadsmith | Postiz |
+Agent có thể tự gọi API từng nền tảng, nhưng sẽ phải tự xử lý những thứ dễ sai và khó sửa khi đã lỡ đăng:
+
+| Việc | Agent tự làm | Qua Threadsmith |
 |---|---|---|
-| Hạ tầng tự host | **1 tiến trình Node + 1 file SQLite** | Postgres + Redis + Temporal + nhiều service |
-| Nền tảng | 7 (X, Bluesky, Mastodon, Threads, LinkedIn, Telegram, Discord) | ~30 |
-| Agent điều khiển qua | REST + OpenAPI, MCP (19 tool), CLI `--json`, `llms.txt`, webhook ký HMAC, SSE, Agent Skill | REST, MCP (~9 tool), CLI |
-| Đăng tiếp sau lỗi giữa thread | Có, theo từng kênh, không đăng trùng; bài đã lên bị khóa | — |
-| Đếm ký tự | Theo luật từng nền tảng (X weighted, Bluesky grapheme, Mastodon URL=23, Threads emoji theo byte…) | Đếm chung |
-| Phiên bản riêng cho từng kênh + AI "Adapt" | Có | Có (AI) |
-| Không cần khóa X | Chế độ thủ công: nhắc giờ + sao chép | Cần kết nối |
-| Chi phí X API | Ghi rõ ($0,015/bài, $0,20 nếu có link) | — |
+| Giữ token của 7 nền tảng | Token nằm trong prompt, file cấu hình hoặc biến môi trường của agent | Mã hóa trong server, agent không bao giờ thấy |
+| Đếm ký tự | Dễ sai: X tính "ệ" là 2, mỗi URL là 23; Bluesky đếm grapheme; Threads tính emoji theo byte | `count_characters` / `preview_post` theo đúng luật từng nền tảng, chặn trước khi đăng |
+| Thread lỗi giữa chừng | Đăng lại thì trùng, bỏ qua thì đứt thread | Đăng tiếp từ chỗ dừng, không trùng; bài đã lên bị khóa |
+| Gọi lại khi mất kết nối | Có thể tạo bài hai lần | `Idempotency-Key` trên mọi POST |
+| Hẹn giờ | Agent phải tự chạy liên tục | Hàng đợi theo khung giờ, server tự đăng, nhắc giờ khi cần người |
+| Số liệu tương tác | Gọi API riêng từng nơi | `list_metrics` / `get_metrics` gom về một dạng |
+| Nối thêm bài (plug, follow-up) | Phải nhớ id và chuỗi reply của từng nền tảng | `append_to_post` |
 
-Postiz hơn ở số nền tảng (Instagram, Facebook, TikTok, YouTube, Pinterest…), làm việc nhóm và analytics. Threadsmith chọn ít kênh hơn nhưng nhẹ, an toàn khi lỗi giữa chừng và dễ cho agent điều khiển hơn. Số liệu Postiz lấy từ các trang so sánh tháng 7–10/2026, hãy kiểm tra lại trên postiz.com.
+Nguyên tắc thiết kế: **Threadsmith cung cấp dữ liệu và thao tác an toàn, còn phán đoán để agent làm.** Không có dashboard thống kê, gợi ý giờ đăng hay luật auto-plug, vì agent đọc số liệu và quyết định tốt hơn. Xem [mục riêng](#nguyên-tắc-dữ-liệu-và-thao-tác-cho-agent-quyết-định-để-ai).
 
-## Tính năng
+**Agent dùng qua đâu:** MCP (19 tool, Streamable HTTP), REST với OpenAPI 3.1 (`/docs`), CLI `--json` không phụ thuộc thư viện ngoài, `/llms.txt`, Agent Skill cho Claude, webhook có chữ ký HMAC, luồng sự kiện SSE.
+
+**Người dùng làm gì:** kết nối tài khoản (agent không bao giờ nhận thông tin đăng nhập), duyệt bài agent đề xuất, và dùng giao diện web khi muốn tự viết. Giao diện có đủ trình soạn, hàng đợi và trạng thái từng kênh.
+
+### So với Typefully và Postiz
+
+Hai công cụ này làm cho **người** soạn bài, rồi thêm API và MCP. Threadsmith làm cho **agent** đăng bài, có giao diện để người duyệt.
+
+| | Threadsmith | Typefully | Postiz |
+|---|---|---|---|
+| Đối tượng chính | AI agent, người duyệt | Người viết | Người và team social |
+| Kênh cho agent | MCP 19 tool, REST/OpenAPI, CLI, llms.txt, webhook, SSE, Skill | API + MCP | REST, MCP (~9 tool), CLI |
+| Đếm ký tự từng nền tảng, chặn trước khi đăng | Có | không công bố | không công bố |
+| Đăng tiếp không trùng khi thread lỗi | Có, theo từng kênh | không công bố | không công bố |
+| Tự host | 1 tiến trình + SQLite / Docker | Không (SaaS) | Postgres + Redis + Temporal |
+| Nền tảng | 7 | X, LinkedIn, Threads, Bluesky, Mastodon… | ~30 |
+| Thống kê, làm việc nhóm | Số liệu cho agent; không có team | Có | Có |
+| Giá | Miễn phí (X API tính phí theo lượt) | Free 10 bài/tháng; $99/năm; $18–20/tháng | Tự host miễn phí; host từ $29/tháng |
+
+Nếu bạn cần Instagram, Facebook, TikTok, YouTube, làm việc nhóm hoặc dashboard cho người xem, Postiz hoặc Typefully phù hợp hơn. Số liệu về hai công cụ này lấy từ các trang so sánh tháng 7–10/2026; hãy kiểm tra lại trên trang chính thức của họ.
+
+## Chạy nhanh
+
+Yêu cầu Node.js **≥ 22.13** (vì dùng `node:sqlite` có sẵn trong Node, không phải biên dịch native) và pnpm.
+
+```bash
+cd artifacts/threadsmith
+pnpm install
+cp .env.example .env                                   # có thể để trống: app chạy ở chế độ thủ công
+cp threadsmith.config.example.json threadsmith.config.json
+pnpm build                                             # build giao diện web
+pnpm start                                             # → http://127.0.0.1:3000
+```
+
+Chế độ phát triển (server tự reload, Vite HMR): `pnpm dev`, sau đó mở http://localhost:5173. Proxy của Vite đọc cùng `PORT` trong `.env` với server.
+
+Nếu không có `threadsmith.config.json`, app tự tạo một file mặc định theo múi giờ của máy.
+
+---
+
+## Nối agent của bạn
+
+Điểm khác biệt chính của Threadsmith: agent có nhiều cách điều khiển công cụ, không chỉ MCP.
+
+| Kênh | Địa chỉ | Dùng khi |
+|---|---|---|
+| **MCP** (Streamable HTTP) | `http://127.0.0.1:3000/mcp` | Claude Code, Claude Desktop, Cursor, mọi MCP client |
+| **REST + OpenAPI 3.1** | `/openapi.json`, tài liệu tương tác tại `/docs` | Mọi ngôn ngữ, n8n, Zapier, function calling |
+| **CLI** | `node cli/threadsmith.mjs …` (đầu ra `--json`) | Agent dạng shell như Claude Code, cron, script |
+| **Agent Skill** | `skill/threadsmith/SKILL.md` | Dạy Claude quy trình soạn → kiểm tra → hẹn giờ |
+| **llms.txt** | `/llms.txt`, `/llms-full.txt` | Agent tự đọc hướng dẫn dùng |
+| **Webhooks** (ký HMAC) | `POST /api/webhooks` | Nhận sự kiện `post.due`, `post.published`, `post.failed`… |
+| **SSE** | `GET /api/events` | Theo dõi trạng thái theo thời gian thực |
+| **Copilot** | `/api/ai/*` và trong giao diện | Chuyển ghi chú thành thread, viết câu mở đầu, rút gọn cho vừa giới hạn, viết lại, alt text |
+
+MCP không có tool copilot: agent kết nối qua MCP tự viết nội dung (copilot chỉ có qua REST `/api/ai/*`, CLI `threadsmith ai …` và giao diện).
+
+Hai tiện ích cho agent:
+- **`Idempotency-Key`**: gửi header này trên **mọi request POST dưới `/api`** (tạo bài, hẹn giờ, đăng, upload ảnh, tạo webhook…). Gọi lại cùng đường dẫn với cùng key trong vòng 24 giờ sẽ nhận lại đúng status và body JSON của lần thành công đầu tiên, kèm header `Idempotent-Replayed: true`, thay vì làm lại lần nữa. Phản hồi lỗi (4xx/5xx) không được lưu, nên gửi lại sau lỗi đó là thử lại thật. Riêng đăng bài và Retry trả về 200 kể cả khi X từ chối (bài ở trạng thái `failed`); câu trả lời này cũng được lưu, nên muốn thử lại thì dùng key mới hoặc `threadsmith retry`.
+- **`scheduledAt: "next"`**: agent không cần tự tính giờ, chỉ cần xin khung giờ trống kế tiếp.
+
+### Claude Code
+
+```bash
+claude mcp add --transport http threadsmith http://127.0.0.1:3000/mcp
+# khi có AUTH_TOKEN:
+claude mcp add --transport http threadsmith https://threads.example.com/mcp --header "Authorization: Bearer $AUTH_TOKEN"
+
+# Agent Skill (tùy chọn, dạy Claude quy trình và cách dùng CLI):
+cp -r skill/threadsmith ~/.claude/skills/
+```
+
+### Claude.ai và ChatGPT (custom connector)
+
+Connector chạy trên máy chủ của Anthropic hoặc OpenAI, nên Threadsmith phải có một URL **HTTPS công khai** (xem [Triển khai VPS](#triển-khai-trên-vps)) và phải đặt `AUTH_TOKEN`. Hộp thoại thêm connector chỉ nhận URL (và thông tin OAuth), không cho thêm header `Authorization`, còn Threadsmith không có OAuth. Vì vậy hãy đưa token vào URL:
+
+```
+https://threads.example.com/mcp?token=<AUTH_TOKEN>
+```
+
+Server nhận `?token=` thay cho header trên mọi đường dẫn cần token. Khi khai báo connector, để trống phần OAuth (hoặc chọn "No authentication"), vì token đã nằm trong URL. Lưu ý:
+- Chỉ dùng qua HTTPS. Với `http://`, token đi qua mạng dưới dạng chữ thường.
+- Token nằm trong URL nên có thể bị ghi vào log: access log của reverse proxy (Caddy chỉ ghi khi bạn bật `log`), log phía connector, lịch sử trình duyệt nếu bạn mở URL đó. Đừng dán URL này vào chỗ công khai. Nếu nghi bị lộ, đổi `AUTH_TOKEN` rồi cập nhật connector.
+- Cách `?token=` đã được kiểm tra bằng request MCP gửi thẳng tới server, chưa thử với connector thật của Claude.ai hay ChatGPT.
+
+### CLI
+
+```bash
+export THREADSMITH_URL=http://127.0.0.1:3000   # THREADSMITH_TOKEN=... nếu có AUTH_TOKEN
+node cli/threadsmith.mjs new --file notes.md --at next   # tách bài theo ---
+node cli/threadsmith.mjs schedule <id> 2026-11-03T09:00  # giờ theo múi giờ của server
+node cli/threadsmith.mjs queue --days 7
+node cli/threadsmith.mjs copy <id> --clipboard
+node cli/threadsmith.mjs count "Chữ ệ, ố, ữ tính 2; chữ á, ơ, ư, đ tính 1"
+node cli/threadsmith.mjs help
+```
+
+CLI hiển thị giờ theo múi giờ trong config của server (lấy từ `GET /api/config`, có ghi tên múi giờ), không theo múi giờ của máy chạy CLI. Nhờ vậy giờ bạn thấy có thể gõ lại nguyên văn. `publish` và `retry` thoát với mã 1 nếu X từ chối bài, nên script có thể dựa vào exit code.
+
+### Copilot
+
+- **Claude**: đặt `ANTHROPIC_API_KEY`. Model mặc định là `claude-opus-5-5` (đổi bằng `AI_MODEL`).
+
+Copilot đếm lại kết quả bằng đúng quy tắc đếm của X và sửa thêm một vòng nếu còn vượt giới hạn.
+
+### Webhooks
+
+Mỗi lần gửi là một request `POST` JSON `{ id, type, createdAt, data }` kèm header `X-Threadsmith-Signature: sha256=<HMAC-SHA256(raw body, secret)>`. `secret` chỉ hiện **một lần** khi tạo webhook. Cách kiểm tra chữ ký:
+
+```js
+import { createHmac, timingSafeEqual } from "node:crypto";
+const expected = "sha256=" + createHmac("sha256", secret).update(rawBody).digest("hex");
+const ok = timingSafeEqual(Buffer.from(expected), Buffer.from(req.headers["x-threadsmith-signature"]));
+```
+
+---
+
+## Nguyên tắc: dữ liệu và thao tác cho agent, quyết định để AI
+
+Threadsmith **không** xây những tính năng mà một agent AI làm được và làm tốt hơn khi có dữ liệu: dashboard thống kê, gợi ý giờ đăng, luật auto-plug, bộ tự đăng lại bài cũ (evergreen). Thay vào đó Threadsmith cung cấp đúng hai thứ AI không tự làm được:
+
+- **Số liệu tương tác** của từng bài trên từng kênh: `GET /api/metrics`, `GET /api/posts/{id}/metrics?refresh=true`, MCP `list_metrics` / `get_metrics`, CLI `threadsmith metrics`. Bluesky, Mastodon và Threads miễn phí. Threads cần thêm quyền `threads_manage_insights`. Riêng X tính phí đọc (khoảng $0,005/bài), nên chỉ đọc khi được cho phép (`paid=true`). Telegram, Discord và LinkedIn không có API số liệu phù hợp.
+- **Nối thêm bài vào thread đã đăng**: `POST /api/posts/{id}/append`, MCP `append_to_post`, CLI `threadsmith append`. Bài mới trả lời bài cuối đang có trên mọi kênh dạng thread; LinkedIn (dạng một bài) giữ nguyên. Đây là nền cho auto-plug và bài nối tiếp.
+
+Agent (Claude Code, một routine chạy theo lịch, hoặc cron gọi CLI) đọc số liệu, tự rút ra bài nào hiệu quả và giờ nào tốt, quyết định khi nào nối thêm bài hay viết lại bài cũ, và **hỏi bạn trước khi đăng**. Công thức mẫu nằm trong `skill/threadsmith/SKILL.md` và `/llms-full.txt`.
+
+## Tính năng chi tiết
 
 **Soạn bài**
 - Mỗi bài trong thread là một thẻ riêng, có bộ đếm ký tự **theo đúng cách X tính**: chữ CJK và mỗi emoji tính 2, mỗi URL tính 23. Với tiếng Việt, X chỉ tính 2 cho các chữ thuộc khối Unicode *Latin Extended Additional* (ạ, ả, ấ, ầ, ẩ, ẫ, ậ, ặ, ẹ, ẻ, ẽ, ế, ệ, ỉ, ị, ọ, ỏ, ố, ộ, ớ, ợ, ụ, ủ, ứ, ừ, ữ, ự, ỳ, ỵ, ỷ, ỹ…), còn á, à, ã, é, è, í, ì, ó, ò, õ, ú, ù, ý, â, ê, ô, ơ, ư, ă, đ vẫn tính 1. Nhiều công cụ khác đếm sai chữ tiếng Việt.
@@ -62,26 +196,7 @@ Postiz hơn ở số nền tảng (Instagram, Facebook, TikTok, YouTube, Pintere
 
 Token Threads và LinkedIn hết hạn sau khoảng 60 ngày. Server tự kiểm tra lại mọi tài khoản mỗi ngày: token hết hạn hiện lỗi đỏ ở trang Connect và gửi thông báo trình duyệt **trước** khi một bài hẹn giờ thất bại vì nó. Dán token mới rồi bấm Check.
 
-**Kết nối AI**: xem [mục riêng bên dưới](#kết-nối-ai).
-
----
-
-## Chạy nhanh
-
-Yêu cầu Node.js **≥ 22.13** (vì dùng `node:sqlite` có sẵn trong Node, không phải biên dịch native) và pnpm.
-
-```bash
-cd artifacts/threadsmith
-pnpm install
-cp .env.example .env                                   # có thể để trống: app chạy ở chế độ thủ công
-cp threadsmith.config.example.json threadsmith.config.json
-pnpm build                                             # build giao diện web
-pnpm start                                             # → http://127.0.0.1:3000
-```
-
-Chế độ phát triển (server tự reload, Vite HMR): `pnpm dev`, sau đó mở http://localhost:5173. Proxy của Vite đọc cùng `PORT` trong `.env` với server.
-
-Nếu không có `threadsmith.config.json`, app tự tạo một file mặc định theo múi giờ của máy.
+**Kết nối AI**: xem [mục riêng bên dưới](#nối-agent-của-bạn).
 
 ---
 
@@ -172,92 +287,6 @@ Về thông báo:
 3. Chép 4 khóa vào `.env`: `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` (OAuth 1.0a user context), rồi khởi động lại.
 
 Threadsmith ký request bằng OAuth 1.0a tự viết bằng `node:crypto`, không dùng thư viện X bên thứ ba. Ảnh được upload qua `POST /2/media/upload`. Lỗi từ X được dịch ra hướng dẫn cụ thể: sai khóa, thiếu quyền ghi, hết credit, bị giới hạn tốc độ (kèm giờ mở lại), nội dung trùng lặp.
-
----
-
-## Nguyên tắc: dữ liệu và thao tác cho agent, quyết định để AI
-
-Threadsmith **không** xây những tính năng mà một agent AI làm được và làm tốt hơn khi có dữ liệu: dashboard thống kê, gợi ý giờ đăng, luật auto-plug, bộ tự đăng lại bài cũ (evergreen). Thay vào đó Threadsmith cung cấp đúng hai thứ AI không tự làm được:
-
-- **Số liệu tương tác** của từng bài trên từng kênh: `GET /api/metrics`, `GET /api/posts/{id}/metrics?refresh=true`, MCP `list_metrics` / `get_metrics`, CLI `threadsmith metrics`. Bluesky, Mastodon và Threads miễn phí. Threads cần thêm quyền `threads_manage_insights`. Riêng X tính phí đọc (khoảng $0,005/bài), nên chỉ đọc khi được cho phép (`paid=true`). Telegram, Discord và LinkedIn không có API số liệu phù hợp.
-- **Nối thêm bài vào thread đã đăng**: `POST /api/posts/{id}/append`, MCP `append_to_post`, CLI `threadsmith append`. Bài mới trả lời bài cuối đang có trên mọi kênh dạng thread; LinkedIn (dạng một bài) giữ nguyên. Đây là nền cho auto-plug và bài nối tiếp.
-
-Agent (Claude Code, một routine chạy theo lịch, hoặc cron gọi CLI) đọc số liệu, tự rút ra bài nào hiệu quả và giờ nào tốt, quyết định khi nào nối thêm bài hay viết lại bài cũ, và **hỏi bạn trước khi đăng**. Công thức mẫu nằm trong `skill/threadsmith/SKILL.md` và `/llms-full.txt`.
-
-## Kết nối AI
-
-Điểm khác biệt chính của Threadsmith: agent có nhiều cách điều khiển công cụ, không chỉ MCP.
-
-| Kênh | Địa chỉ | Dùng khi |
-|---|---|---|
-| **MCP** (Streamable HTTP) | `http://127.0.0.1:3000/mcp` | Claude Code, Claude Desktop, Cursor, mọi MCP client |
-| **REST + OpenAPI 3.1** | `/openapi.json`, tài liệu tương tác tại `/docs` | Mọi ngôn ngữ, n8n, Zapier, function calling |
-| **CLI** | `node cli/threadsmith.mjs …` (đầu ra `--json`) | Agent dạng shell như Claude Code, cron, script |
-| **Agent Skill** | `skill/threadsmith/SKILL.md` | Dạy Claude quy trình soạn → kiểm tra → hẹn giờ |
-| **llms.txt** | `/llms.txt`, `/llms-full.txt` | Agent tự đọc hướng dẫn dùng |
-| **Webhooks** (ký HMAC) | `POST /api/webhooks` | Nhận sự kiện `post.due`, `post.published`, `post.failed`… |
-| **SSE** | `GET /api/events` | Theo dõi trạng thái theo thời gian thực |
-| **Copilot** | `/api/ai/*` và trong giao diện | Chuyển ghi chú thành thread, viết câu mở đầu, rút gọn cho vừa giới hạn, viết lại, alt text |
-
-MCP không có tool copilot: agent kết nối qua MCP tự viết nội dung (copilot chỉ có qua REST `/api/ai/*`, CLI `threadsmith ai …` và giao diện).
-
-Hai tiện ích cho agent:
-- **`Idempotency-Key`**: gửi header này trên **mọi request POST dưới `/api`** (tạo bài, hẹn giờ, đăng, upload ảnh, tạo webhook…). Gọi lại cùng đường dẫn với cùng key trong vòng 24 giờ sẽ nhận lại đúng status và body JSON của lần thành công đầu tiên, kèm header `Idempotent-Replayed: true`, thay vì làm lại lần nữa. Phản hồi lỗi (4xx/5xx) không được lưu, nên gửi lại sau lỗi đó là thử lại thật. Riêng đăng bài và Retry trả về 200 kể cả khi X từ chối (bài ở trạng thái `failed`); câu trả lời này cũng được lưu, nên muốn thử lại thì dùng key mới hoặc `threadsmith retry`.
-- **`scheduledAt: "next"`**: agent không cần tự tính giờ, chỉ cần xin khung giờ trống kế tiếp.
-
-### Claude Code
-
-```bash
-claude mcp add --transport http threadsmith http://127.0.0.1:3000/mcp
-# khi có AUTH_TOKEN:
-claude mcp add --transport http threadsmith https://threads.example.com/mcp --header "Authorization: Bearer $AUTH_TOKEN"
-
-# Agent Skill (tùy chọn, dạy Claude quy trình và cách dùng CLI):
-cp -r skill/threadsmith ~/.claude/skills/
-```
-
-### Claude.ai và ChatGPT (custom connector)
-
-Connector chạy trên máy chủ của Anthropic hoặc OpenAI, nên Threadsmith phải có một URL **HTTPS công khai** (xem [Triển khai VPS](#triển-khai-trên-vps)) và phải đặt `AUTH_TOKEN`. Hộp thoại thêm connector chỉ nhận URL (và thông tin OAuth), không cho thêm header `Authorization`, còn Threadsmith không có OAuth. Vì vậy hãy đưa token vào URL:
-
-```
-https://threads.example.com/mcp?token=<AUTH_TOKEN>
-```
-
-Server nhận `?token=` thay cho header trên mọi đường dẫn cần token. Khi khai báo connector, để trống phần OAuth (hoặc chọn "No authentication"), vì token đã nằm trong URL. Lưu ý:
-- Chỉ dùng qua HTTPS. Với `http://`, token đi qua mạng dưới dạng chữ thường.
-- Token nằm trong URL nên có thể bị ghi vào log: access log của reverse proxy (Caddy chỉ ghi khi bạn bật `log`), log phía connector, lịch sử trình duyệt nếu bạn mở URL đó. Đừng dán URL này vào chỗ công khai. Nếu nghi bị lộ, đổi `AUTH_TOKEN` rồi cập nhật connector.
-- Cách `?token=` đã được kiểm tra bằng request MCP gửi thẳng tới server, chưa thử với connector thật của Claude.ai hay ChatGPT.
-
-### CLI
-
-```bash
-export THREADSMITH_URL=http://127.0.0.1:3000   # THREADSMITH_TOKEN=... nếu có AUTH_TOKEN
-node cli/threadsmith.mjs new --file notes.md --at next   # tách bài theo ---
-node cli/threadsmith.mjs schedule <id> 2026-11-03T09:00  # giờ theo múi giờ của server
-node cli/threadsmith.mjs queue --days 7
-node cli/threadsmith.mjs copy <id> --clipboard
-node cli/threadsmith.mjs count "Chữ ệ, ố, ữ tính 2; chữ á, ơ, ư, đ tính 1"
-node cli/threadsmith.mjs help
-```
-
-CLI hiển thị giờ theo múi giờ trong config của server (lấy từ `GET /api/config`, có ghi tên múi giờ), không theo múi giờ của máy chạy CLI. Nhờ vậy giờ bạn thấy có thể gõ lại nguyên văn. `publish` và `retry` thoát với mã 1 nếu X từ chối bài, nên script có thể dựa vào exit code.
-
-### Copilot
-
-- **Claude**: đặt `ANTHROPIC_API_KEY`. Model mặc định là `claude-opus-5-5` (đổi bằng `AI_MODEL`).
-
-Copilot đếm lại kết quả bằng đúng quy tắc đếm của X và sửa thêm một vòng nếu còn vượt giới hạn.
-
-### Webhooks
-
-Mỗi lần gửi là một request `POST` JSON `{ id, type, createdAt, data }` kèm header `X-Threadsmith-Signature: sha256=<HMAC-SHA256(raw body, secret)>`. `secret` chỉ hiện **một lần** khi tạo webhook. Cách kiểm tra chữ ký:
-
-```js
-import { createHmac, timingSafeEqual } from "node:crypto";
-const expected = "sha256=" + createHmac("sha256", secret).update(rawBody).digest("hex");
-const ok = timingSafeEqual(Buffer.from(expected), Buffer.from(req.headers["x-threadsmith-signature"]));
-```
 
 ---
 

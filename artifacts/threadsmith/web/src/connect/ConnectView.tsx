@@ -27,16 +27,14 @@ export function ConnectView({ health }: { health: Health }) {
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto w-full max-w-[760px] space-y-8 px-4 pt-6 pb-24 sm:px-6">
         <header>
-          <h1 className="text-xl font-semibold tracking-tight">Connect</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Agents &amp; accounts</h1>
           <p className="mt-1 max-w-xl text-sm leading-relaxed text-ink-2">
-            Everything you can do here, an agent can do too: write drafts, fill the queue, publish, react to events. Pick the surface that fits
-            your agent.
+            Threadsmith is where your agent publishes. Connect it below (MCP, REST or the CLI): it drafts, checks, schedules, publishes and reads how
+            posts did. You connect the social accounts — the agent never sees their credentials — and approve what goes out.
           </p>
         </header>
 
         <StatusGrid health={health} />
-
-        <Accounts health={health} />
 
         <Card icon={<Bot size={16} />} title="MCP server" badge="for Claude, Cursor, any MCP client">
           <p>
@@ -100,6 +98,8 @@ node cli/threadsmith.mjs copy <id> --clipboard
 node cli/threadsmith.mjs help`}
           />
         </Card>
+
+        <Accounts health={health} />
 
         <Webhooks />
         <Reminders />

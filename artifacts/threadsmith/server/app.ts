@@ -40,7 +40,9 @@ app.doc31("/openapi.json", (c) => ({
     title: "Threadsmith API",
     version: VERSION,
     description:
-      "Compose, queue and publish X threads. Every UI action is available here, over MCP at /mcp, and via the `threadsmith` CLI. " +
+      "The publishing layer for AI agents: draft, check, schedule and publish posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram " +
+      "and Discord, read their engagement, and continue published threads. Credentials stay on the server; counting, resumable publishing and " +
+      "scheduling are handled here. The same capabilities are on MCP at /mcp and the `threadsmith` CLI. " +
       "Threads are arrays of segments, or one string with lines of `---` between posts. Send `Idempotency-Key` on POSTs you might retry.",
   },
   servers: [{ url: env.publicUrl ?? new URL(c.req.url).origin }],

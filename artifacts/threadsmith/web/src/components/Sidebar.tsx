@@ -49,7 +49,7 @@ export function Sidebar(p: Props) {
   const nav: { view: View; label: string; icon: typeof PenLine; to: string; badge?: number }[] = [
     { view: "compose", label: "Write", icon: PenLine, to: "/" },
     { view: "queue", label: "Queue", icon: CalendarClock, to: "/queue", badge: attention?.length },
-    { view: "connect", label: "Connect", icon: Plug, to: "/connect" },
+    { view: "connect", label: "Agents", icon: Plug, to: "/connect" },
   ];
 
   return (
@@ -135,7 +135,7 @@ export function Sidebar(p: Props) {
         )}
         <button onClick={go(() => navigate("/connect"))} className="flex w-full items-center gap-2 hover:text-ink">
           <span className={cx("size-1.5 rounded-full", p.health.ai.configured ? "bg-ai" : "bg-ink-3")} />
-          <span className="truncate">AI: {p.health.ai.configured ? (p.health.ai.model ?? p.health.ai.provider) : "not connected"}</span>
+          <span className="truncate">Copilot: {p.health.ai.configured ? (p.health.ai.model ?? p.health.ai.provider) : "not connected"}</span>
         </button>
       </div>
     </div>

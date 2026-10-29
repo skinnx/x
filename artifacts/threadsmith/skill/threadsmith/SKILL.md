@@ -1,11 +1,12 @@
 ---
 name: threadsmith
-description: Draft, check, schedule and manage posts and threads for X (Twitter), Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord through the user's self-hosted Threadsmith server. Use when the user wants to write a post or thread, cross-post it to several platforms (with per-platform versions), turn notes or an article into a thread, queue something for a time or the next free slot, see what's scheduled, edit, reschedule or delete queued posts, or get a thread ready to post by hand.
+description: Publish for the user through their self-hosted Threadsmith server - draft, check, schedule and manage posts and threads for X (Twitter), Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord, read how published posts perform, and continue threads. Use when the user wants to write a post or thread, cross-post it to several platforms (with per-platform versions), turn notes or an article into a thread, queue something for a time or the next free slot, see what's scheduled, edit, reschedule or delete queued posts, get a thread ready to post by hand, or check how published posts performed and follow up on them.
 ---
 
 # Threadsmith
 
-Threadsmith is the user's own composer and scheduler. It stores drafts and threads, counts characters the way each
+Threadsmith is the user's publishing layer for you, the agent: you write and decide, it handles credentials, per-platform
+counting, resumable publishing, scheduling and engagement data, and the user approves. It stores drafts and threads, counts characters the way each
 platform does, queues posts into posting slots, and publishes them to the user's connected accounts on X, Bluesky,
 Mastodon, Threads, LinkedIn, Telegram and Discord. A post with no destinations uses the original single-X mode: the
 X API keys in the server's .env, or (manual mode) a notification at the scheduled time so the user pastes it into X.

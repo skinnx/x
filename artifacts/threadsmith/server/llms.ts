@@ -21,7 +21,7 @@ llmsRoutes.get("/llms.txt", (c) => {
   const base = origin(c.req.url);
   return c.text(`# Threadsmith
 
-> Self-hosted composer and scheduler for posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord. Draft once, give each platform its own version if needed, count characters the way each platform does, queue posts into time slots, and publish to every connected account (or, for X without accounts, by copy-paste when a notification fires). Everything the UI does is available to agents over REST, MCP, a CLI, webhooks and server-sent events.
+> The publishing layer for AI agents: draft, check, schedule and publish posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord, read their engagement and continue threads — while the person keeps the credentials and approves. Draft once, give each platform its own version if needed, count characters the way each platform does, queue posts into time slots, and publish to every connected account (or, for X without accounts, by copy-paste when a notification fires). Everything the UI does is available to agents over REST, MCP, a CLI, webhooks and server-sent events.
 
 Base URL: ${base}. ${authLine()}
 Threads are one text with a line containing only \`---\` between posts (or an array of segments). Times are ISO-8601 date-times (without an offset they are read in ${getConfig().timezone}); \`"next"\` means the next free posting slot. X limit: ${getConfig().maxChars} weighted characters per post; other platforms: \`GET /api/platforms\`.
@@ -65,7 +65,7 @@ llmsRoutes.get("/llms-full.txt", async (c) => {
 
   return c.text(`# Threadsmith — full guide for agents
 
-> Self-hosted composer and scheduler for posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord.
+> The publishing layer for AI agents: posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord, with engagement data.
 > Single process, SQLite, no user accounts; connected social accounts' credentials are stored encrypted and never returned.
 > Every UI capability is reachable over REST (+ OpenAPI), MCP, the CLI, webhooks and server-sent events.
 

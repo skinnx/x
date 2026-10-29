@@ -76,7 +76,7 @@ export function App() {
   );
 }
 
-const TITLES = { compose: "Write", queue: "Queue", connect: "Connect" } as const;
+const TITLES = { compose: "Write", queue: "Queue", connect: "Agents" } as const;
 
 /** A broken edit of threadsmith.config.json: the server keeps the last good config, so this is a notice, not an outage. */
 function ConfigProblem() {
