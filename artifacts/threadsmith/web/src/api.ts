@@ -1,5 +1,6 @@
 // Typed client for the Threadsmith REST API (same origin). Auth token lives in localStorage + a cookie for <img>/SSE.
-import type { AppEventType, Health, Media, Post, PostStatus, Queue, Segment } from "../../shared/types.ts";
+import type { PlatformInfo, ThreadMode } from "../../shared/platforms.ts";
+import type { Account, AppEventType, Health, Media, PlatformId, Post, PostStatus, Queue, Segment } from "../../shared/types.ts";
 
 const TOKEN_KEY = "threadsmith_token";
 
@@ -64,6 +65,20 @@ async function call<T>(method: string, path: string, opts: CallOptions = {}): Pr
 }
 
 export type ThreadInput = Pick<Segment, "id" | "text" | "mediaIds">[];
+/** A destination as saved with a post: its own version of the thread, or null for the shared one. */
+export interface TargetInput {
+  accountId: string;
+  thread?: ThreadInput | null;
+}
+export interface PreviewTarget {
+  accountId: string | null;
+  platform: PlatformId;
+  label: string;
+  limit: number;
+  threadMode: ThreadMode;
+  items: { text: string; count: number; fits: boolean; images: number }[];
+  problem: string | null;
+}
 export type PostDetail = Post & { attempts: { at: string; ok: boolean; detail: string | null }[] };
 export interface ThreadExport {
   text: string;
@@ -133,9 +148,9 @@ export const api = {
   listPosts: (opts: { status?: PostStatus[]; limit?: number } = {}) =>
     call<{ posts: Post[] }>("GET", `/api/posts${q({ status: opts.status?.join(","), limit: opts.limit })}`).then((r) => r.posts),
   getPost: (id: string) => call<PostDetail>("GET", `/api/posts/${id}`),
-  createPost: (body: { thread: ThreadInput; scheduledAt?: string }, idempotencyKey?: string, keepalive?: boolean) =>
+  createPost: (body: { thread: ThreadInput; scheduledAt?: string; targets?: TargetInput[] }, idempotencyKey?: string, keepalive?: boolean) =>
     call<Post>("POST", "/api/posts", { body, keepalive, headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {} }),
-  updatePost: (id: string, body: { thread: ThreadInput }, keepalive?: boolean) =>
+  updatePost: (id: string, body: { thread?: ThreadInput; targets?: TargetInput[] }, keepalive?: boolean) =>
     call<Post>("PATCH", `/api/posts/${id}`, { body, keepalive }),
   deletePost: (id: string) => call<{ ok: true }>("DELETE", `/api/posts/${id}`),
   schedule: (id: string, at: string) => call<Post>("POST", `/api/posts/${id}/schedule`, { body: { at } }),
@@ -145,6 +160,15 @@ export const api = {
   markPublished: (id: string, url?: string) => call<Post>("POST", `/api/posts/${id}/mark-published`, { body: url ? { url } : {} }),
   exportPost: (id: string) => call<ThreadExport>("GET", `/api/posts/${id}/export`),
   duplicate: (id: string) => call<Post>("POST", `/api/posts/${id}/duplicate`),
+  preview: (id: string) => call<{ targets: PreviewTarget[] }>("GET", `/api/posts/${id}/preview`).then((r) => r.targets),
+
+  platforms: () => call<{ platforms: PlatformInfo[] }>("GET", "/api/platforms").then((r) => r.platforms),
+  accounts: () => call<{ accounts: Account[] }>("GET", "/api/accounts").then((r) => r.accounts),
+  connectAccount: (body: { platform: PlatformId; credentials: Record<string, string>; label?: string; maxChars?: number }) =>
+    call<Account>("POST", "/api/accounts", { body }),
+  updateAccount: (id: string, body: { label?: string; maxChars?: number | null }) => call<Account>("PATCH", `/api/accounts/${id}`, { body }),
+  checkAccount: (id: string) => call<Account>("POST", `/api/accounts/${id}/check`),
+  deleteAccount: (id: string) => call<{ ok: true }>("DELETE", `/api/accounts/${id}`),
 
   queue: (days = 14) => call<Queue>("GET", `/api/queue?days=${days}`),
   nextSlots: (count = 5) => call<{ slots: string[] }>("GET", `/api/slots/next?count=${count}`).then((r) => r.slots),
@@ -179,6 +203,8 @@ export const api = {
     rewrite: (text: string, instruction: string) => call<{ text: string }>("POST", "/api/ai/rewrite", { body: { text, instruction } }),
     hooks: (text: string, count = 3) => call<{ variants: string[] }>("POST", "/api/ai/hooks", { body: { text, count } }),
     fit: (text: string, maxChars: number) => call<{ text: string }>("POST", "/api/ai/fit", { body: { text, maxChars } }),
+    adapt: (text: string, platform: PlatformId, accountId?: string) =>
+      call<{ posts: string[] }>("POST", "/api/ai/adapt", { body: { text, platform, accountId } }),
     altText: (mediaId: string) => call<{ alt: string }>("POST", "/api/ai/alt-text", { body: { mediaId } }),
   },
 };

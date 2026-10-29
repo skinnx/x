@@ -1,16 +1,16 @@
-// One post in the thread: chrome-less auto-growing textarea, weighted counter, images, drag handle.
+// One post in the thread: chrome-less auto-growing textarea, per-platform counter, images, drag handle.
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, GripVertical, ImagePlus, LoaderCircle, Lock, Scissors, Trash2, X } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
-import { weightedLength } from "../../../shared/thread.ts";
 import type { Segment } from "../../../shared/types.ts";
 import { api } from "../api.ts";
+import { strictest, type Meter } from "../lib/platforms.tsx";
 import { cx } from "../lib/util.ts";
 import { CharRing } from "./CharRing.tsx";
 
-export const MAX_IMAGES = 4;
+export const MAX_IMAGES = 4; // X's limit, the default when no other destination is selected
 
 export interface PendingUpload {
   key: string;
@@ -21,10 +21,12 @@ interface Props {
   segment: Segment;
   index: number;
   total: number;
-  maxChars: number;
+  /** One counter per destination platform (just X in single-X mode); the ring shows the strictest. */
+  meters: Meter[];
+  maxImages: number;
   readOnly: boolean;
-  /** Set when this post is already live on X (a thread that stopped partway): shown locked, with a link. */
-  liveUrl?: string;
+  /** Set when this post is already live (a thread that stopped partway): shown locked, with a link when known. */
+  live?: { where: string; url: string | null };
   uploads: PendingUpload[];
   aiEnabled: boolean;
   fitting: boolean;
@@ -50,10 +52,11 @@ export function PostCard(p: Props) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [dropping, setDropping] = useState(false);
 
-  const length = weightedLength(p.segment.text);
-  const over = length > p.maxChars;
+  const ring = strictest(p.meters);
+  const overOn = p.meters.filter((m) => m.length > m.max);
+  const over = overOn.length > 0;
   const imageCount = p.segment.mediaIds.length + p.uploads.length;
-  const canAddImage = !p.readOnly && imageCount < MAX_IMAGES;
+  const canAddImage = !p.readOnly && imageCount < p.maxImages;
 
   useLayoutEffect(() => {
     const el = local.current;
@@ -167,13 +170,15 @@ export function PostCard(p: Props) {
           </div>
         )}
 
-        {p.liveUrl && (
+        {p.live && (
           <div className="mt-1 flex h-8 items-center gap-1.5 text-xs text-ink-3">
-            <Lock size={12} /> Live on X · can't be changed
+            <Lock size={12} /> Live on {p.live.where} · can't be changed
             <div className="flex-1" />
-            <a href={p.liveUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 rounded-md px-1.5 py-1 hover:bg-subtle hover:text-ink">
-              View <ExternalLink size={12} />
-            </a>
+            {p.live.url && (
+              <a href={p.live.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 rounded-md px-1.5 py-1 hover:bg-subtle hover:text-ink">
+                View <ExternalLink size={12} />
+              </a>
+            )}
           </div>
         )}
         {!p.readOnly && (
@@ -181,7 +186,7 @@ export function PostCard(p: Props) {
             <button
               onClick={() => fileInput.current?.click()}
               disabled={!canAddImage}
-              title={canAddImage ? "Add image (or paste / drop)" : `Up to ${MAX_IMAGES} images per post`}
+              title={canAddImage ? "Add image (or paste / drop)" : `Up to ${p.maxImages} images per post`}
               aria-label="Add image"
               className="rounded-md p-1.5 hover:bg-subtle hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
             >
@@ -199,15 +204,25 @@ export function PostCard(p: Props) {
                 if (files.length) p.onFiles(files);
               }}
             />
-            {over && p.aiEnabled && (
+            {over && p.aiEnabled && ring && (
               <button
                 onClick={p.onFit}
                 disabled={p.fitting}
                 className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-ai hover:bg-ai-soft disabled:opacity-60"
               >
                 {p.fitting ? <LoaderCircle size={13} className="animate-spin" /> : <Scissors size={13} />}
-                Fit to {p.maxChars}
+                Fit to {ring.max}
               </button>
+            )}
+            {p.meters.length > 1 && (
+              <span className="min-w-0 truncate pl-1 text-[11px] tabular-nums" title="Characters per destination, as each platform counts them">
+                {p.meters.map((m, i) => (
+                  <span key={m.key} className={cx(m.length > m.max && "font-medium text-red-600 dark:text-red-400")}>
+                    {i > 0 && <span className="text-ink-3"> · </span>}
+                    {m.label} {m.length}/{m.max}
+                  </span>
+                ))}
+              </span>
             )}
             <div className="flex-1" />
             {p.total > 1 && (
@@ -220,7 +235,7 @@ export function PostCard(p: Props) {
                 <Trash2 size={15} />
               </button>
             )}
-            <CharRing length={length} max={p.maxChars} />
+            {ring && <CharRing length={ring.length} max={ring.max} platform={p.meters.length > 1 || ring.platform !== "x" ? ring.label : undefined} named={p.meters.length === 1} />}
           </div>
         )}
       </div>

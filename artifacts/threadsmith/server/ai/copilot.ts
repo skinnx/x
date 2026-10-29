@@ -1,9 +1,13 @@
-// Copilot tasks: prompts written for the person's voice and X's counting rules, plus a post-generation
+// Copilot tasks: prompts written for the person's voice and each platform's counting rules, plus a post-generation
 // pass that enforces the limit (one corrective round, then a trim at a sentence boundary).
 import { z } from "zod";
-import { joinThread, splitThread, weightedLength } from "../../shared/thread.ts";
+import { countFor, PLATFORMS } from "../../shared/platforms.ts";
+import { joinThread, splitThread, threadToText, weightedLength } from "../../shared/thread.ts";
+import type { PlatformId } from "../../shared/types.ts";
+import { getAccount } from "../accounts.ts";
 import { getConfig } from "../config.ts";
-import { getMedia, listPosts, readMediaBytes } from "../repo.ts";
+import { limitFor } from "../publisher.ts";
+import { BadInputError, getMedia, listPosts, readMediaBytes, requirePost } from "../repo.ts";
 import { AiError, generate } from "./provider.ts";
 
 const ALT_TEXT_MAX = 1000; // X's alt-text limit
@@ -39,17 +43,18 @@ Writing for X:
 - Sound like a person talking, not a press release: concrete beats abstract, specific beats hype, and filler openers like "In today's fast-paced world" or "Let's dive in" waste the reader's attention.${examples}`;
 }
 
-const over = (text: string, limit: number) => weightedLength(text) > limit;
+type Counter = (text: string) => number;
+const over = (text: string, limit: number, count: Counter = weightedLength) => count(text) > limit;
 
 /** Last resort: cut at the last sentence end that fits, else at a word boundary with an ellipsis. */
-export function trimToFit(text: string, limit: number): string {
-  if (!over(text, limit)) return text;
+export function trimToFit(text: string, limit: number, count: Counter = weightedLength): string {
+  if (!over(text, limit, count)) return text;
   const chars = [...text];
   let lo = 0;
   let hi = chars.length;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    if (weightedLength(chars.slice(0, mid).join("")) <= limit - 2) lo = mid; // 2 = room for "…"
+    if (count(chars.slice(0, mid).join("")) <= limit - 2) lo = mid; // 2 = room for "…"
     else hi = mid - 1;
   }
   const floor = Math.floor(lo * 0.5);
@@ -68,27 +73,36 @@ export function trimToFit(text: string, limit: number): string {
   return chars.slice(0, cut).join("").trimEnd() + "…";
 }
 
+/** How a platform is written for and counted; X (the default) uses the original X-only prompts. */
+interface Target {
+  count: Counter;
+  system: string;
+  unit: string; // "X's limit of 280 weighted characters"
+}
+
 /** Shorten the posts that are over the limit (one model round), then trim whatever still doesn't fit. */
-async function enforceLimit(posts: string[], limit: number): Promise<string[]> {
+async function enforceLimit(posts: string[], limit: number, target?: Target): Promise<string[]> {
+  const count = target?.count ?? weightedLength;
   const out = posts.map((p) => p.trim()).filter(Boolean);
-  const overIdx = out.flatMap((p, i) => (over(p, limit) ? [i] : []));
+  const overIdx = out.flatMap((p, i) => (over(p, limit, count) ? [i] : []));
   if (overIdx.length) {
     try {
-      const fixed = await shorten(overIdx.map((i) => out[i]!), limit);
+      const fixed = await shorten(overIdx.map((i) => out[i]!), limit, target);
       overIdx.forEach((i, k) => fixed[k]?.trim() && (out[i] = fixed[k]!.trim()));
     } catch (err) {
       if (!(err instanceof AiError) || err.code === "ai_not_configured") throw err;
     }
   }
-  return out.map((p) => trimToFit(p, limit));
+  return out.map((p) => trimToFit(p, limit, count));
 }
 
-async function shorten(posts: string[], limit: number): Promise<string[]> {
+async function shorten(posts: string[], limit: number, target?: Target): Promise<string[]> {
+  const count = target?.count ?? weightedLength;
   const { posts: fixed } = await generate({
-    system: systemPrompt(limit),
-    prompt: `These posts are over X's limit of ${limit} weighted characters (current count in the tag). Rewrite each one so it fits, keeping its meaning, key specifics, voice and language. Cut filler, repetition and weaker clauses first; don't split a post in two.
+    system: target?.system ?? systemPrompt(limit),
+    prompt: `These posts are over ${target?.unit ?? `X's limit of ${limit} weighted characters`} (current count in the tag). Rewrite each one so it fits, keeping its meaning, key specifics, voice and language. Cut filler, repetition and weaker clauses first; don't split a post in two.
 
-${posts.map((p, i) => `<post index="${i + 1}" count="${weightedLength(p)}">\n${p}\n</post>`).join("\n")}
+${posts.map((p, i) => `<post index="${i + 1}" count="${count(p)}">\n${p}\n</post>`).join("\n")}
 
 Return {"posts": [...]} with exactly ${posts.length} strings, in the same order.`,
     schema: z.object({ posts: z.array(z.string()) }),
@@ -186,4 +200,81 @@ Return {"alt": "..."}.`,
     image: { mime, data },
   });
   return { alt: alt.length > ALT_TEXT_MAX ? alt.slice(0, ALT_TEXT_MAX - 1).replace(/\s+\S*$/, "") + "…" : alt.trim() };
+}
+
+// ---------- adapting a thread for another platform ----------
+
+const COUNTING: Record<PlatformId, string> = {
+  x: "X weighs characters: most Latin letters, digits and punctuation count 1; CJK characters and each emoji count 2; Vietnamese letters from Unicode's Latin Extended Additional block (ạ, ả, ấ, ầ, ệ, ố, ở, ữ) count 2 while á, à, é, ó, ơ, ư, đ count 1; every link counts 23.",
+  bluesky: "Bluesky counts graphemes (what a reader sees as one character: an emoji or a Vietnamese letter with its marks is 1). Links are NOT shortened: every character of a URL counts, so prefer short links.",
+  mastodon: "Mastodon counts characters (Unicode code points); every link counts 23 however long it is.",
+  threads: "Threads counts characters (Unicode code points); links count in full.",
+  linkedin: "LinkedIn counts characters (Unicode code points); links count in full.",
+  telegram: "Telegram counts characters (Unicode code points); a message with a photo has a 1024-character caption limit.",
+  discord: "Discord counts characters (Unicode code points); links count in full.",
+};
+
+const CONVENTIONS: Record<PlatformId, string> = {
+  x: "Plain text (no Markdown). The first post is the hook. No hashtags or 1/ numbering unless the source uses them.",
+  bluesky: "Plain text (no Markdown). Conversational and direct, a thread of short posts like X. Hashtags are rare; keep the source's if any.",
+  mastodon:
+    "Plain text (no Markdown). Mastodon has no algorithmic feed: discovery runs on hashtags, so one to three relevant CamelCase hashtags at the end of the first post help (only for the topic the text is really about). A friendly, non-promotional tone works best.",
+  threads: "Plain text (no Markdown). Casual and conversational. Threads allows one topic tag per post; use at most one, or none.",
+  linkedin:
+    "ONE post, not a thread. Plain text: LinkedIn doesn't render Markdown, so use short paragraphs separated by blank lines. Only the first two lines (about 210 characters) show before \"…see more\", so open with the hook. Professional but human; no hype. At most three hashtags, at the very end, and only if they add something.",
+  telegram: "A channel message: plain text, short paragraphs separated by blank lines. Long-form is fine; split into several messages only when one is over the limit.",
+  discord: "A message in a community channel: casual, plain text with short paragraphs. Split into several messages only when one is over the limit.",
+};
+
+/**
+ * Rewrite a thread for one platform: its limit and counting, its conventions; LinkedIn (threadMode "single") gets one post.
+ * Nothing is saved; the caller stores the result as that destination's version.
+ */
+export async function adapt(input: { text?: string; postId?: string; platform?: PlatformId; accountId?: string }): Promise<{ posts: string[] }> {
+  const account = input.accountId ? getAccount(input.accountId) : undefined;
+  if (account && input.platform && account.platform !== input.platform) {
+    throw new BadInputError(`Account ${account.label} is on ${PLATFORMS[account.platform].name}, not ${PLATFORMS[input.platform].name}.`);
+  }
+  const platform = account?.platform ?? input.platform;
+  if (!platform) throw new BadInputError("Give `platform` or `accountId`.");
+  if ((input.text === undefined) === (input.postId === undefined)) throw new BadInputError("Give either `text` or `postId`.");
+  const source = input.postId ? threadToText(requirePost(input.postId).thread) : input.text!;
+  const info = PLATFORMS[platform];
+  const limit = account ? limitFor(account) : platform === "x" ? getConfig().maxChars : info.maxChars;
+  const single = info.threadMode === "single";
+  const count = (t: string) => countFor(platform, t);
+  const voice = voiceExamples();
+  const system = `You are the writing copilot inside Threadsmith, a tool one person uses to draft and schedule their own posts. You adapt what they wrote for ${info.name}; they review every word before anything is published.
+
+How ${info.name} counts (the limit here is ${limit} per ${single ? "post" : "item"}): ${COUNTING[platform]}
+An item over the limit cannot be published, so aim to land around 90% of it at most.
+
+Writing for ${info.name}: ${CONVENTIONS[platform]}
+- Write in the language of the person's text. Don't translate.
+- Keep their facts, numbers, names and links exactly. Never invent statistics, quotes, sources or links.
+- Sound like a person talking, not a press release.${
+    voice.length
+      ? `\n\nPosts this person wrote. Match their tone, sentence length and formality, not their topics:\n${voice.map((v) => `<example>\n${v}\n</example>`).join("\n")}`
+      : ""
+  }`;
+  const { posts } = await generate({
+    system,
+    prompt: `Adapt the text below for ${info.name}. It is ${source.includes("\n---") ? "a thread (posts separated by lines containing only ---)" : "a post"} written for another platform.
+
+${
+  single
+    ? `Return exactly ONE post of at most ${limit} characters that carries the whole thread: merge the posts into flowing paragraphs, drop thread mechanics (numbering, "more below", 🧵).`
+    : `Return the items in order, each at most ${limit} as ${info.name} counts it. Re-split freely: merge short posts when the limit is larger, split when it is smaller; use as few items as the material needs.`
+}
+
+<text>
+${source}
+</text>
+
+Return {"posts": [...]}${single ? " with exactly one string" : ", one string per item, without numbering"}.`,
+    schema: z.object({ posts: z.array(z.string()).min(1) }),
+  });
+  const shaped = single ? [posts.map((p) => p.trim()).filter(Boolean).join("\n\n")] : posts;
+  const target: Target = { count, system, unit: `${info.name}'s limit of ${limit} characters as it counts them` };
+  return { posts: await enforceLimit(shaped, limit, target) };
 }

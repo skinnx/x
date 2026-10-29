@@ -1,5 +1,7 @@
-// Copilot routes mounted at /api/ai: notes → thread, rewrite, alternative hooks, fit to the limit, alt text.
+// Copilot routes mounted at /api/ai: notes → thread, rewrite, alternative hooks, fit to the limit, alt text,
+// adapt a thread for another platform.
 import { createRoute, z } from "@hono/zod-openapi";
+import { PLATFORM_IDS } from "../../shared/types.ts";
 import { createRouter, errorResponse } from "../http.ts";
 import * as copilot from "./copilot.ts";
 import { AiError, type AiErrorCode, requireAi } from "./provider.ts";
@@ -101,4 +103,26 @@ aiRoutes.openapi(
     z.object({ alt: z.string() }),
   ),
   async (c) => c.json(await copilot.altText(c.req.valid("json")), 200),
+);
+
+aiRoutes.openapi(
+  route(
+    "/adapt",
+    "Rewrite a thread for another platform",
+    "Adapts a `---` thread (`text`) or a saved post's thread (`postId`) for one platform: its character limit and counting rules (the account's own limit when " +
+      "`accountId` is given), and its conventions (Mastodon hashtags, LinkedIn's \"see more\" fold…). LinkedIn returns exactly one post; other platforms may get " +
+      "fewer, longer items or more, shorter ones. Every item is guaranteed to fit. Nothing is saved: store the result as that destination's version, " +
+      "`PATCH /api/posts/{id}` `{targets: [{accountId, thread: [{text}…]}]}`.",
+    z
+      .object({
+        text: Text.optional().describe("The thread, posts separated by lines containing only ---"),
+        postId: z.string().min(1).optional().describe("Or a saved post: its own thread is adapted"),
+        platform: z.enum(PLATFORM_IDS).optional().describe("Target platform; may be omitted when accountId is given"),
+        accountId: z.string().min(1).optional().describe("Use this connected account's limit (e.g. X Premium, a Mastodon instance's own)"),
+      })
+      .refine((b) => (b.text === undefined) !== (b.postId === undefined), "send either `text` or `postId`")
+      .refine((b) => b.platform || b.accountId, "send `platform` or `accountId`"),
+    z.object({ posts: z.array(z.string()) }),
+  ),
+  async (c) => c.json(await copilot.adapt(c.req.valid("json")), 200),
 );

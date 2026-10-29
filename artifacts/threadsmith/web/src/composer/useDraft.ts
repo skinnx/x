@@ -1,8 +1,10 @@
 // Draft state + autosave: the post is created on the first keystroke, then PATCHed ~600ms after edits stop.
 // Every edit is mirrored to localStorage first, so a reload or crash before the save lands never loses text.
+// Destinations (connected accounts, each optionally with its own version of the thread) are saved the same way;
+// `version` picks which thread the editor shows: the shared one (null) or an account's own.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Post, Segment } from "../../../shared/types.ts";
-import { api, ApiError } from "../api.ts";
+import { api, ApiError, type TargetInput } from "../api.ts";
 import { toastError } from "../components/Toasts.tsx";
 import { uid } from "../lib/util.ts";
 
@@ -12,16 +14,26 @@ const BUFFER_KEY = "threadsmith:unsaved";
 const EDITABLE: Post["status"][] = ["draft", "scheduled", "due", "failed"];
 const DEBOUNCE_MS = 600;
 
+/** A destination as edited here: an account and, when customized, its own thread. */
+export interface DraftTarget {
+  accountId: string;
+  thread: Segment[] | null;
+}
+
 interface Buffer {
   session: string; // also the Idempotency-Key of the create request
   postId: string | null;
   thread: Segment[];
+  targets?: DraftTarget[];
   at: number;
 }
 
 export const blankSegment = (text = ""): Segment => ({ id: uid(), text, mediaIds: [] });
 export const isBlank = (thread: Segment[]) => thread.every((s) => !s.text.trim() && !s.mediaIds.length);
 const signature = (t: Segment[]) => JSON.stringify(t.map((s) => [s.id, s.text, s.mediaIds]));
+const targetSig = (t: DraftTarget[]) => JSON.stringify(t.map((x) => [x.accountId, x.thread && signature(x.thread)]));
+const fromPost = (p: Post): DraftTarget[] => p.targets.map((t) => ({ accountId: t.accountId, thread: t.thread }));
+const toInput = (t: DraftTarget[]): TargetInput[] => t.map((x) => ({ accountId: x.accountId, thread: x.thread }));
 
 function readBuffer(): Buffer | null {
   try {
@@ -39,7 +51,9 @@ function writeBuffer(b: Buffer) {
 }
 
 export function useDraft(postId: string | null, onCreated: (post: Post) => void) {
-  const [thread, setThreadState] = useState<Segment[] | null>(null);
+  const [shared, setThreadState] = useState<Segment[] | null>(null);
+  const [targets, setTargetsState] = useState<DraftTarget[]>([]);
+  const [version, setVersionState] = useState<string | null>(null);
   const [post, setPost] = useState<Post | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [missing, setMissing] = useState(false);
@@ -48,6 +62,9 @@ export function useDraft(postId: string | null, onCreated: (post: Post) => void)
     id: postId,
     session: uid(),
     latest: [] as Segment[],
+    targets: [] as DraftTarget[],
+    targetsDirty: false,
+    version: null as string | null,
     dirty: false,
     loop: null as Promise<void> | null,
     timer: 0,
@@ -66,11 +83,14 @@ export function useDraft(postId: string | null, onCreated: (post: Post) => void)
         r.dirty = false;
         const snapshot = r.latest;
         if (!r.id && isBlank(snapshot)) continue;
+        // Destinations are sent only when they changed here, so an agent's change isn't overwritten by a text edit.
+        const targetsSent = r.targetsDirty ? toInput(r.targets) : undefined;
+        r.targetsDirty = false;
         setSaveState("saving");
         try {
           const saved = r.id
-            ? await api.updatePost(r.id, { thread: snapshot })
-            : await api.createPost({ thread: snapshot }, r.session);
+            ? await api.updatePost(r.id, { thread: snapshot, targets: targetsSent })
+            : await api.createPost({ thread: snapshot, targets: targetsSent }, r.session);
           if (!r.id) {
             r.id = saved.id;
             // An idempotent replay returns the first version; push what we have now.
@@ -87,12 +107,14 @@ export function useDraft(postId: string | null, onCreated: (post: Post) => void)
               setPost(fresh);
               r.latest = fresh.thread;
               setThreadState(fresh.thread);
+              adoptTargets(fresh);
             }
             clearBuffer();
             setSaveState("idle");
             return;
           }
           r.dirty = true;
+          if (targetsSent) r.targetsDirty = true;
           setSaveState("offline");
           r.timer = window.setTimeout(flush, 5000);
           return;
@@ -102,18 +124,17 @@ export function useDraft(postId: string | null, onCreated: (post: Post) => void)
       clearBuffer();
     };
 
-    const flush = (): Promise<void> => {
-      window.clearTimeout(r.timer);
-      r.loop ??= run().finally(() => (r.loop = null));
-      return r.loop;
+    const adoptTargets = (p: Post) => {
+      r.targets = fromPost(p);
+      setTargetsState(r.targets);
+      if (r.version && !r.targets.some((t) => t.accountId === r.version && t.thread)) {
+        r.version = null;
+        setVersionState(null);
+      }
     };
 
-    const setThread = (next: Segment[] | ((prev: Segment[]) => Segment[])) => {
-      const value = typeof next === "function" ? next(r.latest) : next;
-      r.latest = value;
-      r.dirty = true;
-      setThreadState(value);
-      writeBuffer({ session: r.session, postId: r.id, thread: value, at: Date.now() });
+    const schedule = () => {
+      writeBuffer({ session: r.session, postId: r.id, thread: r.latest, targets: r.targets, at: Date.now() });
       window.clearTimeout(r.timer);
       if (!r.id) void flush();
       else {
@@ -122,14 +143,50 @@ export function useDraft(postId: string | null, onCreated: (post: Post) => void)
       }
     };
 
+    const flush = (): Promise<void> => {
+      window.clearTimeout(r.timer);
+      r.loop ??= run().finally(() => (r.loop = null));
+      return r.loop;
+    };
+
+    /** Edits the thread on screen: the shared one, or the selected account's own version. */
+    const setThread = (next: Segment[] | ((prev: Segment[]) => Segment[])) => {
+      const own = r.version ? r.targets.find((t) => t.accountId === r.version && t.thread) : undefined;
+      if (own) {
+        const value = typeof next === "function" ? next(own.thread!) : next;
+        return setTargets(r.targets.map((t) => (t === own ? { ...t, thread: value } : t)));
+      }
+      const value = typeof next === "function" ? next(r.latest) : next;
+      r.latest = value;
+      r.dirty = true;
+      setThreadState(value);
+      schedule();
+    };
+
+    const setTargets = (next: DraftTarget[]) => {
+      r.targets = next;
+      r.targetsDirty = true;
+      r.dirty = true;
+      setTargetsState(next);
+      if (r.version && !next.some((t) => t.accountId === r.version && t.thread)) setVersion(null);
+      schedule();
+    };
+
+    const setVersion = (accountId: string | null) => {
+      r.version = accountId;
+      setVersionState(accountId);
+    };
+
     /** Server-side change (SSE, schedule response…): adopt it unless the user has unsent edits. */
     const applyRemote = (p: Post) => {
       if (p.id !== r.id) return;
       setPost(p);
-      if (!r.dirty && !r.loop && signature(p.thread) !== signature(r.latest)) {
+      if (r.dirty || r.loop) return;
+      if (signature(p.thread) !== signature(r.latest)) {
         r.latest = p.thread;
         setThreadState(p.thread);
       }
+      if (targetSig(fromPost(p)) !== targetSig(r.targets)) adoptTargets(p);
     };
 
     const init = (base: Segment[], server: Post | null) => {
@@ -137,19 +194,26 @@ export function useDraft(postId: string | null, onCreated: (post: Post) => void)
       const matches = buf && buf.postId === (server?.id ?? null) && !isBlank(buf.thread);
       const newer = matches && (!server || buf.at > Date.parse(server.updatedAt));
       const editable = !server || EDITABLE.includes(server.status);
-      if (buf && matches && newer && editable && signature(buf.thread) !== signature(base)) {
+      const serverTargets = server ? fromPost(server) : [];
+      const bufTargets = buf?.targets ?? serverTargets;
+      if (buf && matches && newer && editable && (signature(buf.thread) !== signature(base) || targetSig(bufTargets) !== targetSig(serverTargets))) {
         r.session = buf.session;
         r.latest = buf.thread;
+        r.targets = bufTargets;
+        r.targetsDirty = targetSig(bufTargets) !== targetSig(serverTargets);
         r.dirty = true;
         setThreadState(buf.thread);
+        setTargetsState(bufTargets);
         void flush();
       } else {
         r.latest = base;
+        r.targets = serverTargets;
         setThreadState(base);
+        setTargetsState(serverTargets);
       }
     };
 
-    return { flush, setThread, applyRemote, init, setPost };
+    return { flush, setThread, setTargets, setVersion, applyRemote, init, setPost };
   }, [r]);
 
   useEffect(() => {
@@ -175,8 +239,9 @@ export function useDraft(postId: string | null, onCreated: (post: Post) => void)
     // Last-chance save when the tab closes; keepalive lets the request outlive the page.
     const onHide = () => {
       if (!r.dirty) return;
-      if (r.id) void api.updatePost(r.id, { thread: r.latest }, true).catch(() => {});
-      else if (!isBlank(r.latest)) void api.createPost({ thread: r.latest }, r.session, true).catch(() => {});
+      const targets = r.targetsDirty ? toInput(r.targets) : undefined;
+      if (r.id) void api.updatePost(r.id, { thread: r.latest, targets }, true).catch(() => {});
+      else if (!isBlank(r.latest)) void api.createPost({ thread: r.latest, targets }, r.session, true).catch(() => {});
     };
     addEventListener("pagehide", onHide);
     return () => {
@@ -186,14 +251,21 @@ export function useDraft(postId: string | null, onCreated: (post: Post) => void)
     };
   }, [r, ops]);
 
+  const own = version ? targets.find((t) => t.accountId === version && t.thread) : undefined;
   return {
-    thread,
+    /** The thread on screen (shared, or the selected version). */
+    thread: own?.thread ?? shared,
+    sharedThread: shared,
+    targets,
+    version: own ? version : null,
     post,
     saveState,
     missing,
     currentId: () => r.id,
     flush: ops.flush,
     setThread: ops.setThread,
+    setTargets: ops.setTargets,
+    setVersion: ops.setVersion,
     applyRemote: ops.applyRemote,
     setPost: ops.setPost,
   };

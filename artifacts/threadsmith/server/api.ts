@@ -3,14 +3,17 @@ import { readFile } from "node:fs/promises";
 import { createRoute, z } from "@hono/zod-openapi";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { threadToText } from "../shared/thread.ts";
-import { APP_EVENT_TYPES, POST_STATUSES, type Health, type PostSource, type PostStatus } from "../shared/types.ts";
+import { countFor, itemsFor, PLATFORMS, TELEGRAM_CAPTION_LIMIT, type ThreadMode } from "../shared/platforms.ts";
+import { threadToText, weightedLength } from "../shared/thread.ts";
+import { APP_EVENT_TYPES, PLATFORM_IDS, POST_STATUSES, type Health, type PlatformId, type Post, type PostSource, type PostStatus } from "../shared/types.ts";
+import { connectAccount, deleteAccount, getAccount, listAccounts, recheckAccount, updateAccount } from "./accounts.ts";
 import { aiStatus } from "./ai/provider.ts";
 import { buildQueue, configError, getConfig, nextFreeSlots, parseInstant, parseWhen } from "./config.ts";
 import { db } from "./db.ts";
 import { env, VERSION, xConfigured } from "./env.ts";
 import { createRouter } from "./http.ts";
 import { saveImage, saveImageFromUrl } from "./media.ts";
+import { limitFor, preflight } from "./publisher.ts";
 import {
   attemptsFor,
   BadInputError,
@@ -28,6 +31,8 @@ import {
   unschedulePost,
   updateMediaAlt,
   updatePost,
+  type SegmentInput,
+  type TargetInput,
 } from "./repo.ts";
 import { publishNow, retryPost } from "./scheduler.ts";
 import { eventStream } from "./sse.ts";
@@ -62,9 +67,26 @@ const SegmentSchema = z
   .object({
     id: z.string(),
     text: z.string(),
-    mediaIds: z.array(z.string()).openapi({ description: "Media ids attached to this post (max 4)." }),
+    mediaIds: z.array(z.string()).openapi({ description: "Media ids attached to this post (X, Bluesky, Mastodon: max 4; see GET /platforms)." }),
   })
   .openapi("Segment", { description: "One post of a thread." });
+
+const PlatformIdSchema = z.enum(PLATFORM_IDS).openapi("PlatformId", { description: "A supported platform; GET /platforms lists their limits." });
+
+const PostTargetSchema = z
+  .object({
+    accountId: z.string().openapi({ description: "Connected account (GET /accounts)." }),
+    platform: PlatformIdSchema,
+    thread: z.array(SegmentSchema).nullable().openapi({
+      description: "This destination's own version of the thread; null = it publishes the post's `thread`. LinkedIn joins the posts of whichever thread it gets into one post.",
+    }),
+    status: z.enum(["pending", "published", "failed"]).openapi({ description: "pending: not published yet · published: live there · failed: see `error`; Retry resumes after `externalIds`." }),
+    externalIds: z.array(z.string()).openapi({ description: "Ids of the items already posted on that platform, in order (a retry resumes after them)." }),
+    url: z.string().nullable().openapi({ description: "Public link to the first item once published there." }),
+    error: z.string().nullable(),
+    publishedAt: z.iso.datetime().nullable(),
+  })
+  .openapi("PostTarget", { description: "One destination of a post: a connected account, with its own publish status and progress." });
 
 const PostSchema = z
   .object({
@@ -72,22 +94,27 @@ const PostSchema = z
     title: z.string().nullable().openapi({ description: "Private label; never posted." }),
     status: z.enum(POST_STATUSES).openapi({
       description:
-        "draft: not queued · scheduled: waits for scheduledAt · publishing: X API calls in flight · " +
-        "due: its time came but it needs a human — no X API keys (manual mode: copy & post by hand), or it was more than lateGraceMinutes " +
-        "late because the server was off (`error` says why; publish, retry or reschedule it) · published: live on X · " +
-        "failed: X API error (see `error`; `xPostIds` lists tweets that did go out, retry resumes after them).",
+        "draft: not queued · scheduled: waits for scheduledAt · publishing: platform API calls in flight · " +
+        "due: its time came but it needs a human — a post without `targets` and no X API keys (manual mode: copy & post by hand), or it was more than lateGraceMinutes " +
+        "late because the server was off (`error` says why; publish, retry or reschedule it) · published: live everywhere it was sent · " +
+        "failed: a platform refused it (see `error`, and each target's `status`/`error`; retry resumes after what already went out: `xPostIds` or the target's `externalIds`).",
     }),
     thread: z.array(SegmentSchema).openapi({ description: "Posts in thread order; a single post is a one-item thread." }),
     scheduledAt: z.iso.datetime().nullable(),
     publishedAt: z.iso.datetime().nullable(),
     error: z.string().nullable(),
-    xPostIds: z.array(z.string()),
-    url: z.string().nullable().openapi({ description: "Link to the first tweet once published." }),
+    xPostIds: z.array(z.string()).openapi({ description: "Legacy single-X mode only: tweets already posted through the .env keys, in order." }),
+    url: z.string().nullable().openapi({ description: "Link to the first post once published (with targets: the first destination's link)." }),
+    targets: z.array(PostTargetSchema).openapi({
+      description:
+        "Destinations (connected accounts). Empty = the original single-X mode: the X API keys from .env, or manual copy & post. " +
+        "Each target publishes and resumes independently; `status` summarises them. Credentials are never returned.",
+    }),
     source: z.enum(["ui", "api", "mcp", "cli", "ai"]),
     createdAt: z.iso.datetime(),
     updatedAt: z.iso.datetime(),
   })
-  .openapi("Post", { description: "A single X post or a thread, with its scheduling state." });
+  .openapi("Post", { description: "A single post or a thread, with its destinations and scheduling state." });
 
 const PostDetailSchema = PostSchema.extend({
   attempts: z
@@ -99,7 +126,9 @@ const SegmentInputSchema = z
   .object({
     id: z.string().optional().openapi({ description: "Existing segment id to keep when editing; omit for new posts." }),
     text: z.string(),
-    mediaIds: z.array(z.string()).max(4).optional().openapi({ description: "Up to 4 image ids from POST /media." }),
+    mediaIds: z.array(z.string()).max(10).optional().openapi({
+      description: "Image ids from POST /media. X, Bluesky and Mastodon allow 4 per post, Threads/Telegram/Discord 10, LinkedIn 9 per post; checked per destination (GET /posts/{id}/preview) before anything is published.",
+    }),
   })
   .openapi("SegmentInput");
 
@@ -110,6 +139,25 @@ const threadFields = {
   }),
   thread: z.array(SegmentInputSchema).optional().openapi({ description: "Structured posts in order. Send this OR `text`." }),
   title: z.string().max(200).nullable().optional().openapi({ description: "Private label shown in the UI; never posted." }),
+  targets: z
+    .array(
+      z
+        .object({
+          accountId: z.string().min(1).openapi({ description: "A connected account id from GET /accounts." }),
+          thread: z.array(SegmentInputSchema).min(1).nullable().optional().openapi({
+            description:
+              "A version of the thread just for this account (e.g. shorter for X, one long post for LinkedIn). null = publish the post's own thread. " +
+              "On PATCH, omitting it keeps the account's current version.",
+          }),
+        })
+        .openapi("TargetInput"),
+    )
+    .optional()
+    .openapi({
+      description:
+        "Where the post goes: connected accounts (GET /accounts), each optionally with its own version. Omit or send [] for the original single-X mode " +
+        "(.env X keys, or manual copy & post). On PATCH it replaces the whole list; omitted = unchanged. A destination with part of the thread already live can't be removed (409).",
+    }),
 };
 const notBoth = (b: { text?: unknown; thread?: unknown }) => b.text === undefined || b.thread === undefined;
 const NOT_BOTH = "send either `text` or `thread`, not both";
@@ -177,7 +225,9 @@ const HealthSchema = z
     maxChars: z.number().int(),
     x: z.object({
       configured: z.boolean(),
-      mode: z.enum(["api", "manual"]).openapi({ description: "api: auto-posts via X API v2. manual: notifies the user to copy & post." }),
+      mode: z.enum(["api", "manual"]).openapi({
+        description: "For posts without targets (legacy single-X mode): api = auto-posts via X API v2 with the .env keys; manual = notifies the user to copy & post.",
+      }),
     }),
     ai: z.object({ configured: z.boolean(), provider: z.string().nullable(), model: z.string().nullable() }),
     auth: z.object({ required: z.boolean() }),
@@ -219,6 +269,69 @@ const WebhookDeliverySchema = z
       "X-Threadsmith-Signature: sha256=<hex HMAC-SHA256 of the raw body, keyed with the webhook secret>.",
   });
 
+const AccountSchema = z
+  .object({
+    id: z.string(),
+    platform: PlatformIdSchema,
+    label: z.string().openapi({ description: "Your name for it; MCP and the CLI accept it as a destination reference." }),
+    handle: z.string().nullable().openapi({ description: "Who the credentials belong to, as the platform names it (e.g. @you, you.bsky.social)." }),
+    profileUrl: z.string().nullable(),
+    maxChars: z.number().int().nullable().openapi({ description: "Per-account character limit override (X Premium, a Mastodon instance's own limit); null = the platform's." }),
+    lastError: z.string().nullable().openapi({ description: "Why the latest check or publish was refused (e.g. an expired token); null when fine. Fix with PATCH credentials." }),
+    verifiedAt: z.iso.datetime().nullable(),
+    createdAt: z.iso.datetime(),
+  })
+  .openapi("Account", { description: "A connected social account. Credentials are stored encrypted and never returned." });
+
+const PlatformInfoSchema = z
+  .object({
+    id: PlatformIdSchema,
+    name: z.string(),
+    maxChars: z.number().int().openapi({ description: "Default per-post limit (an account's maxChars overrides it; X uses the config's maxChars)." }),
+    maxImages: z.number().int(),
+    threadMode: z.enum(["replies", "single", "messages"]).openapi({
+      description: "How a thread lands: replies = each post replies to the previous one; single = joined into one post with blank lines (LinkedIn); messages = consecutive messages (Telegram, Discord).",
+    }),
+    costNote: z.string(),
+    credentials: z.array(
+      z.object({
+        key: z.string(),
+        label: z.string(),
+        secret: z.boolean(),
+        optional: z.boolean().optional(),
+        placeholder: z.string().optional(),
+        help: z.string().optional(),
+      }),
+    ),
+    setup: z.string().openapi({ description: "Where to get the credentials." }),
+  })
+  .openapi("PlatformInfo");
+
+const PreviewSchema = z
+  .object({
+    targets: z.array(
+      z.object({
+        accountId: z.string().nullable().openapi({ description: "null = the legacy single-X mode (a post without targets)." }),
+        platform: PlatformIdSchema,
+        label: z.string(),
+        limit: z.number().int(),
+        threadMode: z.enum(["replies", "single", "messages"]),
+        status: z.enum(["pending", "published", "failed"]),
+        live: z.number().int().openapi({ description: "Items already posted there; publishing resumes after them." }),
+        items: z.array(
+          z.object({
+            text: z.string(),
+            count: z.number().int().openapi({ description: "Characters as this platform counts them." }),
+            fits: z.boolean(),
+            images: z.number().int(),
+          }),
+        ),
+        problem: z.string().nullable().openapi({ description: "What would make publishing to this destination fail before anything is posted; null = ready." }),
+      }),
+    ),
+  })
+  .openapi("PostPreview");
+
 // ---------- helpers ----------
 
 const json = <T extends z.ZodType>(schema: T, description: string) => ({ description, content: { "application/json": { schema } } });
@@ -226,6 +339,7 @@ const body = <T extends z.ZodType>(schema: T, required = true) => ({ required, c
 const E400 = json(ErrorSchema, "Invalid input; `message` names the field and the problem.");
 const E404 = json(ErrorSchema, "Not found.");
 const E409 = json(ErrorSchema, "Not allowed in the current state (e.g. the post is already published or publishing).");
+const AccountIdParam = z.object({ id: z.string().openapi({ description: "Account id (GET /accounts)." }) });
 const IdParam = z.object({ id: z.string().openapi({ description: "Resource id (UUID)." }) });
 const IdemHeader = z.object({
   "Idempotency-Key": z.string().max(200).optional().openapi({
@@ -292,9 +406,78 @@ const when = parseWhen;
 /** List filter bound: a date-time (see parseInstant), or a date alone meaning that day's start in the configured timezone. */
 const bound = (s: string | undefined) => (s ? parseInstant(/^\d{4}-\d{2}-\d{2}$/.test(s.trim()) ? `${s.trim()}T00:00` : s) : undefined);
 
-function checkMedia(thread?: { mediaIds?: string[] }[]) {
-  const missing = (thread ?? []).flatMap((s) => s.mediaIds ?? []).filter((id) => !getMedia(id));
+function checkMedia(thread?: { mediaIds?: string[] }[], targets?: { thread?: { mediaIds?: string[] }[] | null }[]) {
+  const all = [...(thread ?? []), ...(targets ?? []).flatMap((t) => t.thread ?? [])];
+  const missing = all.flatMap((s) => s.mediaIds ?? []).filter((id) => !getMedia(id));
   if (missing.length) throw badRequest(`Unknown media id(s): ${missing.join(", ")}. Upload images with POST /api/media first.`);
+}
+
+/** PATCH semantics for targets: a target that omits `thread` keeps the version it already has. */
+export function mergeTargets(post: Post, targets: { accountId: string; thread?: SegmentInput[] | null }[]): TargetInput[] {
+  return targets.map((t) => ({
+    accountId: t.accountId,
+    thread: t.thread !== undefined ? t.thread : (post.targets.find((o) => o.accountId === t.accountId)?.thread ?? null),
+  }));
+}
+
+export interface PreviewTarget {
+  accountId: string | null;
+  platform: PlatformId;
+  label: string;
+  limit: number;
+  threadMode: ThreadMode;
+  status: "pending" | "published" | "failed";
+  live: number;
+  items: { text: string; count: number; fits: boolean; images: number }[];
+  problem: string | null;
+}
+
+/** What each destination would receive, counted its way, and what would stop it (the same checks publishing runs). */
+export function previewPost(post: Post): { targets: PreviewTarget[] } {
+  if (!post.targets.length) {
+    const limit = getConfig().maxChars;
+    const live = post.xPostIds.length;
+    const items = post.thread.map((s) => {
+      const count = weightedLength(s.text);
+      return { text: s.text, count, fits: count <= limit && s.mediaIds.length <= 4 && Boolean(s.text.trim() || s.mediaIds.length), images: s.mediaIds.length };
+    });
+    let problem: string | null = null;
+    for (const [i, it] of items.entries()) {
+      if (i < live) continue;
+      const n = items.length > 1 ? `Post ${i + 1}` : "The post";
+      if (!it.text.trim() && !it.images) problem = `${n} is empty; add text or remove it.`;
+      else if (it.count > limit) problem = `${n} is ${it.count}/${limit} characters on X; shorten it.`;
+      else if (it.images > 4) problem = `${n} has ${it.images} images; X allows at most 4.`;
+      if (problem) break;
+    }
+    const status = post.status === "published" ? "published" : post.status === "failed" ? "failed" : "pending";
+    const label = xConfigured ? "X (.env API keys)" : "X (manual: copy & post)";
+    return { targets: [{ accountId: null, platform: "x", label, limit, threadMode: "replies", status, live, items, problem: status === "published" ? null : problem }] };
+  }
+  return {
+    targets: post.targets.map((t) => {
+      const account = getAccount(t.accountId);
+      const limit = limitFor(account);
+      const items = itemsFor(t.platform, t.thread ?? post.thread).map((s) => {
+        const count = countFor(t.platform, s.text);
+        const max = t.platform === "telegram" && s.mediaIds.length ? Math.min(limit, TELEGRAM_CAPTION_LIMIT) : limit;
+        const fits = count <= max && s.mediaIds.length <= PLATFORMS[t.platform].maxImages && Boolean(s.text.trim() || s.mediaIds.length);
+        return { text: s.text, count, fits, images: s.mediaIds.length };
+      });
+      const pending = itemsFor(t.platform, t.thread ?? post.thread).slice(t.externalIds.length);
+      return {
+        accountId: account.id,
+        platform: t.platform,
+        label: account.label,
+        limit,
+        threadMode: PLATFORMS[t.platform].threadMode,
+        status: t.status,
+        live: t.externalIds.length,
+        items,
+        problem: t.status === "published" ? null : preflight(account, pending),
+      };
+    }),
+  };
 }
 
 // ---------- routes ----------
@@ -354,16 +537,19 @@ apiRoutes.openapi(
     description:
       "Creates a draft, or queues it when `scheduledAt` is set. Give the content either as `text` (posts separated by a line containing only `---`) " +
       'or as structured `thread` segments. `scheduledAt: "next"` takes the next free slot from the posting schedule in threadsmith.config.json; ' +
-      "an ISO date-time must be in the future (no offset = configured timezone; a date alone is refused). Posts longer than maxChars (GET /health; URLs count 23, " +
-      "emoji 2) are accepted, but publishing refuses the whole thread before anything is posted (status failed, nothing on X), so keep each post within the limit. " +
+      "an ISO date-time must be in the future (no offset = configured timezone; a date alone is refused). " +
+      "`targets` lists the connected accounts it goes to (GET /accounts), each optionally with its own version of the thread; without targets it uses the original " +
+      "single-X mode (.env X keys, or manual copy & post). Posts over a destination's limit (X: maxChars from GET /health, URLs 23, emoji 2; others: GET /platforms) " +
+      "are accepted, but publishing refuses that destination before anything is posted there, so check GET /posts/{id}/preview. " +
       "Send an `Idempotency-Key` header when you might retry.",
     request: { headers: IdemHeaders, body: body(CreatePostSchema) },
     responses: { 201: json(PostSchema, "The created post."), 400: E400, 409: json(ErrorSchema, 'No free slot for "next".') },
   }),
   (c) => {
     const input = c.req.valid("json");
-    checkMedia(input.thread);
-    const post = createPost({ ...input, scheduledAt: input.scheduledAt ? when(input.scheduledAt) : null, source: sourceOf(c) });
+    checkMedia(input.thread, input.targets);
+    const targets = input.targets?.map((t) => ({ accountId: t.accountId, thread: t.thread ?? null }));
+    const post = createPost({ ...input, targets, scheduledAt: input.scheduledAt ? when(input.scheduledAt) : null, source: sourceOf(c) });
     return c.json(post, 201);
   },
 );
@@ -391,18 +577,21 @@ apiRoutes.openapi(
     path: "/posts/{id}",
     tags: ["Posts"],
     operationId: "updatePost",
-    summary: "Edit a post's content or title",
+    summary: "Edit a post's content, title or destinations",
     description:
-      "Replaces the content and/or the title; omitted fields stay unchanged. `text` replaces the thread but keeps each post's id and images by position; " +
-      "`thread` is taken as given. Scheduling is unaffected — use /schedule or /unschedule. Refused with 409 once the post is publishing or published, " +
-      "and when it would change, remove or reorder posts of a partly published thread that are already live on X (the first xPostIds.length posts).",
+      "Replaces the content, the title and/or the destinations; omitted fields stay unchanged. `text` replaces the thread but keeps each post's id and images by position; " +
+      "`thread` is taken as given. `targets` replaces the destination list (a target without `thread` keeps its current version; `thread: null` drops it; " +
+      "[] = back to the single-X mode). Scheduling is unaffected — use /schedule or /unschedule. Refused with 409 once the post is publishing or published, " +
+      "and when it would change, remove or reorder posts that are already live somewhere (the first xPostIds.length posts, or a target's first externalIds.length), " +
+      "or remove a destination that is partly published.",
     request: { params: IdParam, body: body(UpdatePostSchema) },
     responses: { 200: json(PostSchema, "The updated post."), 400: E400, 404: E404, 409: E409 },
   }),
   (c) => {
-    const patch = c.req.valid("json");
-    checkMedia(patch.thread);
-    return c.json(updatePost(c.req.valid("param").id, patch), 200);
+    const { targets, ...patch } = c.req.valid("json");
+    checkMedia(patch.thread, targets);
+    const id = c.req.valid("param").id;
+    return c.json(updatePost(id, { ...patch, targets: targets && mergeTargets(requirePost(id), targets) }), 200);
   },
 );
 
@@ -413,7 +602,7 @@ apiRoutes.openapi(
     tags: ["Posts"],
     operationId: "deletePost",
     summary: "Delete a post",
-    description: "Permanently deletes the post from Threadsmith (never deletes anything on X). 409 while it is publishing.",
+    description: "Permanently deletes the post from Threadsmith (never deletes anything already published anywhere). 409 while it is publishing.",
     request: { params: IdParam },
     responses: { 200: json(OkSchema, "Deleted."), 404: E404, 409: E409 },
   }),
@@ -459,13 +648,14 @@ apiRoutes.openapi(
     path: "/posts/{id}/publish",
     tags: ["Posts"],
     operationId: "publishPost",
-    summary: "Publish to X right now",
+    summary: "Publish right now",
     description:
-      "Posts the thread to X immediately via the X API and waits: returns the post as published, or as failed with `error` " +
-      "(X errors are not HTTP errors here — check `status`). Works for draft, scheduled, due and failed posts; posts already live (xPostIds) are not re-sent. " +
-      "An empty post, one over maxChars or with more than 4 images fails the whole thread before anything is posted. " +
-      "Requires X API keys (GET /health → x.mode = api); in manual mode it answers 409 — " +
-      "instead get the text from GET /posts/{id}/export, post it by hand, then call POST /posts/{id}/mark-published.",
+      "Publishes immediately to every destination not yet published and waits: returns the post as published, or as failed with `error` " +
+      "(platform errors are not HTTP errors here — check `status` and each target's `status`/`error`). Works for draft, scheduled, due and failed posts; " +
+      "items already live (a target's externalIds, or xPostIds) are not re-sent. A destination whose thread is empty, over its limit or has too many images " +
+      "fails before anything is posted there (GET /posts/{id}/preview shows this in advance); the other destinations still go out. " +
+      "A post without targets uses the original single-X mode: it needs X API keys in .env (GET /health → x.mode = api), otherwise it answers 409 — " +
+      "then get the text from GET /posts/{id}/export, post it by hand, and call POST /posts/{id}/mark-published.",
     request: { params: IdParam, headers: IdemHeader },
     responses: { 200: json(PostSchema, "The post after publishing (check status/error)."), 404: E404, 409: E409 },
   }),
@@ -480,9 +670,9 @@ apiRoutes.openapi(
     operationId: "retryPost",
     summary: "Retry a failed post, or publish a due one",
     description:
-      "For failed or due posts only (409 otherwise). With X API keys it publishes now: tweets already posted (xPostIds) are not re-sent, " +
-      "the thread resumes after them; this also posts a due post that missed its time while the server was off. " +
-      "In manual mode it marks the post due again, which re-sends the copy & post notification.",
+      "For failed or due posts only (409 otherwise). It publishes now to the destinations that aren't published yet: items already posted " +
+      "(a target's externalIds, or xPostIds) are not re-sent, each thread resumes after them; this also posts a due post that missed its time while the server was off. " +
+      "A post without targets in manual mode (no X keys) is marked due again instead, which re-sends the copy & post notification.",
     request: { params: IdParam, headers: IdemHeader },
     responses: { 200: json(PostSchema, "The post after the retry."), 404: E404, 409: E409 },
   }),
@@ -497,7 +687,7 @@ apiRoutes.openapi(
     operationId: "markPostPublished",
     summary: "Record that the user posted it by hand",
     description:
-      "Manual mode: after the user copied the thread (GET /posts/{id}/export) and posted it on X themselves, mark it published, optionally with the tweet URL. " +
+      "Manual mode: after the user copied the thread (GET /posts/{id}/export) and posted it themselves, mark it published, optionally with the URL. " +
       "Calling it again on a published post is a no-op (returned unchanged, no event). Refused with 409 while an X API publish of it is in flight.",
     request: {
       params: IdParam,
@@ -519,7 +709,7 @@ apiRoutes.openapi(
     operationId: "exportPost",
     summary: "Get the thread as plain text and an X intent link",
     description:
-      "For copy & paste posting: `text` is the whole thread with `---` separators, `posts` the individual posts, " +
+      "For copy & paste posting (the post's own thread, not per-destination versions): `text` is the whole thread with `---` separators, `posts` the individual posts, " +
       "`intentUrl` opens X's composer prefilled with the first post (X intents can't create threads or attach images). " +
       "When an API publish stopped partway (alreadyLive > 0), post only `remainingPosts`, as replies under `replyToUrl`.",
     request: { params: IdParam },
@@ -568,7 +758,8 @@ apiRoutes.openapi(
     tags: ["Posts"],
     operationId: "duplicatePost",
     summary: "Copy a post into a new draft",
-    description: "Creates a new unscheduled draft with the same content and images (works for published posts too, e.g. to re-run a thread).",
+    description:
+      "Creates a new unscheduled draft with the same content, images and destinations (each with its own version, none published yet); works for published posts too, e.g. to re-run a thread.",
     request: { params: IdParam, headers: IdemHeaders },
     responses: { 201: json(PostSchema, "The new draft."), 404: E404 },
   }),
@@ -577,9 +768,147 @@ apiRoutes.openapi(
     const post = createPost({
       title: src.title && `${src.title} (copy)`,
       thread: src.thread.map(({ text, mediaIds }) => ({ text, mediaIds })),
+      targets: src.targets.map((t) => ({ accountId: t.accountId, thread: t.thread?.map(({ text, mediaIds }) => ({ text, mediaIds })) ?? null })),
       source: sourceOf(c),
     });
     return c.json(post, 201);
+  },
+);
+
+apiRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/posts/{id}/preview",
+    tags: ["Posts"],
+    operationId: "previewPost",
+    summary: "Preview what each destination will receive",
+    description:
+      "Per destination: the items it will publish (its own version or the post's thread; LinkedIn joins the posts into one), each counted the way that platform counts " +
+      "(X weighted: Vietnamese letters like ệ and emoji 2, URLs 23; Bluesky graphemes; Mastodon URLs 23; others code points) against the account's limit, and `problem`: " +
+      "what would make publishing there fail before anything is posted (null = ready). A post without targets gives one entry for the legacy single-X mode (accountId null). " +
+      "Check it before scheduling or publishing.",
+    request: { params: IdParam },
+    responses: { 200: json(PreviewSchema, "One entry per destination."), 404: E404 },
+  }),
+  (c) => c.json(previewPost(requirePost(c.req.valid("param").id)), 200),
+);
+
+// Platforms & accounts
+
+apiRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/platforms",
+    tags: ["Platforms"],
+    operationId: "listPlatforms",
+    summary: "Supported platforms, their limits and the credentials they need",
+    description:
+      "Per platform: default character limit, images per post, how a thread lands (threadMode), cost note (X's API is paid per post; the others are free), " +
+      "the credential fields POST /accounts expects, and where to get them.",
+    responses: { 200: json(z.object({ platforms: z.array(PlatformInfoSchema) }), "Every supported platform.") },
+  }),
+  (c) => c.json({ platforms: Object.values(PLATFORMS) }, 200),
+);
+
+apiRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/accounts",
+    tags: ["Accounts"],
+    operationId: "listAccounts",
+    summary: "List connected accounts",
+    description:
+      "The accounts posts can go to (use their ids in a post's `targets`). `lastError` set means the latest check or publish was refused, e.g. an expired token. " +
+      "Credentials are never returned.",
+    responses: { 200: json(z.object({ accounts: z.array(AccountSchema) }), "Connected accounts, oldest first.") },
+  }),
+  (c) => c.json({ accounts: listAccounts() }, 200),
+);
+
+apiRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/accounts",
+    tags: ["Accounts"],
+    operationId: "connectAccount",
+    summary: "Connect an account",
+    description:
+      "Verifies the credentials with the platform (a cheap authenticated call; for X about $0.001), then stores them encrypted. `credentials` holds the fields " +
+      "GET /platforms lists for that platform. Answers 400 with the platform's reason when they are refused. Connecting needs the person's secrets: " +
+      "agents should let the person do this (web UI or this route), never ask them to paste tokens into a chat.",
+    request: {
+      headers: IdemHeader,
+      body: body(
+        z
+          .object({
+            platform: PlatformIdSchema,
+            credentials: z.record(z.string(), z.string()).openapi({ description: "Field key → value, per GET /platforms → credentials.", example: { identifier: "you.bsky.social", appPassword: "xxxx-xxxx-xxxx-xxxx" } }),
+            label: z.string().max(100).optional().openapi({ description: "Default: platform name + handle." }),
+            maxChars: z.number().int().min(1).max(100_000).nullable().optional().openapi({ description: "Override the platform's limit (X Premium 25000, your Mastodon instance's limit)." }),
+          })
+          .openapi("ConnectAccount"),
+      ),
+    },
+    responses: { 201: json(AccountSchema, "The connected account."), 400: E400 },
+  }),
+  async (c) => c.json(await connectAccount(c.req.valid("json")), 201),
+);
+
+apiRoutes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/accounts/{id}",
+    tags: ["Accounts"],
+    operationId: "updateAccount",
+    summary: "Rename an account, change its limit or replace its credentials",
+    description: "New `credentials` are verified first (400 with the platform's reason if refused) and clear `lastError`. `maxChars: null` restores the platform's limit.",
+    request: {
+      params: AccountIdParam,
+      body: body(
+        z
+          .object({
+            label: z.string().max(100).optional(),
+            maxChars: z.number().int().min(1).max(100_000).nullable().optional(),
+            credentials: z.record(z.string(), z.string()).optional(),
+          })
+          .openapi("UpdateAccount"),
+      ),
+    },
+    responses: { 200: json(AccountSchema, "The updated account."), 400: E400, 404: E404 },
+  }),
+  async (c) => c.json(await updateAccount(c.req.valid("param").id, c.req.valid("json")), 200),
+);
+
+apiRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/accounts/{id}/check",
+    tags: ["Accounts"],
+    operationId: "checkAccount",
+    summary: "Re-verify an account's stored credentials",
+    description: "Asks the platform again (e.g. whether a 60-day token expired). Always 200: `lastError` is null when fine, otherwise the platform's reason.",
+    request: { params: AccountIdParam, headers: IdemHeader },
+    responses: { 200: json(AccountSchema, "The account with the check's outcome."), 404: E404 },
+  }),
+  async (c) => c.json(await recheckAccount(c.req.valid("param").id), 200),
+);
+
+apiRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/accounts/{id}",
+    tags: ["Accounts"],
+    operationId: "deleteAccount",
+    summary: "Disconnect an account",
+    description:
+      "Deletes the account and its stored credentials (nothing is deleted on the platform). Refused with 409 while queued or unfinished posts still go to it: " +
+      "remove it from their targets first. Finished posts lose that destination from their history.",
+    request: { params: AccountIdParam },
+    responses: { 200: json(OkSchema, "Disconnected."), 404: E404, 409: E409 },
+  }),
+  (c) => {
+    deleteAccount(c.req.valid("param").id);
+    return c.json({ ok: true as const }, 200);
   },
 );
 
@@ -643,7 +972,8 @@ apiRoutes.openapi(
     operationId: "getHealth",
     summary: "Server status and capabilities",
     description:
-      "Call first: tells you the character limit, timezone, whether posts go out automatically (x.mode api) or need a human (manual), and whether AI routes work.",
+      "Call first: tells you the X character limit, timezone, whether posts without destinations go out automatically through the .env X keys (x.mode api) " +
+      "or need a human (manual), and whether AI routes work. Connected accounts for other platforms (and other X accounts): GET /accounts.",
     responses: { 200: json(HealthSchema, "OK.") },
   }),
   (c) => {

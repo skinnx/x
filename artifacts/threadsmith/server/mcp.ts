@@ -7,14 +7,18 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { Hono } from "hono";
 import { z } from "zod";
+import { countFor, itemsFor, PLATFORMS, TELEGRAM_CAPTION_LIMIT } from "../shared/platforms.ts";
 import { hasUrl, splitThread, threadToText, weightedLength } from "../shared/thread.ts";
-import { POST_STATUSES, type Post, type Segment } from "../shared/types.ts";
+import { PLATFORM_IDS, POST_STATUSES, type Account, type PlatformId, type Post, type Segment } from "../shared/types.ts";
+import { getAccount, listAccounts } from "./accounts.ts";
 import { voiceExamples } from "./ai/copilot.ts";
 import { threadGuide } from "./ai/guide.ts";
 import { aiStatus } from "./ai/provider.ts";
 import { buildQueue, getConfig, nextFreeSlots, parseWhen } from "./config.ts";
 import { ROOT, xConfigured } from "./env.ts";
+import { previewPost } from "./api.ts";
 import { saveImageFromUrl } from "./media.ts";
+import { limitFor } from "./publisher.ts";
 import {
   BadInputError,
   ConflictError,
@@ -28,6 +32,8 @@ import {
   schedulePost,
   unschedulePost,
   updatePost,
+  type SegmentInput,
+  type TargetInput,
 } from "./repo.ts";
 import { publishNow, retryPost } from "./scheduler.ts";
 
@@ -35,11 +41,14 @@ const VERSION = (JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"
 const EDITABLE = ["draft", "scheduled", "due", "failed"];
 const MAX_IMAGES_PER_POST = 4;
 
-const INSTRUCTIONS = `Threadsmith is this person's self-hosted composer and scheduler for X (Twitter) posts and threads.
-Start with get_settings (timezone, character limit, X mode, their voice). A thread is text with a line containing only --- between posts.
-Run count_characters on every draft, show the person the thread, and ask before scheduling, publishing or deleting.
+const INSTRUCTIONS = `Threadsmith is this person's self-hosted composer and scheduler for posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord.
+Start with get_settings (timezone, X limit, X mode, connected accounts, their voice). A thread is text with a line containing only --- between posts.
+Destinations: create_post/update_post take \`to\` (connected accounts by id, label, handle or platform name; list_accounts shows them) and optional per-account \`versions\`.
+A post without destinations uses the legacy single-X mode (the X API keys in .env, or manual copy & post).
+Check every draft with count_characters (pass the platform) or, once saved, preview_post, show the person the thread, and ask before scheduling, publishing or deleting.
 schedule "next" uses the configured posting slots. In manual X mode nothing posts automatically: the person is notified at the scheduled time and copies the thread into X.
 A "due" post is waiting for the person (manual mode, or it missed its time while Threadsmith was offline; see its error): publish it, export it, or reschedule it.
+Connecting an account needs the person's secrets: they do it in the Threadsmith UI (or REST POST /api/accounts), never through you.
 Writing guidance: resource threadsmith://guide.`;
 
 // ---------- views ----------
@@ -58,11 +67,102 @@ function local(iso: string | null): string | null {
   }).format(new Date(iso));
 }
 
-function counts(texts: string[]) {
-  const limit = getConfig().maxChars;
+function counts(texts: string[], platform: PlatformId = "x", limit = getConfig().maxChars) {
   return texts.map((text, index) => {
-    const chars = weightedLength(text);
+    const chars = countFor(platform, text);
     return { index, chars, remaining: limit - chars, fits: chars <= limit && text.trim().length > 0, hasLink: hasUrl(text) };
+  });
+}
+
+// ---------- destinations ----------
+
+const describeAccount = (a: Account) => `${a.label} (${PLATFORMS[a.platform].name}${a.handle ? ` ${a.handle}` : ""}, id ${a.id})`;
+
+/**
+ * An account by id, id prefix, label, handle (with or without @) or platform name. Ambiguous or unknown references
+ * are errors that list the choices, so a post never silently goes to the wrong account.
+ */
+function resolveAccount(ref: string, accounts: Account[]): Account {
+  const r = ref.trim().toLowerCase();
+  const exact = accounts.find((a) => a.id.toLowerCase() === r);
+  if (exact) return exact;
+  const strong = accounts.filter(
+    (a) => a.label.toLowerCase() === r || (a.handle && a.handle.toLowerCase().replace(/^@/, "") === r.replace(/^@/, "")) || (r.length >= 4 && a.id.startsWith(r)),
+  );
+  if (strong.length === 1) return strong[0]!;
+  const platform = PLATFORM_IDS.find((p) => p === r || PLATFORMS[p].name.toLowerCase() === r);
+  const matches = strong.length ? strong : platform ? accounts.filter((a) => a.platform === platform) : [];
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length > 1) {
+    throw new BadInputError(`"${ref}" matches ${matches.length} accounts; use one's id or label: ${matches.map(describeAccount).join("; ")}.`);
+  }
+  if (!accounts.length) {
+    throw new BadInputError(
+      `No accounts are connected, so "${ref}" can't be a destination. The person connects accounts in the Threadsmith UI (or POST /api/accounts); ` +
+        "until then, omit `to` to use the legacy single-X mode.",
+    );
+  }
+  throw new BadInputError(
+    `No connected account matches "${ref}"${platform ? ` (no ${PLATFORMS[platform].name} account is connected)` : ""}. Connected: ${accounts.map(describeAccount).join("; ")}.`,
+  );
+}
+
+type VersionValue = string | string[] | null;
+
+/** Segments for a destination's own version: ids and images carry over by position (extra images go on the last post). */
+function versionSegments(value: string | string[], previous: Segment[] | null, shared: Segment[]): SegmentInput[] {
+  const parts = Array.isArray(value) ? value : splitThread(value);
+  if (!parts.some((p) => p.trim())) throw new BadInputError("A version needs some text.");
+  const base = previous ?? shared;
+  return parts.map((text, i) => ({
+    id: previous?.[i]?.id,
+    text,
+    mediaIds: i === parts.length - 1 ? base.slice(i).flatMap((s) => s.mediaIds) : (base[i]?.mediaIds ?? []),
+  }));
+}
+
+/** `to` and `versions` → the post's new target list; undefined when neither was given (destinations unchanged). */
+function buildTargets(
+  current: Post | undefined,
+  to: string[] | undefined,
+  versions: Record<string, VersionValue> | undefined,
+  shared: Segment[],
+): TargetInput[] | undefined {
+  if (to === undefined && versions === undefined) return undefined;
+  const accounts = listAccounts();
+  const existing = current?.targets ?? [];
+  const ids = to !== undefined ? to.map((r) => resolveAccount(r, accounts).id) : existing.map((t) => t.accountId);
+  const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
+  if (dupes.length) throw new BadInputError(`\`to\` names ${describeAccount(getAccount(dupes[0]!))} twice.`);
+  const targets: TargetInput[] = ids.map((accountId) => ({ accountId, thread: existing.find((t) => t.accountId === accountId)?.thread ?? null }));
+  for (const [ref, value] of Object.entries(versions ?? {})) {
+    const account = resolveAccount(ref, accounts);
+    const target = targets.find((t) => t.accountId === account.id);
+    if (!target) throw new BadInputError(`versions: ${describeAccount(account)} is not a destination of this post; add it to \`to\`.`);
+    const previous = existing.find((t) => t.accountId === account.id)?.thread ?? null;
+    target.thread = value === null ? null : versionSegments(value, previous, shared);
+  }
+  return targets;
+}
+
+function destinationsView(p: Post) {
+  if (!p.targets.length) return [];
+  const preview = previewPost(p).targets;
+  return p.targets.map((t, i) => {
+    const pv = preview[i]!;
+    return {
+      accountId: t.accountId,
+      account: pv.label,
+      platform: t.platform,
+      status: t.status,
+      ownVersion: Boolean(t.thread),
+      limit: pv.limit,
+      items: pv.items.map((it, k) => ({ index: k, text: t.thread || PLATFORMS[t.platform].threadMode === "single" ? it.text : undefined, chars: it.count, fits: it.fits })),
+      live: t.externalIds.length,
+      url: t.url,
+      error: t.error,
+      problem: pv.problem,
+    };
   });
 }
 
@@ -74,6 +174,8 @@ function view(p: Post) {
     scheduledAt: p.scheduledAt,
     scheduledLocal: local(p.scheduledAt),
     posts: p.thread.map((s, i) => ({ index: i, text: s.text, chars: weightedLength(s.text), mediaIds: s.mediaIds })),
+    mode: p.targets.length ? "accounts" : xConfigured ? "legacy-x-api" : "legacy-x-manual",
+    destinations: destinationsView(p),
     url: p.url,
     error: p.error,
     xPostIds: p.xPostIds,
@@ -93,16 +195,34 @@ function brief(p: Post) {
     scheduledLocal: local(p.scheduledAt),
     postCount: p.thread.length,
     preview: first.length > 100 ? first.slice(0, 99) + "…" : first,
+    destinations: p.targets.length
+      ? p.targets.map((t) => `${PLATFORMS[t.platform].name} ${accountLabel(t.accountId)}: ${t.status}`)
+      : [`X (legacy ${xConfigured ? "API" : "manual"} mode)`],
     url: p.url,
     error: p.error,
   };
 }
 
+function accountLabel(id: string): string {
+  try {
+    return getAccount(id).label;
+  } catch {
+    return id;
+  }
+}
+
 /** Problems an agent should fix or mention after saving. */
 function warnings(p: Post): string[] {
+  if (p.targets.length) {
+    if (p.status === "published") return [];
+    return previewPost(p).targets.flatMap((t) => (t.problem ? [`${t.label}: ${t.problem}`] : []));
+  }
   const out = counts(p.thread.map((s) => s.text))
     .filter((c) => !c.fits)
     .map((c) => (c.chars === 0 ? `Post [${c.index}] is empty.` : `Post [${c.index}] is ${c.chars}/${getConfig().maxChars} characters; shorten it.`));
+  if (p.status !== "published" && listAccounts().length) {
+    out.push("No destinations: this post uses the legacy single-X mode. Pass `to` (see list_accounts) to send it to connected accounts.");
+  }
   if (p.status === "scheduled" && !xConfigured) out.push("Manual X mode: at that time the person is notified to copy the thread and post it by hand.");
   const live = p.xPostIds.length;
   if (live && EDITABLE.includes(p.status)) {
@@ -136,7 +256,8 @@ function imageTarget(postId: string, postIndex: number): Post {
   const seg = p.thread[postIndex];
   if (!seg) throw new BadInputError(`postIndex ${postIndex} is out of range; the thread has ${p.thread.length} post(s) (0-based).`);
   if (postIndex < p.xPostIds.length) throw new ConflictError(`Post [${postIndex}] is already live on X and can't be changed.`);
-  if (seg.mediaIds.length >= MAX_IMAGES_PER_POST) throw new ConflictError(`Post [${postIndex}] already has ${MAX_IMAGES_PER_POST} images, X's maximum.`);
+  const max = p.targets.length ? Math.max(...p.targets.map((t) => PLATFORMS[t.platform].maxImages)) : MAX_IMAGES_PER_POST;
+  if (seg.mediaIds.length >= max) throw new ConflictError(`Post [${postIndex}] already has ${max} images, the most any of its destinations allows.`);
   return p;
 }
 
