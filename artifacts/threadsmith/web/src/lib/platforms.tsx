@@ -43,6 +43,9 @@ export function PlatformIcon({ platform, size = 14, tint = true, className }: { 
   );
 }
 
+/** "Discord (removed account)": published posts keep pointing at an account removed since (it's no longer listed). */
+export const removedLabel = (platform: PlatformId) => `${PLATFORMS[platform].name} (removed account)`;
+
 /** Compact name for counters ("Bsky 290/300"). */
 export const shortName = (p: PlatformId) => (p === "bluesky" ? "Bsky" : PLATFORMS[p].name);
 

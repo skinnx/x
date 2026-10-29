@@ -4,6 +4,7 @@ import { Bot, ExternalLink, FileText, Send, Terminal } from "lucide-react";
 import type { Health } from "../../../shared/types.ts";
 import { api } from "../api.ts";
 import { Card, Code } from "../components/Card.tsx";
+import { useAccounts } from "../lib/platforms.tsx";
 import { cx } from "../lib/util.ts";
 import { Accounts } from "./Accounts.tsx";
 import { Reminders } from "./Reminders.tsx";
@@ -109,16 +110,27 @@ node cli/threadsmith.mjs help`}
 }
 
 function StatusGrid({ health }: { health: Health }) {
+  const { data: accounts } = useAccounts();
+  const n = accounts?.length ?? 0;
   const items = [
-    {
-      label: "Posting to X",
-      ok: health.x.mode === "api",
-      value: health.x.mode === "api" ? "Automatic via X API" : "Manual mode",
-      note:
-        health.x.mode === "api"
-          ? "Queued threads are posted at their slot time."
-          : "At slot time you get a reminder and a one-click copy. Add X API keys to .env to auto-post (see README).",
-    },
+    n
+      ? {
+          label: "Publishing",
+          ok: true,
+          value: `${n} account${n === 1 ? "" : "s"} connected`,
+          note: `Posts with destinations publish to them at their slot time. Posts without destinations go to X ${
+            health.x.mode === "api" ? "with the API keys in .env" : "by copy & post: you get a reminder and a one-click copy"
+          }.`,
+        }
+      : {
+          label: "Posting to X",
+          ok: health.x.mode === "api",
+          value: health.x.mode === "api" ? "Automatic via X API" : "Manual mode",
+          note:
+            health.x.mode === "api"
+              ? "Queued threads are posted at their slot time."
+              : "At slot time you get a reminder and a one-click copy. Connect an account below, or add X API keys to .env, to auto-post.",
+        },
     {
       label: "AI copilot",
       ok: health.ai.configured,

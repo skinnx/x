@@ -12,6 +12,12 @@ import { CharRing } from "./CharRing.tsx";
 
 export const MAX_IMAGES = 4; // X's limit, the default when no other destination is selected
 
+export interface ImageRule {
+  name: string;
+  types?: string[];
+  maxBytes?: number;
+}
+
 export interface PendingUpload {
   key: string;
   url: string;
@@ -24,8 +30,8 @@ interface Props {
   /** One counter per destination platform (just X in single-X mode); the ring shows the strictest. */
   meters: Meter[];
   maxImages: number;
-  /** Selected platforms that accept only some image types (Threads, LinkedIn): a thumbnail of another type is flagged. */
-  imageRules: { name: string; types: string[] }[];
+  /** Selected platforms that accept only some image types (Threads, LinkedIn) or sizes (Bluesky): a thumbnail they'd refuse is flagged. */
+  imageRules: ImageRule[];
   readOnly: boolean;
   /** Set when this post is already live (a thread that stopped partway): shown locked, with a link when known. */
   live?: { where: string; url: string | null };
@@ -185,7 +191,7 @@ export function PostCard(p: Props) {
           </div>
         )}
         {!p.readOnly && (
-          <div className="mt-1 flex h-8 items-center gap-1 text-ink-3">
+          <div className="mt-1 flex min-h-8 items-center gap-1 text-ink-3">
             <button
               onClick={() => fileInput.current?.click()}
               disabled={!canAddImage}
@@ -218,16 +224,18 @@ export function PostCard(p: Props) {
               </button>
             )}
             {p.meters.length > 1 && (
-              <span className="min-w-0 truncate pl-1 text-[11px] tabular-nums" title="Characters per destination, as each platform counts them">
-                {p.meters.map((m, i) => (
-                  <span key={m.key} className={cx(m.length > m.max && "font-medium text-red-600 dark:text-red-400")}>
-                    {i > 0 && <span className="text-ink-3"> · </span>}
+              <span
+                className="flex min-w-0 flex-1 flex-wrap gap-x-2.5 gap-y-0.5 py-1 pl-1 text-[11px] leading-4 tabular-nums"
+                title="Characters per destination, as each platform counts them"
+              >
+                {p.meters.map((m) => (
+                  <span key={m.key} className={cx("whitespace-nowrap", m.length > m.max && "font-medium text-red-600 dark:text-red-400")}>
                     {m.label} {m.length}/{m.max}
                   </span>
                 ))}
               </span>
             )}
-            <div className="flex-1" />
+            {p.meters.length <= 1 && <div className="flex-1" />}
             {p.total > 1 && (
               <button
                 onClick={p.onRemove}
@@ -249,15 +257,17 @@ export function PostCard(p: Props) {
 function Thumb(p: {
   id: string;
   single: boolean;
-  rules: { name: string; types: string[] }[];
+  rules: ImageRule[];
   readOnly: boolean;
   onEdit: () => void;
   onRemove: () => void;
 }) {
   const { data: media } = useQuery({ queryKey: ["media", p.id], queryFn: () => api.getMedia(p.id), staleTime: Infinity });
   const hasAlt = Boolean(media?.alt);
-  const refusedBy = media ? p.rules.filter((r) => !r.types.includes(media.mime)).map((r) => r.name) : [];
+  const refusedBy = media ? p.rules.filter((r) => r.types && !r.types.includes(media.mime)).map((r) => r.name) : [];
+  const tooBig = media ? p.rules.filter((r) => r.maxBytes && media.size > r.maxBytes) : [];
   const kind = media?.mime.replace("image/", "").toUpperCase();
+  const mb = (n: number) => `${(n / 1e6).toFixed(1).replace(/\.0$/, "")} MB`;
   return (
     <div className={cx("group/img relative overflow-hidden rounded-xl border border-line bg-subtle", p.single ? "aspect-video" : "aspect-square")}>
       {p.readOnly ? (
@@ -277,14 +287,27 @@ function Thumb(p: {
           {hasAlt ? "ALT" : "+ ALT"}
         </span>
       )}
-      {refusedBy.length > 0 && (
-        <span
-          role="note"
-          title={`${refusedBy.join(" and ")} ${refusedBy.length > 1 ? "don't" : "doesn't"} accept ${kind} images. Use a JPEG or PNG, or give ${refusedBy.length > 1 ? "them their" : "it its"} own version without this image.`}
-          className="pointer-events-auto absolute top-2 left-2 flex items-center gap-1 rounded bg-amber-500/95 px-1.5 py-0.5 text-[10px] font-semibold text-black"
-        >
-          <TriangleAlert size={11} /> {kind} not accepted on {refusedBy.join(", ")}
-        </span>
+      {(refusedBy.length > 0 || tooBig.length > 0) && (
+        <div className="absolute top-2 left-2 flex max-w-[calc(100%-3rem)] flex-col items-start gap-1">
+          {refusedBy.length > 0 && (
+            <span
+              role="note"
+              title={`${refusedBy.join(" and ")} ${refusedBy.length > 1 ? "don't" : "doesn't"} accept ${kind} images. Use a JPEG or PNG, or give ${refusedBy.length > 1 ? "them their" : "it its"} own version without this image.`}
+              className="flex items-center gap-1 rounded bg-amber-500/95 px-1.5 py-0.5 text-[10px] leading-tight font-semibold text-black"
+            >
+              <TriangleAlert size={11} /> {kind} not accepted on {refusedBy.join(", ")}
+            </span>
+          )}
+          {media && tooBig.length > 0 && (
+            <span
+              role="note"
+              title={`${mb(media.size)} is over the limit of ${tooBig.map((r) => `${r.name} (${mb(r.maxBytes!)})`).join(" and ")}. Use a smaller image, or give ${tooBig.length > 1 ? "them their" : "it its"} own version without this image.`}
+              className="flex items-center gap-1 rounded bg-amber-500/95 px-1.5 py-0.5 text-[10px] leading-tight font-semibold text-black"
+            >
+              <TriangleAlert size={11} /> {mb(media.size)}: over {tooBig.map((r) => `${r.name}'s ${mb(r.maxBytes!)}`).join(", ")}
+            </span>
+          )}
+        </div>
       )}
       {!p.readOnly && (
         <button

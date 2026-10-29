@@ -37,7 +37,7 @@ import { AltTextDialog } from "./AltTextDialog.tsx";
 import { Destinations } from "./Destinations.tsx";
 import { MAX_IMAGES, PostCard, type PendingUpload } from "./PostCard.tsx";
 import { ScheduleBar, type Busy } from "./ScheduleBar.tsx";
-import { StatusBanner } from "./StatusBanner.tsx";
+import { StatusBanner, useRetry } from "./StatusBanner.tsx";
 import { blankSegment, isBlank, useDraft, type DraftTarget, type SaveState } from "./useDraft.ts";
 
 const SEPARATOR = /^\s*-{3,}\s*$/m;
@@ -215,8 +215,8 @@ export function Composer(props: Props) {
   const joined = legacy || !thread ? [] : activeAccounts.filter((a) => PLATFORMS[a.platform].threadMode === "single").map((a) => joinedMeter(thread, a, health));
   const maxImages = legacy || !activeAccounts.length ? MAX_IMAGES : Math.min(...activeAccounts.map((a) => PLATFORMS[a.platform].maxImages));
   const imageRules = activeAccounts
-    .filter((a, i, all) => PLATFORMS[a.platform].imageTypes && all.findIndex((b) => b.platform === a.platform) === i)
-    .map((a) => ({ name: PLATFORMS[a.platform].name, types: PLATFORMS[a.platform].imageTypes! }));
+    .filter((a, i, all) => (PLATFORMS[a.platform].imageTypes || PLATFORMS[a.platform].maxImageBytes) && all.findIndex((b) => b.platform === a.platform) === i)
+    .map((a) => ({ name: PLATFORMS[a.platform].name, types: PLATFORMS[a.platform].imageTypes, maxBytes: PLATFORMS[a.platform].maxImageBytes }));
   const threadLimits = activeAccounts.filter((a) => PLATFORMS[a.platform].threadMode !== "single").map((a) => limitFor(a, health));
   const activeLimit = legacy || !threadLimits.length ? maxChars : Math.min(...threadLimits);
 
@@ -234,6 +234,8 @@ export function Composer(props: Props) {
   const [adapting, setAdapting] = useState<string | null>(null);
   /** Why a destination would refuse the post, from the last pre-flight check; cleared by the next edit. */
   const [refusals, setRefusals] = useState<{ accountId: string | null; label: string; problem: string }[] | null>(null);
+  /** What the refused action was: the banner says "Not queued", "Not published", or that a scheduled post would fail. */
+  const [refusedAction, setRefusedAction] = useState<"queue" | "publish" | "scheduled">("queue");
 
   const textareas = useRef(new Map<string, HTMLTextAreaElement>());
   const pendingFocus = useRef<{ id: string; at: "start" | "end" } | null>(null);
@@ -352,18 +354,24 @@ export function Composer(props: Props) {
    * Ask the server what each destination would do with the saved post (limits, image counts, empty posts) and
    * refuse to queue or publish when any would be rejected.
    */
-  const destinationsAccept = async (id: string): Promise<boolean> => {
+  const destinationsAccept = async (id: string, action: "queue" | "publish" | "scheduled"): Promise<boolean> => {
     if (!draft.targets.length) return true;
     const preview = await api.preview(id);
     const bad = preview.filter((t) => t.problem).map((t) => ({ accountId: t.accountId, label: t.label, problem: t.problem! }));
     if (!bad.length) return true;
     setRefusals(bad);
+    setRefusedAction(action);
     const first = bad[0]!;
     const acct = first.accountId ? accountOf(first.accountId) : undefined;
     const forkable = acct && !draft.targets.find((t) => t.accountId === acct.id)?.thread;
     toast({
       id: "preflight",
-      title: bad.length > 1 ? `${bad.length} destinations would refuse this post` : `${first.label} would refuse this post`,
+      title:
+        action === "scheduled"
+          ? `Still scheduled, but ${bad.length > 1 ? `${bad.length} destinations` : first.label} would refuse it`
+          : bad.length > 1
+            ? `${bad.length} destinations would refuse this post`
+            : `${first.label} would refuse this post`,
       description: bad.length > 1 ? "Details are above the thread." : first.problem,
       tone: "error",
       duration: 12_000,
@@ -526,7 +534,7 @@ export function Composer(props: Props) {
       await draft.flush();
       const id = draft.currentId();
       if (!id) throw new Error("The draft hasn't been saved yet");
-      if (!(await destinationsAccept(id))) return setBusy(null);
+      if (!(await destinationsAccept(id, "queue"))) return setBusy(null);
       const saved = await api.schedule(id, at);
       setPickerOpen(false);
       toast({
@@ -550,13 +558,31 @@ export function Composer(props: Props) {
   /** Ctrl+Enter / palette "Add to queue": what the footer's main button does; a scheduled post keeps its time. */
   const queueShortcut = () => {
     if (readOnly) return;
+    if (post?.status === "failed" && post.targets.length) {
+      return toast({ id: "use-retry", title: "This post already went out partly", description: "Use “Retry” to post to the destinations that failed." });
+    }
     if (post?.status === "scheduled" && post.scheduledAt) {
-      void draft.flush();
-      return toast({
-        id: "still-scheduled",
-        title: `Saved · still scheduled for ${formatWhen(post.scheduledAt, health.timezone)}`,
-        description: "Use “Change time” to move it.",
-      });
+      const when = formatWhen(post.scheduledAt, health.timezone);
+      const over = overLimit();
+      if (over >= 0)
+        return toast({
+          id: "still-scheduled",
+          title: `Post ${over + 1} is over the ${maxChars} limit`,
+          description: `It's still scheduled for ${when} and would fail then. Shorten it, or unschedule it.`,
+          tone: "error",
+          duration: 12_000,
+        });
+      void (async () => {
+        try {
+          await draft.flush();
+          const id = draft.currentId();
+          if (id && !(await destinationsAccept(id, "scheduled"))) return;
+          toast({ id: "still-scheduled", title: `Saved · still scheduled for ${when}`, description: "Use “Change time” to move it." });
+        } catch (e) {
+          toastError("Couldn't check the post", e);
+        }
+      })();
+      return;
     }
     void schedule(slotTarget ?? "next");
   };
@@ -580,7 +606,7 @@ export function Composer(props: Props) {
     setBusy("publish");
     try {
       await draft.flush();
-      if (!(await destinationsAccept(draft.currentId()!))) return;
+      if (!(await destinationsAccept(draft.currentId()!, "publish"))) return;
       const result = await api.publish(draft.currentId()!);
       draft.setPost(result);
       if (result.targets.length) {
@@ -676,6 +702,7 @@ export function Composer(props: Props) {
     return () => removeEventListener("keydown", onKey);
   }, []);
 
+  const retry = useRetry(post, draft.flush, draft.setPost);
   const hasTargets = targets.length > 0;
   const commands = useMemo<Command[]>(() => {
     const a = () => actions.current;
@@ -801,6 +828,7 @@ export function Composer(props: Props) {
               <Destinations
                 accounts={accounts}
                 targets={targets}
+                shared={draft.sharedThread}
                 post={post}
                 health={health}
                 readOnly={readOnly}
@@ -816,7 +844,11 @@ export function Composer(props: Props) {
             )}
             {refusals && (
               <div role="alert" className="mb-4 ml-10 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-900 dark:border-red-900 dark:bg-red-950/50 dark:text-red-100">
-                <p className="font-medium">Not queued: {refusals.length > 1 ? "these destinations" : refusals[0]!.label} would refuse it</p>
+                <p className="font-medium">
+                  {refusedAction === "scheduled"
+                    ? `Still scheduled, but ${refusals.length > 1 ? "these destinations" : refusals[0]!.label} would refuse it at its time. Fix it or unschedule it.`
+                    : `${refusedAction === "publish" ? "Not published" : "Not queued"}: ${refusals.length > 1 ? "these destinations" : refusals[0]!.label} would refuse it`}
+                </p>
                 <ul className="mt-1 space-y-0.5 text-xs">
                   {refusals.map((r) => (
                     <li key={r.accountId ?? "x"}>
@@ -912,7 +944,7 @@ export function Composer(props: Props) {
                 {m.length > m.max && " · too long, shorten it or customize a version"}
               </p>
             ))}
-            {!legacy && !version && !activeAccounts.length && thread && (
+            {!legacy && !version && !activeAccounts.length && thread && !readOnly && targets.some((t) => t.thread && !t.snapshot) && (
               <p className="mb-2 ml-10 text-xs text-ink-3">Every destination has its own version, so this shared thread isn't posted anywhere.</p>
             )}
 
@@ -964,6 +996,16 @@ export function Composer(props: Props) {
                 onUnschedule={() => void unschedule()}
                 onPublish={() => void publishNow()}
                 onCopy={() => void copyThread()}
+                retry={
+                  post?.status === "failed" && post.targets.length
+                    ? {
+                        published: post.targets.filter((t) => t.status === "published").length,
+                        total: post.targets.length,
+                        pending: retry.isPending,
+                        run: () => retry.mutate(),
+                      }
+                    : undefined
+                }
               />
             </div>
           </footer>

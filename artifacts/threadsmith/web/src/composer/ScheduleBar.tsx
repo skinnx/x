@@ -1,6 +1,6 @@
 // Composer footer: add to queue (showing the real next slot), pick a time, publish now, copy, open in X.
 import { useQuery } from "@tanstack/react-query";
-import { CalendarClock, Copy, ExternalLink, LoaderCircle, Send } from "lucide-react";
+import { CalendarClock, Copy, ExternalLink, LoaderCircle, RotateCcw, Send } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { Health, Post } from "../../../shared/types.ts";
 import { api } from "../api.ts";
@@ -29,9 +29,12 @@ interface Props {
   onUnschedule: () => void;
   onPublish: () => void;
   onCopy: () => void;
+  /** A failed post with destinations: Retry (resume the failed ones) replaces Publish now / Add to queue. */
+  retry?: { published: number; total: number; pending: boolean; run: () => void };
 }
 
-const ghost = "flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-sm text-ink-2 hover:bg-subtle hover:text-ink disabled:opacity-40";
+const ghostBase = "flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-sm whitespace-nowrap disabled:opacity-40";
+const ghost = cx(ghostBase, "text-ink-2 hover:bg-subtle hover:text-ink");
 
 export function ScheduleBar(p: Props) {
   const tz = p.health.timezone;
@@ -51,7 +54,7 @@ export function ScheduleBar(p: Props) {
   const closePicker = useCallback(() => setPickerOpen(false), [setPickerOpen]);
 
   return (
-    <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">
+    <div className="flex flex-wrap items-center gap-1 sm:flex-nowrap sm:gap-1.5">
       <button
         onClick={p.onCopy}
         disabled={p.empty}
@@ -89,20 +92,48 @@ export function ScheduleBar(p: Props) {
         </Popover>
       </div>
 
-      <span title={apiMode ? undefined : "Add X API keys to auto-post, or pick a connected account above"} className="inline-flex">
-        <button
-          onClick={() => (confirmPublish ? (setConfirmPublish(false), p.onPublish()) : setConfirmPublish(true))}
-          disabled={!apiMode || p.empty || p.busy === "publish"}
-          aria-label={confirmPublish ? "Confirm publish" : "Publish now"}
-          className={cx(ghost, confirmPublish && "bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950 dark:text-red-300")}
-        >
-          {p.busy === "publish" ? <LoaderCircle size={15} className="animate-spin" /> : <Send size={15} />}
-          <span className="max-sm:hidden">{confirmPublish ? "Confirm publish" : "Publish now"}</span>
-        </button>
-      </span>
+      {p.retry ? (
+        <div className="flex items-center gap-2 max-sm:order-last max-sm:w-full max-sm:flex-col max-sm:items-stretch">
+          <span className="text-xs text-ink-3 sm:max-w-56 sm:text-right">
+            {p.retry.published
+              ? `Live on ${p.retry.published} of ${p.retry.total}. Retry posts to the failed ones only.`
+              : "Retry resumes each destination where it stopped."}
+          </span>
+          <button
+            onClick={p.retry.run}
+            disabled={p.retry.pending}
+            className="flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg bg-ink px-3.5 text-sm font-medium whitespace-nowrap text-canvas shadow-sm hover:opacity-90 disabled:opacity-40 max-sm:h-11"
+          >
+            {p.retry.pending ? <LoaderCircle size={15} className="animate-spin" /> : <RotateCcw size={15} />}
+            {p.retry.published ? "Retry the failed ones" : "Retry"}
+          </button>
+        </div>
+      ) : (
+        <span title={apiMode ? undefined : "Add X API keys to auto-post, or pick a connected account above"} className="inline-flex">
+          <button
+            onClick={() => (confirmPublish ? (setConfirmPublish(false), p.onPublish()) : setConfirmPublish(true))}
+            disabled={!apiMode || p.empty || p.busy === "publish"}
+            aria-label={confirmPublish ? "Confirm publish" : "Publish now"}
+            className={
+              confirmPublish
+                ? cx(ghostBase, "bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950 dark:text-red-300 dark:hover:bg-red-900")
+                : ghost
+            }
+          >
+            {p.busy === "publish" ? <LoaderCircle size={15} className="animate-spin" /> : <Send size={15} />}
+            {/* Both labels share one grid cell so the button keeps its width (a second click must land on it). */}
+            <span className={cx("grid", !confirmPublish && "max-sm:hidden")}>
+              <span className="invisible col-start-1 row-start-1 max-sm:hidden" aria-hidden>
+                Publish now
+              </span>
+              <span className="col-start-1 row-start-1 text-center">{confirmPublish ? "Confirm?" : "Publish now"}</span>
+            </span>
+          </button>
+        </span>
+      )}
 
-      {scheduled ? (
-        <div className="flex h-9 items-center gap-1 rounded-lg bg-sky-50 pr-1 pl-3 text-sm text-sky-800 max-sm:order-last max-sm:h-11 max-sm:w-full max-sm:justify-between dark:bg-sky-950/60 dark:text-sky-200">
+      {p.retry ? null : scheduled ? (
+        <div className="flex h-9 shrink-0 items-center gap-1 rounded-lg bg-sky-50 pr-1 pl-3 text-sm whitespace-nowrap text-sky-800 max-sm:order-last max-sm:h-11 max-sm:w-full max-sm:justify-between dark:bg-sky-950/60 dark:text-sky-200">
           <span className="font-medium">{formatWhen(p.post!.scheduledAt!, tz)}</span>
           <button
             onClick={p.onUnschedule}
@@ -115,13 +146,13 @@ export function ScheduleBar(p: Props) {
       ) : (
         <button
           onClick={p.onQueue}
+          title={`${p.slotTarget ? "Schedule" : "Add to queue"} (${keys.queue})`}
           disabled={p.empty || p.busy === "queue"}
-          className="flex h-9 items-center gap-2 rounded-lg bg-ink pr-2 pl-3.5 text-sm font-medium text-canvas shadow-sm transition-opacity hover:opacity-90 disabled:opacity-40 max-sm:order-last max-sm:h-11 max-sm:w-full max-sm:justify-center"
+          className="flex h-9 min-w-0 items-center gap-2 rounded-lg bg-ink pr-2 pl-3.5 text-sm font-medium whitespace-nowrap text-canvas shadow-sm transition-opacity hover:opacity-90 disabled:opacity-40 max-sm:order-last max-sm:h-11 max-sm:w-full max-sm:justify-center"
         >
           {p.busy === "queue" && <LoaderCircle size={15} className="animate-spin" />}
           <span>{p.slotTarget ? "Schedule" : "Add to queue"}</span>
-          {next && <span className="font-normal opacity-60">{formatWhen(next, tz)}</span>}
-          <kbd className="rounded bg-canvas/15 px-1.5 py-0.5 text-[11px] opacity-70 max-sm:hidden">{keys.queue}</kbd>
+          {next && <span className="min-w-0 truncate font-normal opacity-60">{formatWhen(next, tz)}</span>}
         </button>
       )}
     </div>

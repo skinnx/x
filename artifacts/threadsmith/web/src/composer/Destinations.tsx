@@ -1,17 +1,19 @@
 // Where this post goes: connected-account chips, then tabs for the shared thread and per-account versions.
 import { Check, CircleAlert, GitFork, LoaderCircle, RotateCcw, Sparkles } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { PLATFORMS } from "../../../shared/platforms.ts";
-import type { Account, Health, Post } from "../../../shared/types.ts";
+import type { Account, Health, Post, Segment } from "../../../shared/types.ts";
 import { Popover } from "../components/Popover.tsx";
 import { navigate } from "../lib/router.ts";
-import { PlatformIcon } from "../lib/platforms.tsx";
+import { PlatformIcon, removedLabel } from "../lib/platforms.tsx";
 import { cx } from "../lib/util.ts";
 import type { DraftTarget } from "./useDraft.ts";
 
 interface Props {
   accounts: Account[];
   targets: DraftTarget[];
+  /** The shared thread: a destination's snapshot of what it posted only gets its own tab when it differs. */
+  shared: Segment[] | null;
   post: Post | null;
   health: Health;
   readOnly: boolean;
@@ -31,14 +33,74 @@ const tab = (on: boolean) =>
     on ? "bg-subtle text-ink" : "text-ink-3 hover:text-ink",
   );
 
+const sameText = (a: Segment[], b: Segment[]) =>
+  JSON.stringify(a.map((s) => [s.text.trim(), s.mediaIds])) === JSON.stringify(b.map((s) => [s.text.trim(), s.mediaIds]));
+
+/** Fade the edge(s) of a horizontal strip that has more to scroll to. */
+function useOverflowCue() {
+  const [el, ref] = useState<HTMLDivElement | null>(null);
+  const [edges, setEdges] = useState({ left: false, right: false });
+  const current = useRef(edges);
+  const update = useCallback(() => {
+    if (!el) return;
+    const left = el.scrollLeft > 1;
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    if (current.current.left === left && current.current.right === right) return;
+    current.current = { left, right };
+    setEdges(current.current);
+  }, [el]);
+  // Content changes (tabs added, labels) don't resize the strip itself: re-measure after every render (no state
+  // change unless an edge actually flips).
+  useLayoutEffect(update);
+  useEffect(() => {
+    if (!el) return;
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    el.addEventListener("scroll", update, { passive: true });
+    return () => {
+      ro.disconnect();
+      el.removeEventListener("scroll", update);
+    };
+  }, [el, update]);
+  const fade = 28;
+  const mask =
+    edges.left || edges.right
+      ? `linear-gradient(to right, ${edges.left ? `transparent, black ${fade}px` : "black"}, ${edges.right ? `black calc(100% - ${fade}px), transparent` : "black"})`
+      : undefined;
+  return { ref, style: mask ? { maskImage: mask, WebkitMaskImage: mask } : undefined, more: edges.right };
+}
+
 export function Destinations(p: Props) {
   const [menu, setMenu] = useState(false);
   const selected = p.targets.map((t) => p.accounts.find((a) => a.id === t.accountId)).filter((a): a is Account => Boolean(a));
   const progress = (id: string) => p.post?.targets.find((t) => t.accountId === id);
-  const versions = p.targets.filter((t) => t.thread);
+  // Own versions, plus snapshots of what a destination posted when they differ from the shared thread now.
+  const versions = p.targets.filter((t) => t.thread && (!t.snapshot || !p.shared || !sameText(t.thread, p.shared)));
   const plain = selected.filter((a) => !p.targets.find((t) => t.accountId === a.id)?.thread);
+  const sharedCount = p.targets.filter((t) => !versions.includes(t)).length;
   const active = p.version ? p.accounts.find((a) => a.id === p.version) : undefined;
-  const activeProgress = active && progress(active.id);
+  const activeTarget = p.version ? p.targets.find((t) => t.accountId === p.version) : undefined;
+  const activeProgress = p.version ? progress(p.version) : undefined;
+  // Targets whose account was removed since (only published history keeps them).
+  const removed = p.targets.filter((t) => !p.accounts.some((a) => a.id === t.accountId));
+  const platformOf = (id: string) => progress(id)?.platform;
+  const strip = useOverflowCue();
+
+  const tabIds = [null, ...versions.map((t) => t.accountId)];
+  const onTabKey = (e: KeyboardEvent<HTMLButtonElement>) => {
+    const i = tabIds.indexOf(p.version);
+    const next =
+      e.key === "ArrowRight" ? (i + 1) % tabIds.length : e.key === "ArrowLeft" ? (i - 1 + tabIds.length) % tabIds.length : e.key === "Home" ? 0 : e.key === "End" ? tabIds.length - 1 : -1;
+    if (next < 0) return;
+    e.preventDefault();
+    p.onVersion(tabIds[next]!);
+    const list = e.currentTarget.parentElement;
+    requestAnimationFrame(() => {
+      const btn = list?.querySelectorAll<HTMLElement>("[role=tab]")[next];
+      btn?.focus();
+      btn?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+  };
 
   return (
     <div className="mb-4 ml-10 space-y-2">
@@ -73,6 +135,20 @@ export function Destinations(p: Props) {
             </button>
           );
         })}
+        {removed.map((t) => {
+          const platform = platformOf(t.accountId);
+          if (!platform) return null;
+          return (
+            <span
+              key={t.accountId}
+              title={`This account was removed after the post went out; the post history stays.`}
+              className="flex h-7 max-w-[16rem] items-center gap-1.5 rounded-full border border-line pr-2.5 pl-2 text-xs text-ink-3"
+            >
+              <PlatformIcon platform={platform} size={12} tint={false} className="opacity-60" />
+              <span className="truncate">{removedLabel(platform)}</span>
+            </span>
+          );
+        })}
         {!p.targets.length && (
           <span className="text-xs text-ink-3">
             None selected · {p.health.x.mode === "api" ? "goes to X with the server's API keys" : "you'll copy & post it to X yourself"}
@@ -85,25 +161,43 @@ export function Destinations(p: Props) {
         )}
       </div>
 
-      {selected.length > 0 && (versions.length > 0 || !p.readOnly) && (
-        <div className="flex items-center gap-1 overflow-x-auto">
+      {p.targets.length > 0 && (versions.length > 0 || (!p.readOnly && selected.length > 0)) && (
+        <div ref={strip.ref} style={strip.style} className="flex items-center gap-1 overflow-x-auto [scrollbar-width:thin]">
           {versions.length > 0 && (
           <div role="tablist" aria-label="Versions" className="flex shrink-0 items-center gap-0.5 rounded-lg border border-line p-0.5">
-            <button role="tab" aria-selected={!p.version} onClick={() => p.onVersion(null)} className={tab(!p.version)}>
+            <button
+              role="tab"
+              aria-selected={!p.version}
+              tabIndex={!p.version ? 0 : -1}
+              onKeyDown={onTabKey}
+              onClick={() => p.onVersion(null)}
+              className={tab(!p.version)}
+            >
               Shared
-              {versions.length > 0 && (
-                <span className="font-normal text-ink-3" title={`Goes to ${plain.length} account${plain.length === 1 ? "" : "s"}`}>
-                  · {plain.length}
-                </span>
-              )}
+              <span className="font-normal text-ink-3" title={`Goes to ${sharedCount} account${sharedCount === 1 ? "" : "s"}`}>
+                · {sharedCount}
+              </span>
             </button>
             {versions.map((t) => {
               const a = p.accounts.find((x) => x.id === t.accountId);
-              if (!a) return null;
+              const platform = a?.platform ?? platformOf(t.accountId);
+              if (!platform) return null;
+              const name = a?.label ?? removedLabel(platform);
+              const on = p.version === t.accountId;
               return (
-                <button key={a.id} role="tab" aria-selected={p.version === a.id} onClick={() => p.onVersion(a.id)} className={tab(p.version === a.id)}>
-                  <PlatformIcon platform={a.platform} size={12} tint={p.version === a.id} />
-                  {a.label}
+                <button
+                  key={t.accountId}
+                  role="tab"
+                  aria-selected={on}
+                  tabIndex={on ? 0 : -1}
+                  onKeyDown={onTabKey}
+                  onClick={() => p.onVersion(t.accountId)}
+                  title={t.snapshot ? `What was posted to ${name} (the shared thread changed since)` : `${name}'s own version`}
+                  className={tab(on)}
+                >
+                  <PlatformIcon platform={platform} size={12} tint={on} />
+                  {name}
+                  {t.snapshot && <span className="font-normal text-ink-3">· as posted</span>}
                 </button>
               );
             })}
@@ -142,7 +236,13 @@ export function Destinations(p: Props) {
         </div>
       )}
 
-      {active && (
+      {activeTarget?.snapshot && (
+        <p className="text-xs text-ink-3">
+          What was posted to <span className="font-medium text-ink-2">{active?.label ?? removedLabel(activeProgress?.platform ?? "x")}</span>; the shared
+          thread was edited after it went out.
+        </p>
+      )}
+      {active && !activeTarget?.snapshot && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-3">
           <span>
             Only <span className="font-medium text-ink-2">{active.label}</span> gets this version; edits to Shared don't reach it.

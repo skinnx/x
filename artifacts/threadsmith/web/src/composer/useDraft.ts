@@ -18,6 +18,8 @@ const DEBOUNCE_MS = 600;
 export interface DraftTarget {
   accountId: string;
   thread: Segment[] | null;
+  /** Server-set once the destination published with the shared thread: `thread` is what it posted, not its own version. */
+  snapshot?: boolean;
 }
 
 interface Buffer {
@@ -32,7 +34,7 @@ export const blankSegment = (text = ""): Segment => ({ id: uid(), text, mediaIds
 export const isBlank = (thread: Segment[]) => thread.every((s) => !s.text.trim() && !s.mediaIds.length);
 const signature = (t: Segment[]) => JSON.stringify(t.map((s) => [s.id, s.text, s.mediaIds]));
 const targetSig = (t: DraftTarget[]) => JSON.stringify(t.map((x) => [x.accountId, x.thread && signature(x.thread)]));
-const fromPost = (p: Post): DraftTarget[] => p.targets.map((t) => ({ accountId: t.accountId, thread: t.thread }));
+const fromPost = (p: Post): DraftTarget[] => p.targets.map((t) => ({ accountId: t.accountId, thread: t.thread, snapshot: t.snapshot }));
 const toInput = (t: DraftTarget[]): TargetInput[] => t.map((x) => ({ accountId: x.accountId, thread: x.thread }));
 
 function readBuffer(): Buffer | null {

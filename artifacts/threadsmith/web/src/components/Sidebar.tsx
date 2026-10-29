@@ -4,6 +4,7 @@ import { CalendarClock, Command, PenLine, Plug, Plus, Trash2 } from "lucide-reac
 import { useState } from "react";
 import type { Health, Post } from "../../../shared/types.ts";
 import { api } from "../api.ts";
+import { useAccounts } from "../lib/platforms.tsx";
 import { navigate, newDraft, openPost, type View } from "../lib/router.ts";
 import { timeAgo } from "../lib/time.ts";
 import { cx, firstLine, keys, modKey } from "../lib/util.ts";
@@ -39,6 +40,7 @@ export function Sidebar(p: Props) {
     queryKey: ["posts", "attention"],
     queryFn: () => api.listPosts({ status: ["due", "failed"], limit: 50 }),
   });
+  const { data: accounts } = useAccounts();
   const go = (fn: () => void) => () => {
     fn();
     p.onNavigate?.();
@@ -109,10 +111,28 @@ export function Sidebar(p: Props) {
       </ul>
 
       <div className="space-y-1 border-t border-line px-4 py-3 text-xs text-ink-3">
-        <button onClick={go(() => navigate("/connect"))} className="flex w-full items-center gap-2 hover:text-ink">
-          <span className={cx("size-1.5 rounded-full", p.health.x.mode === "api" ? "bg-emerald-500" : "bg-amber-500")} />
-          X: {p.health.x.mode === "api" ? "auto-posting" : "manual (copy & post)"}
-        </button>
+        {accounts?.length ? (
+          <button
+            onClick={go(() => navigate("/connect"))}
+            title={`Posts without destinations go to X ${p.health.x.mode === "api" ? "with the API keys in .env" : "by copy & post"}`}
+            className="flex w-full items-start gap-2 text-left hover:text-ink"
+          >
+            <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-emerald-500" />
+            <span className="min-w-0">
+              <span className="block">
+                {accounts.length} account{accounts.length === 1 ? "" : "s"} connected
+              </span>
+              <span className="block truncate text-[11px] opacity-80">
+                No destination: X {p.health.x.mode === "api" ? "via .env keys" : "by copy & post"}
+              </span>
+            </span>
+          </button>
+        ) : (
+          <button onClick={go(() => navigate("/connect"))} className="flex w-full items-center gap-2 hover:text-ink">
+            <span className={cx("size-1.5 rounded-full", p.health.x.mode === "api" ? "bg-emerald-500" : "bg-amber-500")} />
+            X: {p.health.x.mode === "api" ? "auto-posting" : "manual (copy & post)"}
+          </button>
+        )}
         <button onClick={go(() => navigate("/connect"))} className="flex w-full items-center gap-2 hover:text-ink">
           <span className={cx("size-1.5 rounded-full", p.health.ai.configured ? "bg-ai" : "bg-ink-3")} />
           <span className="truncate">AI: {p.health.ai.configured ? (p.health.ai.model ?? p.health.ai.provider) : "not connected"}</span>

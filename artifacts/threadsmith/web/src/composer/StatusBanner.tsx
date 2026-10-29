@@ -28,17 +28,15 @@ interface Props {
 const primary = "flex h-9 items-center gap-1.5 rounded-lg bg-ink px-3.5 text-sm font-medium text-canvas hover:opacity-90 disabled:opacity-50";
 const secondary = "flex h-9 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 text-sm hover:bg-subtle disabled:opacity-50";
 
-export function StatusBanner(p: Props) {
-  const { post } = p;
-  const tz = p.health.timezone;
-
-  const retry = useMutation({
+/** Retry a failed (or missed) post: resumes each destination where it stopped. Shared with the composer footer. */
+export function useRetry(post: Post | null, flush: () => Promise<void>, onChange: (post: Post) => void) {
+  return useMutation({
     mutationFn: async () => {
-      await p.flush();
-      return api.retry(post.id);
+      await flush();
+      return api.retry(post!.id);
     },
     onSuccess: (r) => {
-      p.onChange(r);
+      onChange(r);
       if (r.targets.length) {
         const ok = r.targets.filter((t) => t.status === "published").length;
         return toast(
@@ -56,6 +54,13 @@ export function StatusBanner(p: Props) {
     },
     onError: (e) => toastError("Retry failed", e),
   });
+}
+
+export function StatusBanner(p: Props) {
+  const { post } = p;
+  const tz = p.health.timezone;
+
+  const retry = useRetry(post, p.flush, p.onChange);
   const duplicate = useMutation({
     mutationFn: () => api.duplicate(post.id),
     onSuccess: (r) => openPost(r.id),

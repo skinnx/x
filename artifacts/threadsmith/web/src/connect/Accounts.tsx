@@ -4,13 +4,14 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CircleAlert, ExternalLink, LoaderCircle, Plus, RefreshCw, Trash2, Users } from "lucide-react";
 import { useState } from "react";
 import { PLATFORMS } from "../../../shared/platforms.ts";
-import { PLATFORM_IDS, type Account, type Health, type PlatformId } from "../../../shared/types.ts";
+import { PLATFORM_IDS, type Account, type Health, type PlatformId, type Post } from "../../../shared/types.ts";
 import { api, ApiError } from "../api.ts";
 import { Card } from "../components/Card.tsx";
 import { Dialog } from "../components/Dialog.tsx";
 import { Popover } from "../components/Popover.tsx";
 import { toast, toastError } from "../components/Toasts.tsx";
 import { limitFor, PlatformIcon, useAccounts } from "../lib/platforms.tsx";
+import { navigate, openPost } from "../lib/router.ts";
 import { timeAgo } from "../lib/time.ts";
 import { cx } from "../lib/util.ts";
 
@@ -51,6 +52,16 @@ export function Accounts({ health }: { health: Health }) {
   );
 }
 
+/** Posts that haven't fully gone out and still list this account as a destination (why removing it is refused). */
+async function blockingPosts(accountId: string): Promise<Post[]> {
+  try {
+    const posts = await api.listPosts({ status: ["draft", "scheduled", "due", "failed", "publishing"], limit: 200 });
+    return posts.filter((p) => p.targets.some((t) => t.accountId === accountId && t.status !== "published"));
+  } catch {
+    return [];
+  }
+}
+
 function AccountRow({ account: a, health }: { account: Account; health: Health }) {
   const qc = useQueryClient();
   const [confirm, setConfirm] = useState(false);
@@ -72,7 +83,21 @@ function AccountRow({ account: a, health }: { account: Account; health: Health }
     },
     onError: (e) => {
       setConfirm(false);
-      toastError(`Couldn't remove ${a.label}`, e);
+      if (!(e instanceof ApiError && e.status === 409)) return toastError(`Couldn't remove ${a.label}`, e);
+      // Blocked by posts that still go to it: point at them so they can be changed (or finished) first.
+      void blockingPosts(a.id).then((posts) => {
+        const first = posts[0];
+        toast({
+          title: `Couldn't remove ${a.label}`,
+          description: e.message,
+          tone: "error",
+          duration: 15_000,
+          actions: [
+            ...(first ? [{ label: posts.length > 1 ? `Open the first of ${posts.length}` : "Open that post", primary: true, onClick: () => openPost(first.id) }] : []),
+            { label: "View queue", onClick: () => navigate("/queue") },
+          ],
+        });
+      });
     },
   });
   const info = PLATFORMS[a.platform];
@@ -226,13 +251,14 @@ function ConnectForm({ platform, health, onBack, onDone }: { platform: PlatformI
       <p className={cx("rounded-lg px-2.5 py-1.5 text-xs", info.costNote.startsWith("Free") ? "bg-subtle text-ink-2" : "bg-amber-50 text-amber-900 dark:bg-amber-950/50 dark:text-amber-200")}>
         {info.costNote}
       </p>
-      {info.credentials.map((f) => (
+      {info.credentials.map((f, i) => (
         <label key={f.key} className="block">
           <span className="text-xs font-medium text-ink-2">
             {f.label}
             {f.optional && <span className="font-normal text-ink-3"> (optional)</span>}
           </span>
           <input
+            autoFocus={i === 0}
             type={f.secret ? "password" : "text"}
             autoComplete={f.secret ? "new-password" : "off"}
             spellCheck={false}

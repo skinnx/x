@@ -1,6 +1,6 @@
 // Queue: the next 14 days grouped by day (posts + open slots), with due/failed actions, and the published list.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, CircleCheck, Copy, ExternalLink, Image, LoaderCircle, Plus, RotateCcw } from "lucide-react";
+import { Bell, CircleCheck, Copy, ExternalLink, Image, LoaderCircle, Plus, RotateCcw, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Health, Post, QueueDay, QueueItem } from "../../../shared/types.ts";
 import { api, liveSummary, remainingThread, type AppConfig } from "../api.ts";
@@ -178,6 +178,29 @@ function Preview({ post }: { post: Post }) {
   );
 }
 
+/** A scheduled post a destination would refuse at its time (edited past a limit, an image it can't take…). */
+function WouldFail({ post }: { post: Post }) {
+  const { data } = useQuery({
+    queryKey: ["preview", post.id, post.updatedAt],
+    queryFn: () => api.preview(post.id),
+    staleTime: 60_000,
+  });
+  const bad = data?.filter((t) => t.problem) ?? [];
+  if (!bad.length) return null;
+  const first = bad[0]!;
+  return (
+    <p role="note" className="mt-1.5 flex items-start gap-1.5 text-xs text-amber-900 dark:text-amber-300" title={bad.map((t) => `${t.label}: ${t.problem}`).join("\n")}>
+      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-1.5 py-px font-medium dark:bg-amber-950">
+        <TriangleAlert size={11} /> Would fail
+      </span>
+      <span className="line-clamp-2 min-w-0 break-words">
+        {first.label}: {first.problem}
+        {bad.length > 1 && ` (+${bad.length - 1} more)`}
+      </span>
+    </p>
+  );
+}
+
 function PostRow({ post, at, date, tz }: { post: Post; at: string; date: string; tz: string }) {
   const qc = useQueryClient();
   const retry = useMutation({
@@ -220,6 +243,7 @@ function PostRow({ post, at, date, tz }: { post: Post; at: string; date: string;
         </time>
         <div className="min-w-0 flex-1">
           <Preview post={post} />
+          {post.status === "scheduled" && <WouldFail post={post} />}
         </div>
         <StatusBadge status={post.status} />
       </button>

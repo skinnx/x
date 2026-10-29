@@ -2,12 +2,14 @@
 import { CircleAlert, CircleCheck, Clock, ExternalLink, LoaderCircle } from "lucide-react";
 import { PLATFORMS } from "../../../shared/platforms.ts";
 import type { Post, PostTarget } from "../../../shared/types.ts";
-import { PlatformIcon, useAccounts } from "../lib/platforms.tsx";
+import { PlatformIcon, removedLabel, useAccounts } from "../lib/platforms.tsx";
 import { cx } from "../lib/util.ts";
 
 function useLabels() {
   const { data: accounts } = useAccounts();
-  return (t: PostTarget) => accounts?.find((a) => a.id === t.accountId)?.label ?? PLATFORMS[t.platform].name;
+  // An account removed after the post went out is no longer listed; the post keeps pointing at it.
+  return (t: PostTarget) =>
+    accounts?.find((a) => a.id === t.accountId)?.label ?? (accounts ? removedLabel(t.platform) : PLATFORMS[t.platform].name);
 }
 
 function StateIcon({ t, publishing }: { t: PostTarget; publishing: boolean }) {
@@ -49,7 +51,7 @@ export function TargetList({ post, only, className }: { post: Post; only?: PostT
               ) : (
                 <span className="text-xs opacity-70">{publishing ? "Publishing…" : "Waiting"}</span>
               )}
-              {t.thread && <span className="text-xs opacity-60">own version</span>}
+              {t.thread && !t.snapshot && <span className="text-xs opacity-60">own version</span>}
             </div>
             {t.status === "failed" && t.error && <p className="mt-0.5 text-xs break-words opacity-80">{t.error}</p>}
           </div>
