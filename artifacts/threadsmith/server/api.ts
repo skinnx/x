@@ -5,10 +5,12 @@ import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { countFor, itemsFor, PLATFORMS, TELEGRAM_CAPTION_LIMIT, type ThreadMode } from "../shared/platforms.ts";
 import { threadToText, weightedLength } from "../shared/thread.ts";
-import { APP_EVENT_TYPES, PLATFORM_IDS, POST_STATUSES, type Health, type PlatformId, type Post, type PostSource, type PostStatus } from "../shared/types.ts";
+import { APP_EVENT_TYPES, APPROVAL_STATES, PLATFORM_IDS, POST_STATUSES, type Health, type PlatformId, type Post, type PostSource, type PostStatus } from "../shared/types.ts";
 import { connectAccount, deleteAccount, getAccount, listAccounts, recheckAccount, updateAccount } from "./accounts.ts";
 import { aiStatus } from "./ai/provider.ts";
 import { buildQueue, configError, getConfig, nextFreeSlots, parseInstant, parseWhen } from "./config.ts";
+import { requireOwner } from "./actor.ts";
+import { pauseState } from "./control.ts";
 import { db } from "./db.ts";
 import { env, VERSION, xConfigured } from "./env.ts";
 import { createRouter } from "./http.ts";
@@ -108,7 +110,7 @@ const PostTargetSchema = z
   })
   .openapi("PostTarget", { description: "One destination of a post: a connected account, with its own publish status and progress." });
 
-const PostSchema = z
+export const PostSchema = z
   .object({
     id: z.string(),
     title: z.string().nullable().openapi({ description: "Private label; never posted." }),
@@ -130,7 +132,20 @@ const PostSchema = z
         "Destinations (connected accounts). Empty = the original single-X mode: the X API keys from .env, or manual copy & post. " +
         "Each target publishes and resumes independently; `status` summarises them. Credentials are never returned.",
     }),
-    source: z.enum(["ui", "api", "mcp", "cli", "ai"]),
+    approval: z
+      .object({
+        state: z.enum(APPROVAL_STATES),
+        note: z.string().nullable().openapi({ description: "The person's feedback (changes requested, or why they rejected it)." }),
+        by: z.string().nullable().openapi({ description: "Who asked (while pending) or decided, e.g. agent:mcp, owner:telegram:@alice." }),
+        at: z.iso.datetime().nullable(),
+      })
+      .nullable()
+      .openapi({
+        description:
+          "The person's approval of agent-made content. null: none needed. pending: waits for the person; changes_requested: revise it (note says how), " +
+          "which asks again; approved: may go out; rejected: back to drafts. Pending and changes_requested posts are never published.",
+      }),
+    source: z.enum(["ui", "api", "mcp", "cli", "ai", "operator"]),
     createdAt: z.iso.datetime(),
     updatedAt: z.iso.datetime(),
   })
@@ -232,7 +247,7 @@ const ConfigSchema = z
     lateGraceMinutes: z.number().int().openapi({
       description: "A scheduled post found more than this many minutes late (the server was off) becomes due instead of posting unattended; 0 = always post.",
     }),
-    voiceCount: z.number().int().openapi({ description: "How many voice samples the AI copilot imitates." }),
+    voiceCount: z.number().int().openapi({ description: "How many voice samples agents get (get_settings voiceExamples)." }),
     configError: z.string().nullable().openapi({
       description: "Why the latest edit of threadsmith.config.json was rejected (the previous valid config stays in use until it is fixed); null when the file is fine.",
     }),
@@ -252,6 +267,7 @@ const HealthSchema = z
       }),
     }),
     ai: z.object({ configured: z.boolean(), provider: z.string().nullable(), model: z.string().nullable() }),
+    paused: z.boolean().openapi({ description: "true while publishing is paused (kill switch); nothing goes out." }),
     auth: z.object({ required: z.boolean() }),
   })
   .openapi("Health");
@@ -259,8 +275,9 @@ const HealthSchema = z
 const EventType = z.enum(APP_EVENT_TYPES);
 const AppEventSchema = z
   .union([
-    z.object({ type: EventType.exclude(["post.deleted"]), post: PostSchema }),
+    z.object({ type: EventType.exclude(["post.deleted", "publishing.paused", "publishing.resumed"]), post: PostSchema }),
     z.object({ type: z.literal("post.deleted"), id: z.string() }),
+    z.object({ type: z.enum(["publishing.paused", "publishing.resumed"]), by: z.string(), reason: z.string().nullable() }),
   ])
   .openapi("AppEvent", { description: "Emitted on every state change, from any surface (UI, API, MCP, scheduler)." });
 
@@ -508,7 +525,7 @@ export function previewPost(post: Post): { targets: PreviewTarget[] } {
 // ---------- routes ----------
 
 export const apiRoutes = createRouter();
-// Registered first so it wraps every route; mounted at /api, it also covers the /api/push and /api/ai routers.
+// Registered first so it wraps every route; mounted at /api, it also covers the other routers under /api.
 apiRoutes.use("*", idempotency);
 
 // Not used by any route body, but agents need these shapes.
@@ -1121,6 +1138,7 @@ apiRoutes.openapi(
       maxChars,
       x: { configured: xConfigured, mode: xConfigured ? "api" : "manual" },
       ai: aiStatus(),
+      paused: Boolean(pauseState()),
       auth: { required: Boolean(env.authToken) },
     };
     return c.json(health, 200);
@@ -1214,7 +1232,7 @@ apiRoutes.openapi(
     tags: ["Media"],
     operationId: "updateMedia",
     summary: "Set an image's alt text",
-    description: "Alt text is sent to X with the image. null clears it. POST /api/ai/alt-text can draft one.",
+    description: "Alt text is sent with the image where the platform supports it. null clears it.",
     request: { params: IdParam, body: body(z.object({ alt: z.string().max(1000).nullable() })) },
     responses: { 200: json(MediaSchema, "The updated image."), 400: E400, 404: E404 },
   }),

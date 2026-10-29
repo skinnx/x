@@ -1,9 +1,9 @@
 {
   "name": "threadsmith",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "The self-hosted publishing layer for AI agents: posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord. Single process, SQLite.",
+  "description": "Self-hosted social publishing run by AI agents: they draft, schedule and publish on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord; you approve from Telegram or Discord. Single process, SQLite.",
   "bin": {
     "threadsmith": "./cli/threadsmith.mjs"
   },

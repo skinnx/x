@@ -5,7 +5,8 @@
 import type { Post } from "../shared/types.ts";
 import { formatLocal, getConfig } from "./config.ts";
 import { xConfigured } from "./env.ts";
-import { claimNextDuePost, claimPost, ConflictError, markDue, markFailed, markPublished, requirePost } from "./repo.ts";
+import { assertNotPaused, pauseState } from "./control.ts";
+import { claimNextDuePost, claimPost, ConflictError, holdForApproval, markDue, markFailed, markPublished, requirePost } from "./repo.ts";
 import { publishTargets } from "./publisher.ts";
 import { publishToX } from "./x.ts";
 
@@ -69,6 +70,7 @@ async function handleDue(post: Post): Promise<void> {
  * instead of `publishing` (which recovery would mark failed).
  */
 function claimNext(): Post[] {
+  if (pauseState()) return [];
   const post = claimNextDuePost();
   return post ? [post] : [];
 }
@@ -111,10 +113,16 @@ export function startScheduler(): () => Promise<void> {
   };
 }
 
-/** "Publish now" from the UI/API/MCP (drafts, scheduled, due and failed posts). Resolves with the post as published or failed. */
+/**
+ * "Publish now" from the UI/API/MCP (drafts, scheduled, due and failed posts). Resolves with the post as published or
+ * failed, or, when an agent asks and the person must approve first, as scheduled for now with approval pending.
+ */
 export async function publishNow(id: string): Promise<Post> {
   const post = requirePost(id);
+  assertNotPaused();
   if (!post.targets.length && !xConfigured) throw new ConflictError(manualModeMessage(id));
+  const held = holdForApproval(id);
+  if (held) return held;
   return publish(claimPost(id));
 }
 
@@ -128,5 +136,8 @@ export async function retryPost(id: string): Promise<Post> {
     throw new ConflictError(`Only failed or due posts can be retried; this one is ${post.status}.`);
   }
   if (!post.targets.length && !xConfigured) return markDue(id, liveNote(post));
+  assertNotPaused();
+  const held = holdForApproval(id);
+  if (held) return held;
   return publish(claimPost(id));
 }

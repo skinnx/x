@@ -1,54 +1,72 @@
 # Threadsmith
 
-**Công cụ đăng bài cho AI agent.** Agent của bạn (Claude Code, Claude Desktop, Cursor, một script chạy theo lịch…) soạn, kiểm tra, xếp lịch và đăng bài lên **X, Bluesky, Mastodon, Threads, LinkedIn, Telegram, Discord**. Threadsmith lo những phần agent không tự làm được hoặc dễ làm sai: giữ thông tin đăng nhập, đếm ký tự đúng luật từng nền tảng, đăng thread không trùng, đăng tiếp khi lỗi giữa chừng, nhắc giờ và lấy số liệu tương tác. Bạn giữ quyền duyệt.
+**Agent làm việc đăng bài mạng xã hội, bạn chỉ quyết định.** Agent của bạn (Claude Code, Claude Duet, Cursor, một routine chạy theo lịch, hoặc operator có sẵn trong Threadsmith) tự soạn, kiểm tra, xếp lịch và đăng bài lên **X, Bluesky, Mastodon, Threads, LinkedIn, Telegram, Discord**, đọc số liệu và viết tiếp. Bạn không làm những việc đó. Mỗi bài agent muốn đăng được gửi tới **Telegram hoặc Discord** của bạn kèm bản xem trước chính xác từng kênh. Bạn bấm **Duyệt**, **Yêu cầu sửa** (trả lời bằng một câu, agent tự sửa rồi hỏi lại) hoặc **Bỏ**. Có việc bất thường thì gõ `/pause` để dừng mọi thứ.
+
+Threadsmith không tự làm "bộ não" để cạnh tranh với các agent đó. Nó là **đôi tay và hàng rào** cho bất kỳ agent nào: giữ thông tin đăng nhập, đếm ký tự đúng luật từng nền tảng, đăng thread không trùng và đăng tiếp khi lỗi giữa chừng, hẹn giờ, lấy số liệu, và **chốt duyệt do server ép buộc** mà agent không vượt qua được.
 
 Tự host trong **một tiến trình** với **một file SQLite** (hoặc một container Docker), không cần tài khoản người dùng.
 
 ```bash
-# 1. chạy server (xem "Chạy nhanh" hoặc "Chạy bằng Docker")
+# 1. chạy server, điền TELEGRAM_APPROVAL_BOT_TOKEN / TELEGRAM_APPROVAL_CHAT_ID trong .env (xem "Chạy nhanh")
 # 2. nối agent của bạn
 claude mcp add --transport http threadsmith http://127.0.0.1:3000/mcp
-# 3. nói với agent: "viết thread về X, gửi tôi xem, rồi xếp vào khung giờ trống kế tiếp trên Bluesky và X"
+# 3. giao việc: "mỗi ngày làm việc đăng một thread về sản phẩm lên Bluesky và X, dựa trên số liệu tuần trước"
+#    → bài nháp tới Telegram của bạn, bạn bấm Duyệt hoặc trả lời "ngắn lại"
 ```
 
-> **Trạng thái.** Bản 0.2. Phần đăng lên cả 7 nền tảng đã được kiểm tra với máy chủ giả lập mô phỏng theo tài liệu API chính thức (đăng thread nối tiếp, upload ảnh, lỗi giữa chừng rồi đăng tiếp phần còn lại). Phần này **chưa** được chạy với tài khoản thật trên bất kỳ nền tảng nào vì lúc xây dựng chưa có thông tin đăng nhập. Xem thêm [Giới hạn](#giới-hạn-đã-biết).
+> **Trạng thái.** Bản 0.3. Phần đăng lên cả 7 nền tảng, kênh duyệt Telegram/Discord và operator đã được kiểm tra với máy chủ giả lập mô phỏng theo tài liệu API chính thức. **Chưa** chạy với tài khoản thật trên nền tảng nào, chưa gọi Claude thật. Xem [Giới hạn](#giới-hạn-đã-biết).
 
 ---
 
-## Vì sao một agent nên đăng bài qua Threadsmith
+## Ai làm gì
+
+| | Agent | Bạn |
+|---|---|---|
+| Soạn bài, chọn kênh, chọn giờ | ✔ | |
+| Kiểm tra độ dài, ảnh, lỗi từng kênh | ✔ (Threadsmith chặn bài sai trước khi đăng) | |
+| Đọc số liệu, rút kinh nghiệm, viết tiếp thread đang hiệu quả | ✔ | |
+| Quyết định bài nào được đăng | | ✔ Duyệt / Yêu cầu sửa / Bỏ, trên Telegram, Discord hoặc web |
+| Dừng khẩn cấp | ✔ (agent được phép kéo phanh) | ✔ (chỉ bạn được nhả phanh) |
+| Kết nối tài khoản (cần mật khẩu, token) | | ✔ Agent không bao giờ thấy thông tin đăng nhập |
+| Đặt luật chơi | | ✔ `threadsmith.config.json`, `operator.md` |
+
+Threadsmith chỉ làm phiền bạn khi cần quyết định hoặc có sự cố: yêu cầu duyệt, bài đăng lỗi, bài cần đăng tay, token hết hạn, khi bị dừng. Mọi thứ khác gom vào **bản tin mỗi sáng** (mặc định 08:30): việc đang chờ bạn, bài sắp lên, kết quả 24 giờ qua kèm số liệu, lỗi, và agent đã làm gì.
+
+## Vì sao agent nên đăng bài qua Threadsmith
 
 Agent có thể tự gọi API từng nền tảng, nhưng sẽ phải tự xử lý những thứ dễ sai và khó sửa khi đã lỡ đăng:
 
 | Việc | Agent tự làm | Qua Threadsmith |
 |---|---|---|
+| Xin phép người dùng | Hỏi trong khung chat, người dùng phải ngồi chờ, hoặc agent tự đăng luôn | Bài nằm ở trạng thái chờ duyệt cho tới khi bạn bấm duyệt; server từ chối mọi cách đăng khác |
 | Giữ token của 7 nền tảng | Token nằm trong prompt, file cấu hình hoặc biến môi trường của agent | Mã hóa trong server, agent không bao giờ thấy |
 | Đếm ký tự | Dễ sai: X tính "ệ" là 2, mỗi URL là 23; Bluesky đếm grapheme; Threads tính emoji theo byte | `count_characters` / `preview_post` theo đúng luật từng nền tảng, chặn trước khi đăng |
 | Thread lỗi giữa chừng | Đăng lại thì trùng, bỏ qua thì đứt thread | Đăng tiếp từ chỗ dừng, không trùng; bài đã lên bị khóa |
 | Gọi lại khi mất kết nối | Có thể tạo bài hai lần | `Idempotency-Key` trên mọi POST |
-| Hẹn giờ | Agent phải tự chạy liên tục | Hàng đợi theo khung giờ, server tự đăng, nhắc giờ khi cần người |
+| Hẹn giờ | Agent phải tự chạy liên tục | Hàng đợi theo khung giờ, server tự đăng |
 | Số liệu tương tác | Gọi API riêng từng nơi | `list_metrics` / `get_metrics` gom về một dạng |
 | Nối thêm bài (plug, follow-up) | Phải nhớ id và chuỗi reply của từng nền tảng | `append_to_post` |
+| Ai đã làm gì | Không có | Nhật ký: agent nào tạo, ai duyệt, lúc nào, qua đâu |
 
-Nguyên tắc thiết kế: **Threadsmith cung cấp dữ liệu và thao tác an toàn, còn phán đoán để agent làm.** Không có dashboard thống kê, gợi ý giờ đăng hay luật auto-plug, vì agent đọc số liệu và quyết định tốt hơn. Xem [mục riêng](#nguyên-tắc-dữ-liệu-và-thao-tác-cho-agent-quyết-định-để-ai).
+Nguyên tắc thiết kế: **Threadsmith cung cấp dữ liệu, thao tác an toàn và quyền quyết định cho bạn; phán đoán để agent làm.** Không có dashboard thống kê, gợi ý giờ đăng, luật auto-plug hay trợ lý viết bài trong giao diện, vì agent đọc số liệu và viết tốt hơn. Xem [mục riêng](#nguyên-tắc-dữ-liệu-và-thao-tác-cho-agent-quyết-định-để-ai).
 
-**Agent dùng qua đâu:** MCP (19 tool, Streamable HTTP), REST với OpenAPI 3.1 (`/docs`), CLI `--json` không phụ thuộc thư viện ngoài, `/llms.txt`, Agent Skill cho Claude, webhook có chữ ký HMAC, luồng sự kiện SSE.
-
-**Người dùng làm gì:** kết nối tài khoản (agent không bao giờ nhận thông tin đăng nhập), duyệt bài agent đề xuất, và dùng giao diện web khi muốn tự viết. Giao diện có đủ trình soạn, hàng đợi và trạng thái từng kênh.
+**Agent dùng qua đâu:** MCP (24 tool, Streamable HTTP), REST với OpenAPI 3.1 (`/docs`), CLI `--json` không phụ thuộc thư viện ngoài, `/llms.txt`, Agent Skill cho Claude, webhook có chữ ký HMAC, luồng sự kiện SSE.
 
 ### So với Typefully và Postiz
 
-Hai công cụ này làm cho **người** soạn bài, rồi thêm API và MCP. Threadsmith làm cho **agent** đăng bài, có giao diện để người duyệt.
+Hai công cụ này làm cho **người** soạn và lên lịch bài, rồi thêm API và MCP. Threadsmith làm cho **agent** làm việc đó, còn người chỉ duyệt từ điện thoại.
 
 | | Threadsmith | Typefully | Postiz |
 |---|---|---|---|
-| Đối tượng chính | AI agent, người duyệt | Người viết | Người và team social |
-| Kênh cho agent | MCP 19 tool, REST/OpenAPI, CLI, llms.txt, webhook, SSE, Skill | API + MCP | REST, MCP (~9 tool), CLI |
+| Ai làm việc | Agent; người duyệt qua Telegram/Discord/web | Người viết | Người và team social |
+| Duyệt bài do agent tạo | Bắt buộc, server ép buộc, có token riêng cho agent | không công bố | không công bố |
+| Kênh cho agent | MCP 24 tool, REST/OpenAPI, CLI, llms.txt, webhook, SSE, Skill | API + MCP | REST, MCP (~9 tool), CLI |
 | Đếm ký tự từng nền tảng, chặn trước khi đăng | Có | không công bố | không công bố |
 | Đăng tiếp không trùng khi thread lỗi | Có, theo từng kênh | không công bố | không công bố |
 | Tự host | 1 tiến trình + SQLite / Docker | Không (SaaS) | Postgres + Redis + Temporal |
 | Nền tảng | 7 | X, LinkedIn, Threads, Bluesky, Mastodon… | ~30 |
 | Thống kê, làm việc nhóm | Số liệu cho agent; không có team | Có | Có |
-| Giá | Miễn phí (X API tính phí theo lượt) | Free 10 bài/tháng; $99/năm; $18–20/tháng | Tự host miễn phí; host từ $29/tháng |
+| Giá | Miễn phí (X API tính phí theo lượt; operator tốn phí Claude API) | Free 10 bài/tháng; $99/năm; $18–20/tháng | Tự host miễn phí; host từ $29/tháng |
 
 Nếu bạn cần Instagram, Facebook, TikTok, YouTube, làm việc nhóm hoặc dashboard cho người xem, Postiz hoặc Typefully phù hợp hơn. Số liệu về hai công cụ này lấy từ các trang so sánh tháng 7–10/2026; hãy kiểm tra lại trên trang chính thức của họ.
 
@@ -59,7 +77,7 @@ Yêu cầu Node.js **≥ 22.13** (vì dùng `node:sqlite` có sẵn trong Node, 
 ```bash
 cd artifacts/threadsmith
 pnpm install
-cp .env.example .env                                   # có thể để trống: app chạy ở chế độ thủ công
+cp .env.example .env                                   # điền bot duyệt Telegram/Discord nếu muốn duyệt trên điện thoại
 cp threadsmith.config.example.json threadsmith.config.json
 pnpm build                                             # build giao diện web
 pnpm start                                             # → http://127.0.0.1:3000
@@ -68,6 +86,76 @@ pnpm start                                             # → http://127.0.0.1:30
 Chế độ phát triển (server tự reload, Vite HMR): `pnpm dev`, sau đó mở http://localhost:5173. Proxy của Vite đọc cùng `PORT` trong `.env` với server.
 
 Nếu không có `threadsmith.config.json`, app tự tạo một file mặc định theo múi giờ của máy.
+
+---
+
+## Bạn chỉ quyết định: duyệt bài, dừng khẩn cấp, nhật ký
+
+### Chốt duyệt
+
+Mặc định (`"approval": { "require": "agents" }`), **mọi bài do agent xếp lịch hoặc đăng** (MCP, REST, CLI, operator) đều chờ bạn duyệt. Bài bạn tự tạo trên giao diện web không cần duyệt.
+
+```
+agent xếp lịch ──► chờ duyệt ──► Duyệt ──► đăng đúng giờ (đã qua giờ thì đăng ngay)
+                       │
+                       ├──► Yêu cầu sửa "ngắn lại" ──► agent sửa ──► chờ duyệt (thẻ mới, thẻ cũ được đánh dấu "đã thay")
+                       └──► Bỏ ──► về nháp
+```
+
+- Bài **chờ duyệt** hoặc **bị yêu cầu sửa** không bao giờ được đăng: vòng lập lịch bỏ qua chúng, còn "đăng ngay" từ agent chỉ tạo yêu cầu duyệt.
+- Bài đã duyệt mà agent sửa nội dung hoặc đổi kênh đích thì phải duyệt lại. Agent chỉ đổi giờ thì không cần.
+- Agent nối thêm bài vào thread đã đăng (`append_to_post`) cũng phải duyệt.
+- `approval.except` liệt kê nền tảng agent được đăng thẳng, ví dụ `["telegram"]` cho kênh log riêng. `"require": "never"` tắt chốt duyệt.
+
+**Agent không tự duyệt được.** Chỉ chủ nhân (giao diện web, chat Telegram/Discord đã cấu hình, hoặc `AUTH_TOKEN`) được duyệt, nhả phanh, kết nối hay xóa tài khoản; agent gọi các thao tác đó nhận 403.
+- Không đặt token (chạy trên máy mình): mọi request không đến từ giao diện web đều tính là agent. Như vậy đủ với agent tuân thủ luật, nhưng một agent cố tình có thể giả làm giao diện web.
+- Muốn chốt chặt thật: đặt `AUTH_TOKEN` (của bạn) **và** `AGENT_TOKEN` (đưa cho agent). Request bằng `AGENT_TOKEN` luôn là agent, giả header nào cũng vậy.
+
+### Duyệt qua Telegram
+
+1. Tạo bot mới với [@BotFather](https://t.me/BotFather) (dùng bot riêng cho việc duyệt, không dùng chung bot đang đăng bài), nhắn `/start` cho bot.
+2. Lấy chat id của bạn (ví dụ nhắn [@userinfobot](https://t.me/userinfobot)).
+3. Điền vào `.env` rồi khởi động lại:
+   ```
+   TELEGRAM_APPROVAL_BOT_TOKEN=123456:ABC...
+   TELEGRAM_APPROVAL_CHAT_ID=987654321
+   TELEGRAM_APPROVER_IDS=987654321      # tùy chọn: chỉ những người này được quyết định
+   ```
+4. Trang **Inbox** trên giao diện có nút "Send test message".
+
+Threadsmith dùng long polling nên **không cần URL công khai**, chạy được trên laptop. Mỗi yêu cầu duyệt là một tin nhắn có nút ✅ Duyệt · ✏️ Yêu cầu sửa · ❌ Bỏ. Muốn sửa thì bấm ✏️ hoặc trả lời thẳng vào tin nhắn: câu bạn gõ được chuyển nguyên văn cho agent. Lệnh: `/pending`, `/status` (bản tin ngay), `/pause [lý do]`, `/resume`, `/run [việc]` (chạy operator).
+
+### Duyệt qua Discord
+
+Tạo bot ở discord.com/developers (Bot → Reset Token), mời vào server với quyền View Channel và Send Messages ở một kênh, rồi điền `DISCORD_APPROVAL_BOT_TOKEN`, `DISCORD_APPROVAL_CHANNEL_ID`, tùy chọn `DISCORD_APPROVER_IDS`. Threadsmith nối Gateway bằng WebSocket (không cần URL công khai, không cần intent đặc quyền). Nút Duyệt/Bỏ hoạt động như trên Telegram; "Yêu cầu sửa" mở một hộp nhập. Discord không có lệnh chữ (cần quyền đọc nội dung tin nhắn), nên tạm dừng và chạy operator thực hiện qua Telegram, giao diện web hoặc CLI.
+
+Có thể bật cả hai. Quyết định ở một nơi thì thẻ duyệt ở mọi nơi cùng được cập nhật.
+
+### Dừng khẩn cấp, nhật ký, bản tin
+
+- **Dừng**: `/pause`, nút trên giao diện, `threadsmith pause "lý do"`, `POST /api/control/pause`, hoặc agent tự gọi `pause_publishing` khi thấy bất thường. Khi dừng, không bài nào được đăng: bài hẹn giờ chờ lại, "đăng ngay" bị từ chối. Chỉ bạn nhả phanh. Bài đến giờ trong lúc dừng sẽ được đăng khi tiếp tục, hoặc chuyển sang `due` nếu trễ quá `lateGraceMinutes`.
+- **Nhật ký** (`GET /api/audit`, `threadsmith audit`, trang Inbox): mỗi thay đổi ghi lại ai làm (`agent:mcp`, `agent:operator`, `owner:telegram:@ban`, `system:scheduler`…), làm gì, lúc nào.
+- **Bản tin** gửi mỗi ngày lúc `digest.time` (`null` để tắt). Trước khi gửi, server làm mới số liệu ở các nền tảng đọc miễn phí; X không được đọc vì tính phí.
+
+## Operator có sẵn (tùy chọn)
+
+Nếu bạn chưa có agent chạy theo lịch, Threadsmith có sẵn một **operator**: Claude chạy không người trông, dùng đúng các tool MCP ở trên, theo bản giao việc của bạn trong `operator.md`. Đây chỉ là phần nối, không phải bộ não riêng. Mọi bài operator tạo vẫn phải qua chốt duyệt.
+
+```bash
+cp operator.example.md operator.md      # viết mục tiêu, độc giả, giọng văn, chủ đề, nhịp đăng, điều cấm
+# .env: ANTHROPIC_API_KEY=...  (model mặc định claude-opus-5-5, đổi bằng AI_MODEL)
+# threadsmith.config.json:
+"operator": { "enabled": true, "days": "mon-fri", "runAt": ["08:00"], "maxToolCalls": 40, "maxRunsPerDay": 12 }
+```
+
+Operator chạy:
+- vào các giờ trong `runAt`;
+- khi bạn bảo (`/run viết thread về bản cập nhật hôm nay` trên Telegram, nút Run now, `threadsmith operator run`);
+- và **tự động khi bạn yêu cầu sửa một bài của nó**: đọc góp ý, sửa bài, gửi lại cho bạn duyệt.
+
+Mỗi lần chạy kết thúc bằng một bản tóm tắt gửi về chat của bạn. Chi phí là tiền Claude API cho mỗi lần chạy. `maxToolCalls` và `maxRunsPerDay` giới hạn mức tiêu.
+
+Đã có agent riêng (Claude Code routine, Claude Duet, n8n…) thì để operator tắt; agent đó nối qua MCP/REST và cũng đi qua cùng chốt duyệt.
 
 ---
 
@@ -82,11 +170,10 @@ Nếu không có `threadsmith.config.json`, app tự tạo một file mặc đ�
 | **CLI** | `node cli/threadsmith.mjs …` (đầu ra `--json`) | Agent dạng shell như Claude Code, cron, script |
 | **Agent Skill** | `skill/threadsmith/SKILL.md` | Dạy Claude quy trình soạn → kiểm tra → hẹn giờ |
 | **llms.txt** | `/llms.txt`, `/llms-full.txt` | Agent tự đọc hướng dẫn dùng |
-| **Webhooks** (ký HMAC) | `POST /api/webhooks` | Nhận sự kiện `post.due`, `post.published`, `post.failed`… |
+| **Webhooks** (ký HMAC) | `POST /api/webhooks` | Nhận sự kiện `post.changes_requested` (để agent sửa bài), `post.approved`, `post.published`, `post.failed`… |
 | **SSE** | `GET /api/events` | Theo dõi trạng thái theo thời gian thực |
-| **Copilot** | `/api/ai/*` và trong giao diện | Chuyển ghi chú thành thread, viết câu mở đầu, rút gọn cho vừa giới hạn, viết lại, alt text |
 
-MCP không có tool copilot: agent kết nối qua MCP tự viết nội dung (copilot chỉ có qua REST `/api/ai/*`, CLI `threadsmith ai …` và giao diện).
+Agent tự viết nội dung. Threadsmith không có trợ lý viết bài riêng (bản trước có copilot trong giao diện; đã bỏ vì agent làm tốt hơn).
 
 Hai tiện ích cho agent:
 - **`Idempotency-Key`**: gửi header này trên **mọi request POST dưới `/api`** (tạo bài, hẹn giờ, đăng, upload ảnh, tạo webhook…). Gọi lại cùng đường dẫn với cùng key trong vòng 24 giờ sẽ nhận lại đúng status và body JSON của lần thành công đầu tiên, kèm header `Idempotent-Replayed: true`, thay vì làm lại lần nữa. Phản hồi lỗi (4xx/5xx) không được lưu, nên gửi lại sau lỗi đó là thử lại thật. Riêng đăng bài và Retry trả về 200 kể cả khi X từ chối (bài ở trạng thái `failed`); câu trả lời này cũng được lưu, nên muốn thử lại thì dùng key mới hoặc `threadsmith retry`.
@@ -130,12 +217,6 @@ node cli/threadsmith.mjs help
 
 CLI hiển thị giờ theo múi giờ trong config của server (lấy từ `GET /api/config`, có ghi tên múi giờ), không theo múi giờ của máy chạy CLI. Nhờ vậy giờ bạn thấy có thể gõ lại nguyên văn. `publish` và `retry` thoát với mã 1 nếu X từ chối bài, nên script có thể dựa vào exit code.
 
-### Copilot
-
-- **Claude**: đặt `ANTHROPIC_API_KEY`. Model mặc định là `claude-opus-5-5` (đổi bằng `AI_MODEL`).
-
-Copilot đếm lại kết quả bằng đúng quy tắc đếm của X và sửa thêm một vòng nếu còn vượt giới hạn.
-
 ### Webhooks
 
 Mỗi lần gửi là một request `POST` JSON `{ id, type, createdAt, data }` kèm header `X-Threadsmith-Signature: sha256=<HMAC-SHA256(raw body, secret)>`. `secret` chỉ hiện **một lần** khi tạo webhook. Cách kiểm tra chữ ký:
@@ -155,7 +236,7 @@ Threadsmith **không** xây những tính năng mà một agent AI làm được
 - **Số liệu tương tác** của từng bài trên từng kênh: `GET /api/metrics`, `GET /api/posts/{id}/metrics?refresh=true`, MCP `list_metrics` / `get_metrics`, CLI `threadsmith metrics`. Bluesky, Mastodon và Threads miễn phí. Threads cần thêm quyền `threads_manage_insights`. Riêng X tính phí đọc (khoảng $0,005/bài), nên chỉ đọc khi được cho phép (`paid=true`). Telegram, Discord và LinkedIn không có API số liệu phù hợp.
 - **Nối thêm bài vào thread đã đăng**: `POST /api/posts/{id}/append`, MCP `append_to_post`, CLI `threadsmith append`. Bài mới trả lời bài cuối đang có trên mọi kênh dạng thread; LinkedIn (dạng một bài) giữ nguyên. Đây là nền cho auto-plug và bài nối tiếp.
 
-Agent (Claude Code, một routine chạy theo lịch, hoặc cron gọi CLI) đọc số liệu, tự rút ra bài nào hiệu quả và giờ nào tốt, quyết định khi nào nối thêm bài hay viết lại bài cũ, và **hỏi bạn trước khi đăng**. Công thức mẫu nằm trong `skill/threadsmith/SKILL.md` và `/llms-full.txt`.
+Agent (Claude Code, một routine chạy theo lịch, operator có sẵn, hoặc cron gọi CLI) đọc số liệu, tự rút ra bài nào hiệu quả và giờ nào tốt, quyết định khi nào nối thêm bài hay viết lại bài cũ, rồi xếp bài vào hàng đợi; **chốt duyệt** giữ quyết định cuối cho bạn. Công thức mẫu nằm trong `skill/threadsmith/SKILL.md` và `/llms-full.txt`.
 
 ## Tính năng chi tiết
 
@@ -178,9 +259,9 @@ Agent (Claude Code, một routine chạy theo lịch, hoặc cron gọi CLI) đ�
 - **Bài bị lỡ giờ khi app tắt** (laptop ngủ, container dừng…): khi bật lại, bài nào đã trễ quá `lateGraceMinutes` (mặc định 60 phút) thì **không tự đăng muộn**. Bài chuyển sang `due`, ghi lý do vào trường lỗi, hiện ở đầu hàng đợi và gửi thông báo "Time to post". Bạn tự quyết: Đăng ngay (ở chế độ API, Retry hoặc Publish now sẽ đăng bài này), sao chép để đăng tay, hoặc hẹn giờ khác. Đặt `"lateGraceMinutes": 0` nếu muốn luôn đăng, trễ bao lâu cũng được.
 
 **Đa nền tảng**
-- Kết nối tài khoản ở trang **Connect** (hoặc `POST /api/accounts`). Thông tin đăng nhập được kiểm tra với nền tảng ngay khi kết nối, rồi lưu **mã hóa AES-256-GCM** trong SQLite, không bao giờ trả ra qua API. Khóa mã hóa lấy từ `SECRET_KEY` hoặc tự sinh vào `data/secret.key`: **sao lưu file này cùng database**.
+- Kết nối tài khoản ở trang **Agents** (Agents & accounts) (hoặc `POST /api/accounts`). Thông tin đăng nhập được kiểm tra với nền tảng ngay khi kết nối, rồi lưu **mã hóa AES-256-GCM** trong SQLite, không bao giờ trả ra qua API. Khóa mã hóa lấy từ `SECRET_KEY` hoặc tự sinh vào `data/secret.key`: **sao lưu file này cùng database**.
 - Mỗi bài chọn một hoặc nhiều kênh đích. Không chọn kênh nào thì bài chạy đúng như chế độ chỉ-X cũ (khóa X trong `.env`, hoặc sao chép thủ công).
-- Mỗi thẻ hiện bộ đếm theo từng kênh đã chọn. Có thể "Customize" để tạo phiên bản riêng cho một kênh, hoặc nhờ copilot **Adapt** viết lại cho hợp kênh đó.
+- Mỗi thẻ hiện bộ đếm theo từng kênh đã chọn. Có thể "Customize" để tạo phiên bản riêng cho một kênh (agent thường tự viết phiên bản này).
 - Trước khi xếp hàng, server kiểm tra từng kênh (độ dài, số ảnh, định dạng và dung lượng ảnh) và chặn ngay nếu kênh nào sẽ từ chối.
 - Mỗi kênh đăng độc lập: kênh lỗi không chặn kênh khác, Retry chỉ đăng lại phần chưa lên.
 
@@ -194,7 +275,7 @@ Agent (Claude Code, một routine chạy theo lịch, hoặc cron gọi CLI) đ�
 | Telegram | 4096 (chú thích ảnh 1024) | tin nhắn trả lời nối tiếp | 10 | Miễn phí, bot là admin kênh |
 | Discord | 2000 | tin nhắn liên tiếp | 10 | Miễn phí, webhook |
 
-Token Threads và LinkedIn hết hạn sau khoảng 60 ngày. Server tự kiểm tra lại mọi tài khoản mỗi ngày: token hết hạn hiện lỗi đỏ ở trang Connect và gửi thông báo trình duyệt **trước** khi một bài hẹn giờ thất bại vì nó. Dán token mới rồi bấm Check.
+Token Threads và LinkedIn hết hạn sau khoảng 60 ngày. Server tự kiểm tra lại mọi tài khoản mỗi ngày: token hết hạn hiện lỗi đỏ ở trang Agents, báo vào chat duyệt và gửi thông báo trình duyệt **trước** khi một bài hẹn giờ thất bại vì nó. Dán token mới rồi bấm Check.
 
 **Kết nối AI**: xem [mục riêng bên dưới](#nối-agent-của-bạn).
 
@@ -212,7 +293,10 @@ Token Threads và LinkedIn hết hạn sau khoảng 60 ngày. Server tự kiểm
   ],
   "schedulerIntervalSeconds": 15,
   "lateGraceMinutes": 60,
-  "voice": ["Dán 3–10 bài hay nhất của bạn; copilot sẽ viết theo giọng này."]
+  "voice": ["Dán 3–10 bài hay nhất của bạn; agent và operator sẽ viết theo giọng này."],
+  "approval": { "require": "agents", "except": [] },
+  "digest": { "time": "08:30" },
+  "operator": { "enabled": false, "days": "daily", "runAt": ["08:00"], "briefPath": "operator.md", "maxToolCalls": 40, "maxRunsPerDay": 12 }
 }
 ```
 
@@ -225,7 +309,11 @@ Token Threads và LinkedIn hết hạn sau khoảng 60 ngày. Server tự kiểm
 | `slots[].from/to/everyMinutes` | Một dải giờ, ví dụ thứ Hai tới thứ Sáu từ 9:00 đến 16:00, mỗi 60 phút (tối thiểu 5). `from` không được muộn hơn `to`; dải giờ qua nửa đêm thì tách thành hai quy tắc. |
 | `schedulerIntervalSeconds` | Bao lâu vòng lập lịch kiểm tra bài đến giờ một lần (mặc định 15, tối thiểu 5). |
 | `lateGraceMinutes` | Bài trễ quá số phút này (vì app tắt đúng lúc đến giờ) sẽ chuyển sang `due` thay vì tự đăng muộn. Mặc định 60; `0` = luôn đăng. |
-| `voice` | Vài bài mẫu để copilot bắt chước giọng văn của bạn. |
+| `voice` | Vài bài mẫu để agent (qua `get_settings`) và operator bắt chước giọng văn của bạn. |
+| `approval.require` | `agents` (mặc định): bài do agent xếp lịch/đăng phải chờ bạn duyệt. `never`: agent đăng thẳng. |
+| `approval.except` | Nền tảng agent được đăng thẳng không cần duyệt, ví dụ `["telegram"]`. |
+| `digest.time` | Giờ gửi bản tin mỗi ngày tới chat duyệt (`HH:MM`, theo `timezone`); `null` = tắt. |
+| `operator.*` | Bật operator, ngày/giờ chạy, file giao việc, giới hạn số lần gọi tool mỗi lần chạy và số lần chạy mỗi ngày. |
 
 Một khung giờ coi là "trống" khi chưa có bài nào được hẹn đúng phút đó. `GET /api/config` trả cấu hình đang dùng, kèm `configError` nếu lần sửa gần nhất bị từ chối; `threadsmith health` cũng in lỗi này.
 
@@ -404,7 +492,7 @@ Dữ liệu của app nằm trong `data/`:
 - `threadsmith.db`: SQLite ở chế độ WAL, chứa bài, lịch đăng, webhook, đăng ký Web Push và khóa VAPID.
 - `media/`: ảnh đã upload.
 
-Hai file nằm **ngoài** `data/` cũng cần sao lưu: `threadsmith.config.json` (khung giờ, giọng văn mẫu) và `.env` (token, khóa X, khóa AI).
+Ba file nằm **ngoài** `data/` cũng cần sao lưu: `threadsmith.config.json` (khung giờ, giọng văn mẫu, luật duyệt), `operator.md` (bản giao việc) và `.env` (token, khóa X, bot duyệt, khóa Claude).
 
 Để sao lưu:
 - Chạy `sqlite3 data/threadsmith.db ".backup backup.db"` trong lúc app đang chạy, rồi chép thư mục `media/`; hoặc
@@ -418,9 +506,16 @@ Thư mục `data/` **di chuyển được**: app chỉ dùng tên file ảnh lư
 
 ```
 server/
-  index.ts       boot: phục hồi bài đang dở, webhooks, push, vòng lập lịch, HTTP
+  index.ts       boot: phục hồi bài đang dở, nhật ký, webhooks, push, chat duyệt, vòng lập lịch, operator, HTTP
+  actor.ts       ai đang hành động trong request/job (chủ nhân, agent, hệ thống)
+  auth.ts        AUTH_TOKEN (chủ nhân) / AGENT_TOKEN (agent), chống DNS rebinding và CSRF
+  control.ts     dừng khẩn cấp
+  audit.ts       nhật ký ai làm gì
+  control-api.ts REST cho phía người: duyệt, dừng, nhật ký, bản tin, kiểm tra chat
+  notify/        chat duyệt: hub (thẻ duyệt, cảnh báo, bản tin), telegram.ts, discord.ts
+  operator.ts    operator: Claude chạy theo lịch với các tool MCP, theo operator.md
   app.ts         ghép mọi thứ vào một cổng: /api, /mcp, /openapi.json, /docs, /llms.txt, /media, giao diện web
-  repo.ts        lớp nghiệp vụ; mọi thay đổi trạng thái đi qua đây và phát sự kiện
+  repo.ts        lớp nghiệp vụ và chốt duyệt; mọi thay đổi trạng thái đi qua đây và phát sự kiện
   config.ts      khung giờ, "khung trống kế tiếp", hàng đợi theo ngày (tự nạp lại config)
   db.ts          node:sqlite + migration
   api.ts         REST (OpenAPI), SSE, upload media
@@ -428,7 +523,7 @@ server/
   scheduler.ts   vòng lặp đăng bài trong tiến trình
   x.ts           X API v2: OAuth 1.0a, upload ảnh, thread nối tiếp, đăng tiếp sau lỗi
   push.ts        Web Push (VAPID)
-  ai/            copilot: Claude qua Anthropic SDK
+  ai/            Claude client cho operator, hướng dẫn viết thread
   mcp.ts         MCP server (Streamable HTTP, stateless)
   llms.ts        /llms.txt, /llms-full.txt
 shared/          kiểu dữ liệu và bộ đếm ký tự dùng chung cho server, web, MCP
@@ -449,7 +544,9 @@ Stack: Node 22+/24, TypeScript chạy bằng `tsx` (không cần bước build c
 - Một người dùng, một tài khoản X cho mỗi instance.
 - Bộ đếm ký tự bám theo quy tắc twitter-text v3. Phần nhận diện URL không có scheme (như `example.com`) chỉ là gần đúng, nên X có thể đếm lệch vài ký tự với tên miền lạ. Vì trước khi đăng, server dùng chính bộ đếm này để chặn bài vượt giới hạn (tránh thread bị đăng dở), một bài sát giới hạn có tên miền lạ hiếm khi có thể bị chặn dù X vẫn nhận.
 - **Web Push** đã được kiểm tra với một dịch vụ push giả lập (ký VAPID, mã hóa payload, xóa đăng ký hết hạn), chưa thử nhận thông báo trên trình duyệt thật.
-- **Copilot với Claude** đã được kiểm tra với một Messages API giả lập (header, body, xử lý từ chối và lỗi), chưa gọi Claude thật.
+- **Operator** đã được kiểm tra với một Messages API giả lập (vòng gọi tool, tóm tắt), chưa gọi Claude thật. Chất lượng bài phụ thuộc model và `operator.md`.
+- **Kênh duyệt Telegram và Discord** đã được kiểm tra với Bot API và Gateway giả lập, chưa chạy với bot thật. Discord không resume phiên Gateway: bấm nút đúng lúc bot đang nối lại thì cần bấm lại.
+- Không đặt `AGENT_TOKEN` thì chốt duyệt dựa vào việc agent không giả làm giao diện web. Muốn chốt chặt thật, dùng hai token.
 
 ## Nguồn giá
 

@@ -11,9 +11,9 @@ import { countFor, itemsFor, PLATFORMS, TELEGRAM_CAPTION_LIMIT } from "../shared
 import { hasUrl, splitThread, threadToText, weightedLength } from "../shared/thread.ts";
 import { PLATFORM_IDS, POST_STATUSES, type Account, type PlatformId, type Post, type Segment } from "../shared/types.ts";
 import { getAccount, listAccounts } from "./accounts.ts";
-import { voiceExamples } from "./ai/copilot.ts";
+import { pausePublishing, pauseState } from "./control.ts";
+import { currentActor } from "./actor.ts";
 import { threadGuide } from "./ai/guide.ts";
-import { aiStatus } from "./ai/provider.ts";
 import { buildQueue, getConfig, nextFreeSlots, parseWhen } from "./config.ts";
 import { publishedWithMetrics, refreshMetrics } from "./metrics.ts";
 import { ROOT, xConfigured } from "./env.ts";
@@ -30,6 +30,7 @@ import {
   listPosts,
   markPublishedManually,
   appendToPost,
+  listAwaiting,
   requirePost,
   schedulePost,
   unschedulePost,
@@ -43,15 +44,26 @@ const VERSION = (JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"
 const EDITABLE = ["draft", "scheduled", "due", "failed"];
 const MAX_IMAGES_PER_POST = 4;
 
-const INSTRUCTIONS = `Threadsmith is this person's publishing layer for you, the agent: you draft, check, schedule and publish posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord through it, read how they perform, and continue threads. The person connects accounts and approves; you never see their credentials.
-Start with get_settings (timezone, X limit, X mode, connected accounts, their voice). A thread is text with a line containing only --- between posts.
+/** Server instructions for agents; the approval part follows the current config. */
+export function instructions(): string {
+  const { approval } = getConfig();
+  const gated = approval.require === "agents";
+  return `Threadsmith is this person's publishing layer for you, the agent: you draft, check, schedule and publish posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord through it, read how they perform, and continue threads. You do the work; the person decides. You never see their credentials.
+Start with get_settings (timezone, limits, X mode, connected accounts, their voice, approval policy, whether publishing is paused). A thread is text with a line containing only --- between posts.
 Destinations: create_post/update_post take \`to\` (connected accounts by id, label, handle or platform name; list_accounts shows them) and optional per-account \`versions\`.
 A post without destinations uses the legacy single-X mode (the X API keys in .env, or manual copy & post).
-Check every draft with count_characters (pass the platform) or, once saved, preview_post, show the person the thread, and ask before scheduling, publishing or deleting.
+Check every draft with count_characters (pass the platform) or, once saved, preview_post, and fix every problem before you queue it.
+${
+    gated
+      ? `Approval: nothing you schedule or publish goes out until the person approves it. Queuing is the ask: they get the exact preview in the Threadsmith UI and in their Telegram/Discord chat${approval.except.length ? ` (except posts only to ${approval.except.join(", ")}, which go out directly)` : ""}. So don't ask in chat first; queue finished, checked posts with a clear title. If they request changes, the post's approval.state is "changes_requested" and approval.note says what to change: revise it with update_post (that asks them again). list_reviews shows what is waiting. You cannot approve; never try to get around the approval.`
+      : "Approval is off on this instance: what you schedule or publish goes out as is. Show the person the thread and ask before scheduling, publishing or deleting."
+  }
+If something looks wrong (a bad post went out, an account misbehaves), call pause_publishing: it stops everything until the person resumes.
 schedule "next" uses the configured posting slots. In manual X mode nothing posts automatically: the person is notified at the scheduled time and copies the thread into X.
 A "due" post is waiting for the person (manual mode, or it missed its time while Threadsmith was offline; see its error): publish it, export it, or reschedule it.
-Connecting an account needs the person's secrets: they do it in the Threadsmith UI (or REST POST /api/accounts), never through you.
+Connecting an account needs the person's secrets: they do it in the Threadsmith UI, never through you.
 Writing guidance: resource threadsmith://guide.`;
+}
 
 // ---------- views ----------
 
@@ -178,6 +190,7 @@ function view(p: Post) {
     posts: p.thread.map((s, i) => ({ index: i, text: s.text, chars: weightedLength(s.text), mediaIds: s.mediaIds })),
     mode: p.targets.length ? "accounts" : xConfigured ? "legacy-x-api" : "legacy-x-manual",
     destinations: destinationsView(p),
+    approval: p.approval,
     url: p.url,
     error: p.error,
     xPostIds: p.xPostIds,
@@ -204,6 +217,7 @@ function brief(p: Post) {
           return `${label.toLowerCase().includes(name.toLowerCase()) ? label : `${label} (${name})`}: ${t.status}`;
         })
       : [`X (legacy ${xConfigured ? "API" : "manual"} mode)`],
+    approval: p.approval ? { state: p.approval.state, note: p.approval.note } : null,
     url: p.url,
     error: p.error,
   };
@@ -219,6 +233,16 @@ function accountLabel(id: string): string {
 
 /** Problems an agent should fix or mention after saving. */
 function warnings(p: Post): string[] {
+  const review =
+    p.approval?.state === "pending"
+      ? ["Waiting for the person's approval (sent to them in Threadsmith and their chats); it goes out only once they approve."]
+      : p.approval?.state === "changes_requested"
+        ? [`The person asked for changes: "${p.approval.note ?? ""}". Revise with update_post; that asks them again.`]
+        : [];
+  return [...review, ...problems(p)];
+}
+
+function problems(p: Post): string[] {
   if (p.targets.length) {
     if (p.status === "published") return [];
     return previewPost(p).targets.flatMap((t) => (t.problem ? [`${t.label}: ${t.problem}`] : []));
@@ -238,6 +262,9 @@ function warnings(p: Post): string[] {
 }
 
 const postResult = (summary: string, p: Post) => {
+  if (p.approval?.state === "pending" && p.status === "scheduled") {
+    summary = `Sent to the person for approval; once approved it goes out ${p.scheduledAt && Date.parse(p.scheduledAt) > Date.now() + 60_000 ? `${local(p.scheduledAt)} (${getConfig().timezone})` : "right away"}.`;
+  }
   const warn = warnings(p);
   return result(warn.length ? `${summary}\nNote: ${warn.join(" ")}` : summary, { post: view(p), warnings: warn });
 };
@@ -269,7 +296,16 @@ function imageTarget(postId: string, postIndex: number): Post {
 
 // ---------- tool catalog (also listed in /llms-full.txt) ----------
 
-const tools: { name: string; description: string; register: (s: McpServer) => void }[] = [];
+interface ToolEntry {
+  name: string;
+  description: string;
+  input: z.ZodRawShape;
+  annotations: ToolAnnotations;
+  run: (args: Record<string, unknown>) => CallToolResult | Promise<CallToolResult>;
+  register: (s: McpServer) => void;
+}
+
+const tools: ToolEntry[] = [];
 
 function tool<S extends z.ZodRawShape>(
   name: string,
@@ -279,6 +315,9 @@ function tool<S extends z.ZodRawShape>(
   tools.push({
     name,
     description: config.description,
+    input: config.input,
+    annotations: config.annotations,
+    run: run as ToolEntry["run"],
     register: (s) =>
       s.registerTool(
         name,
@@ -289,6 +328,27 @@ function tool<S extends z.ZodRawShape>(
 }
 
 export const mcpCatalog = () => tools.map(({ name, description }) => ({ name, description }));
+
+/**
+ * The same tools for an in-process agent (the operator): name, description, zod input shape, and a runner that
+ * validates the arguments the way MCP does. Errors come back as isError results, like over MCP.
+ */
+export function agentTools(): { name: string; description: string; input: z.ZodRawShape; run: (args: unknown) => Promise<CallToolResult> }[] {
+  return tools.map((t) => ({
+    name: t.name,
+    description: t.description,
+    input: t.input,
+    run: async (args) => {
+      const parsed = z.object(t.input).safeParse(args ?? {});
+      if (!parsed.success) return { isError: true, content: [{ type: "text", text: `Invalid arguments: ${z.prettifyError(parsed.error)}` }] };
+      try {
+        return await t.run(parsed.data);
+      } catch (err) {
+        return { isError: true, content: [{ type: "text", text: (err as Error).message }] };
+      }
+    },
+  }));
+}
 
 const READ: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
 const id = z.string().min(1).describe("Post id (from list_posts, list_queue or create_post)");
@@ -327,9 +387,8 @@ tool(
       "Read this instance's settings before drafting or scheduling: timezone and current local time, the per-post character limit (maxChars), " +
       'posting slots, X mode for posts without destinations ("api" = Threadsmith publishes automatically through the .env X keys at the scheduled time; ' +
       '"manual" = no X API keys, the person is notified and copies the thread into X by hand), the connected accounts posts can go to (`to` in create_post), ' +
-      "whether the built-in AI copilot is on (it serves the Threadsmith UI and REST; there are no copilot " +
-      "tools here, you write the text), and voiceExamples: the person's own past posts. " +
-      "Match their voice and language when you write for them.",
+      "voiceExamples: the person's own past posts (match their voice and language when you write for them), " +
+      "approval: whether what you queue waits for the person's approval, and paused: whether publishing is stopped.",
     input: {},
     annotations: READ,
   },
@@ -348,8 +407,9 @@ tool(
       slots: c.slots,
       xMode: xConfigured ? "api" : "manual",
       accounts,
-      ai: aiStatus(),
-      voiceExamples: voiceExamples(),
+      voiceExamples: c.voice.map((v) => v.trim()).filter((v) => v && !/^Paste \d/.test(v)),
+      approval: c.approval,
+      paused: pauseState(),
       },
     );
   },
@@ -512,7 +572,8 @@ tool(
       "Without `to` the post uses the legacy single-X mode: the X API keys in .env, or manual copy & post. " +
       "Without `schedule` it is saved as a draft the person can review in the Threadsmith UI. " +
       'schedule "next" puts it in the next free posting slot from the configured schedule; an ISO-8601 time schedules it exactly. ' +
-      "Run count_characters (with each destination's platform) first, show the person the thread, and check the result's warnings or preview_post before scheduling. " +
+      "Run count_characters (with each destination's platform) first and check the result's warnings or preview_post. " +
+      "When approval is on (get_settings), scheduling sends it to the person for approval: it goes out only once they approve. " +
       "In manual X mode nothing is posted automatically: at the scheduled time the person is notified and copies the thread into X.",
     input: {
       ...threadArgs,
@@ -528,7 +589,7 @@ tool(
     if (!thread?.some((s) => s.text.trim())) throw new Error("Give the post text as `text` or `posts`.");
     const shared = thread.map((s) => ({ id: "", text: s.text, mediaIds: s.mediaIds }));
     const targets = buildTargets(undefined, to ?? (versions ? [] : undefined), versions, shared);
-    const p = createPost({ thread, title: title ?? null, targets, scheduledAt: schedule ? toInstant(schedule) : null, source: "mcp" });
+    const p = createPost({ thread, title: title ?? null, targets, scheduledAt: schedule ? toInstant(schedule) : null, source: currentActor().via === "operator" ? "operator" : "mcp" });
     return postResult(p.scheduledAt ? `Scheduled for ${local(p.scheduledAt)} (${getConfig().timezone}).` : "Saved as a draft.", p);
   },
 );
@@ -627,7 +688,8 @@ tool(
     title: "Publish now",
     description:
       "Publish a draft, scheduled, due or failed post or thread right now to every destination not yet published, ignoring its schedule. " +
-      "Public and irreversible (and billed per post on X's API; the other platforms are free): only when the person explicitly asks. " +
+      "Public and irreversible (and billed per post on X's API; the other platforms are free). When approval is on, this asks the person instead " +
+      "and it goes out as soon as they approve (the result says so). " +
       "Each destination succeeds or fails on its own; a failed one is listed in `error` and in its destination entry. " +
       "A post without destinations uses the legacy single-X mode: in manual X mode (no API keys) this fails; use export_thread instead, let the person post it, then mark_published.",
     input: { id },
@@ -727,6 +789,45 @@ tool(
         replyToUrl,
       },
     );
+  },
+);
+
+tool(
+  "list_reviews",
+  {
+    title: "List posts waiting on the person",
+    description:
+      "Posts you queued that wait for the person: state pending (not decided yet) or changes_requested (they sent it back; `note` says what to change; " +
+      "revise with update_post, which asks them again). Neither ever publishes. Check this at the start of a session and after the person responds.",
+    input: {},
+    annotations: READ,
+  },
+  () => {
+    const posts = listAwaiting();
+    const back = posts.filter((p) => p.approval?.state === "changes_requested");
+    return result(
+      posts.length
+        ? `${posts.length - back.length} waiting for the person, ${back.length} sent back with changes.` +
+            back.map((p) => `\n- ${p.id}: "${p.approval?.note ?? ""}"`).join("")
+        : "Nothing is waiting on the person.",
+      { posts: posts.map(brief) },
+    );
+  },
+);
+
+tool(
+  "pause_publishing",
+  {
+    title: "Pause all publishing",
+    description:
+      "Emergency brake: stop every publish (scheduled posts wait, publish_now is refused) until the person resumes it; they are told at once. " +
+      "Use it when something is going wrong (a wrong post went out, an account behaves oddly). You can't resume; the person does.",
+    input: { reason: z.string().max(500).describe("What went wrong, for the person") },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  ({ reason }) => {
+    const state = pausePublishing(reason);
+    return result(`Publishing is paused (by ${state.by}). The person has been told.`, { paused: state });
   },
 );
 
@@ -833,7 +934,7 @@ tool(
 // ---------- server ----------
 
 function buildServer(): McpServer {
-  const server = new McpServer({ name: "threadsmith", title: "Threadsmith", version: VERSION }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "threadsmith", title: "Threadsmith", version: VERSION }, { instructions: instructions() });
   for (const t of tools) t.register(server);
 
   server.registerResource(

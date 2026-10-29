@@ -2,6 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { PLATFORMS } from "../shared/platforms.ts";
 import type { Account, PlatformId } from "../shared/types.ts";
+import { requireOwner } from "./actor.ts";
 import { db } from "./db.ts";
 import { ADAPTERS } from "./platforms/index.ts";
 import type { Credentials } from "./platforms/types.ts";
@@ -77,6 +78,7 @@ export async function connectAccount(input: {
   label?: string | null;
   maxChars?: number | null;
 }): Promise<Account> {
+  requireOwner("connect accounts");
   if (!PLATFORMS[input.platform]) throw new BadInputError(`Unknown platform ${input.platform}`);
   const credentials = cleanCredentials(input.platform, input.credentials);
   const who = await verify(input.platform, credentials);
@@ -103,6 +105,7 @@ export async function updateAccount(
   id: string,
   patch: { label?: string; maxChars?: number | null; credentials?: Record<string, unknown> },
 ): Promise<Account> {
+  requireOwner("change accounts");
   const current = getAccount(id);
   if (patch.credentials) {
     const credentials = cleanCredentials(current.platform, patch.credentials);
@@ -146,6 +149,7 @@ export function setAccountError(id: string, error: string | null): void {
  * would silently lose it (and a post with no destinations falls back to the .env X / manual mode).
  */
 export function deleteAccount(id: string): void {
+  requireOwner("remove accounts");
   getAccount(id);
   const pending = db
     .prepare(

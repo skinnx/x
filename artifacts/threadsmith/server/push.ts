@@ -36,7 +36,10 @@ const preview = (text: string, max: number) => {
 };
 
 function payloadFor(event: AppEvent): PushPayload | null {
-  if (event.type === "post.deleted") return null;
+  if (event.type === "publishing.paused") {
+    return { title: "Publishing paused", body: preview(`By ${event.by}${event.reason ? `: ${event.reason}` : ""}`, 240), url: "/", postId: null, tag: "paused" };
+  }
+  if (!("post" in event)) return null;
   const { post } = event;
   const first = preview(post.thread[0]?.text ?? "", 120);
   switch (event.type) {
@@ -50,6 +53,8 @@ function payloadFor(event: AppEvent): PushPayload | null {
         tag: `due-${post.id}`,
         requireInteraction: true,
       };
+    case "post.approval_requested":
+      return { title: "Approval needed", body: first, url: `/?post=${post.id}`, postId: post.id, tag: `approval-${post.id}` };
     case "post.failed":
       return { title: "Post failed", body: preview(post.error ?? "Publishing failed.", 240), url: `/?post=${post.id}`, postId: post.id, tag: `failed-${post.id}` };
     case "post.published":

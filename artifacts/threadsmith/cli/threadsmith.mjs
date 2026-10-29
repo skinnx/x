@@ -53,19 +53,24 @@ Accounts
   An account ref is its id (or a unique id prefix), its label, its handle, or a platform name when only one
   account of that platform is connected.
 
-AI copilot (needs an AI provider on the server)
-  ai threadify [text|--file f] [-i instructions]   Notes → thread (prints posts separated by ---)
-  ai hooks [text|--file f] [--count 3]             Alternative opening posts
-  ai fit [text|--file f] [--max n]                 Shorten posts that are over the limit
-  ai rewrite "<instruction>" [text|--file f]       Rewrite following an instruction
-  ai adapt <platform|ref> [text|--file f]          Rewrite a thread for a platform (LinkedIn: one post)
+Approvals (agents queue, the person decides)
+  reviews                     Posts waiting for the person, and posts sent back with changes (and the note)
+  approve <id> [--note n]     Approve: it goes out at its time (now if that passed)      } need the owner token
+  reject <id> [--note n]      Reject: back to drafts                                     } (AUTH_TOKEN with an
+  changes <id> <note>         Send back to the agent with what to change                } AGENT_TOKEN set)
+  pause [reason]              Stop all publishing until resumed (anyone may pause)
+  resume                      Resume publishing (owner)
+  audit [--limit n]           Who did what, newest first
+  digest                      The daily digest, now
+  operator                    Built-in operator status and recent runs
+  operator run [task]         Start an operator run now (owner)
 
 Other
-  health                      Server status: version, X mode, AI, timezone, limit
+  health                      Server status: version, X mode, paused, timezone, limit
   help                        This help
 
 Ids can be shortened to any unique prefix. Text can also come from stdin, e.g.
-  threadsmith ai threadify --file notes.md | threadsmith new --at next --to bluesky,mastodon
+  cat thread.txt | threadsmith new --at next --to bluesky,mastodon
 
 Times are shown in the server's timezone (threadsmith health), and a time you type is read there too unless it
 has an offset: 2026-11-03T09:00 is 09:00 in that zone; 2026-11-03T09:00+07:00 or ...Z is exact.
@@ -172,7 +177,7 @@ try {
       url: { type: "string" },
       count: { type: "string" },
       max: { type: "string" },
-      instructions: { type: "string", short: "i" },
+      note: { type: "string" },
       to: { type: "string" },
       version: { type: "string", multiple: true },
       platform: { type: "string", short: "p" },
@@ -641,36 +646,65 @@ const commands = {
     });
   },
 
-  async ai([task, ...args]) {
-    const tasks = {
-      threadify: async () => {
-        const data = await api("POST", "/api/ai/threadify", { text: readText(args), instructions: opt.instructions });
-        emit(data, ({ posts }) => console.log(joinThread(posts)));
-      },
-      hooks: async () => {
-        const data = await api("POST", "/api/ai/hooks", { text: readText(args), count: int(opt.count, "--count", 3) });
-        emit(data, ({ variants }) => console.log(variants.map((v, i) => `${i + 1}. ${v}`).join("\n\n")));
-      },
-      fit: async () => {
-        const data = await api("POST", "/api/ai/fit", { text: readText(args), maxChars: opt.max ? int(opt.max, "--max") : undefined });
-        emit(data, ({ text }) => console.log(text));
-      },
-      rewrite: async () => {
-        const [instruction, ...rest] = args;
-        if (!instruction) throw new UsageError('Usage: threadsmith ai rewrite "<instruction>" [text|--file f]');
-        const data = await api("POST", "/api/ai/rewrite", { instruction, text: readText(rest) });
-        emit(data, ({ text }) => console.log(text));
-      },
-      adapt: async () => {
-        const [ref, ...rest] = args;
-        if (!ref) throw new UsageError("Usage: threadsmith ai adapt <platform|account ref> [text|--file f]");
-        const target = PLATFORMS[ref.toLowerCase()] ? { platform: ref.toLowerCase() } : { accountId: resolveAccount(ref, await accountsList()).id };
-        const data = await api("POST", "/api/ai/adapt", { ...target, text: readText(rest) });
-        emit(data, ({ posts }) => console.log(joinThread(posts)));
-      },
-    };
-    if (!tasks[task]) throw new UsageError("Usage: threadsmith ai threadify|hooks|fit|rewrite|adapt ...");
-    await tasks[task]();
+  async reviews() {
+    const data = await api("GET", "/api/approvals");
+    emit(data, ({ posts }) => {
+      if (!posts.length) return console.log("Nothing is waiting on the person.");
+      for (const p of posts) {
+        const first = (p.title || p.thread[0]?.text || "").split("\n")[0].slice(0, 70);
+        const what = p.approval.state === "pending" ? `waiting · ${p.scheduledAt ? when(p.scheduledAt) : "now"}` : `sent back: ${p.approval.note}`;
+        console.log(`${short(p.id)}  ${first}\n          ${what} · asked by ${p.approval.by ?? p.source}`);
+      }
+    });
+  },
+
+  async approve([ref]) {
+    const p = await api("POST", `/api/posts/${await resolveId(ref)}/approve`, { note: opt.note });
+    emit(p, () => console.log(`Approved ${short(p.id)}${p.scheduledAt ? `, goes out ${when(p.scheduledAt)}` : ""}`));
+  },
+
+  async reject([ref]) {
+    const p = await api("POST", `/api/posts/${await resolveId(ref)}/reject`, { note: opt.note });
+    emit(p, () => console.log(`Rejected ${short(p.id)} (back to drafts)`));
+  },
+
+  async changes([ref, ...note]) {
+    if (!note.length) throw new UsageError('Usage: threadsmith changes <id> "what to change"');
+    const p = await api("POST", `/api/posts/${await resolveId(ref)}/request-changes`, { note: note.join(" ") });
+    emit(p, () => console.log(`Sent ${short(p.id)} back to the agent`));
+  },
+
+  async pause(reason) {
+    const c = await api("POST", "/api/control/pause", { reason: reason.join(" ") || undefined });
+    emit(c, () => console.log(`Publishing paused (by ${c.paused.by}). Nothing goes out until \`threadsmith resume\`.`));
+  },
+
+  async resume() {
+    emit(await api("POST", "/api/control/resume"), () => console.log("Publishing resumed."));
+  },
+
+  async audit() {
+    const data = await api("GET", `/api/audit?limit=${int(opt.limit, "--limit", 30)}`);
+    emit(data, ({ entries }) => {
+      for (const e of entries) console.log(`${when(e.at)}  ${e.actor.padEnd(24)} ${e.action.padEnd(24)} ${e.postId ? short(e.postId) : ""} ${e.detail ?? ""}`);
+    });
+  },
+
+  async digest() {
+    emit(await api("GET", "/api/digest"), ({ text }) => console.log(text));
+  },
+
+  async operator([sub, ...task]) {
+    if (sub === "run") {
+      const run = await api("POST", "/api/operator/run", { task: task.join(" ") || undefined });
+      return emit(run, () => console.log(`Operator run ${short(run.id)} started; its summary goes to your approval chats and \`threadsmith operator\`.`));
+    }
+    if (sub) throw new UsageError("Usage: threadsmith operator [run [task]]");
+    const [status, { runs }] = await Promise.all([api("GET", "/api/operator/status"), api("GET", "/api/operator/runs?limit=5")]);
+    emit({ status, runs }, () => {
+      console.log(status.enabled ? `Operator on (${status.model})${status.nextRunAt ? `, next run ${when(status.nextRunAt)}` : ""}${status.running ? " · running now" : ""}` : `Operator off${status.reason ? `: ${status.reason}` : ""}`);
+      for (const r of runs) console.log(`\n${when(r.startedAt)} · ${r.trigger} · ${r.status}${r.task ? `\n  task: ${r.task}` : ""}\n  ${r.summary ?? r.error ?? ""}`);
+    });
   },
 
   async health() {
@@ -681,7 +715,7 @@ const commands = {
         [
           `Threadsmith ${h.version} at ${BASE}`,
           `X: ${h.x.mode === "api" ? "API (publishes automatically)" : "manual (notify + copy)"}`,
-          `AI: ${h.ai.configured ? `${h.ai.provider} · ${h.ai.model}` : "off"}`,
+          ...(h.paused ? ["Publishing: PAUSED (threadsmith resume)"] : []),
           `Timezone: ${h.timezone} · limit ${h.maxChars} characters · auth ${h.auth.required ? "required" : "off"}`,
           ...(configError ? [`Config: the last edit was rejected, the previous config is still in use: ${configError}`] : []),
         ].join("\n"),

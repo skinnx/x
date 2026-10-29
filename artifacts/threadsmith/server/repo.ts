@@ -5,7 +5,9 @@ import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { splitThread } from "../shared/thread.ts";
 import { PLATFORMS } from "../shared/platforms.ts";
-import type { Media, PlatformId, Post, PostSource, PostStatus, PostTarget, Segment, TargetMetrics, TargetStatus } from "../shared/types.ts";
+import type { ApprovalState, Media, PlatformId, Post, PostSource, PostStatus, PostTarget, Segment, TargetMetrics, TargetStatus } from "../shared/types.ts";
+import { actorLabel, currentActor } from "./actor.ts";
+import { getConfig } from "./config.ts";
 import { db, tx } from "./db.ts";
 import { env } from "./env.ts";
 import { bus } from "./events.ts";
@@ -33,6 +35,10 @@ interface PostRow {
   x_post_ids: string;
   url: string | null;
   source: PostSource;
+  approval: ApprovalState | null;
+  approval_note: string | null;
+  approval_by: string | null;
+  approval_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -83,6 +89,7 @@ function toPost(r: PostRow): Post {
     xPostIds: JSON.parse(r.x_post_ids),
     url: r.url,
     targets: targetsOf(r.id),
+    approval: r.approval ? { state: r.approval, note: r.approval_note, by: r.approval_by, at: r.approval_at } : null,
     source: r.source,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -173,16 +180,20 @@ export function createPost(input: {
   const ts = now();
   const scheduledAt = input.scheduledAt ? assertTime(input.scheduledAt) : null;
   const thread = normalizeThread(input);
+  let asks = false;
   tx(() => {
     db.prepare(
       `INSERT INTO posts (id, title, status, thread, scheduled_at, source, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(id, input.title ?? null, scheduledAt ? "scheduled" : "draft", JSON.stringify(thread), scheduledAt, input.source, ts, ts);
     if (input.targets) writeTargets(id, input.targets, [], thread);
+    asks = Boolean(scheduledAt) && needsApproval(requirePost(id));
+    if (asks) setApproval(id, "pending", null);
   });
   const post = requirePost(id);
   bus.emit({ type: "post.created", post });
   if (scheduledAt) bus.emit({ type: "post.scheduled", post });
+  if (asks) bus.emit({ type: "post.approval_requested", post });
   return post;
 }
 
@@ -221,6 +232,123 @@ function sharedLive(post: Post): { live: number; where: string } {
   return { live, where };
 }
 
+// ---------- approval gate ----------
+
+/** Platforms a post would publish to (the legacy single-X mode counts as X). */
+const platformsOf = (post: Post): PlatformId[] => (post.targets.length ? post.targets.map((t) => t.platform) : ["x"]);
+
+/** Whether the current actor needs the person's approval before this post may go out. */
+export function needsApproval(post: Post): boolean {
+  if (currentActor().kind !== "agent") return false;
+  const { require, except } = getConfig().approval;
+  if (require === "never") return false;
+  return !platformsOf(post).every((p) => except.includes(p));
+}
+
+/** What an approval covers: the content and where it goes. */
+const contentKey = (p: Post) =>
+  JSON.stringify([p.thread.map((s) => [s.text, s.mediaIds]), p.targets.map((t) => [t.accountId, t.thread?.map((s) => [s.text, s.mediaIds]) ?? null])]);
+
+function setApproval(id: string, state: ApprovalState | null, note: string | null): void {
+  db.prepare("UPDATE posts SET approval = ?, approval_note = ?, approval_by = ?, approval_at = ?, updated_at = ? WHERE id = ?").run(
+    state,
+    note,
+    state ? actorLabel() : null,
+    state ? now() : null,
+    now(),
+    id,
+  );
+}
+
+/** A post waiting on the person can't go out yet; a clear message for whoever tried. */
+function assertNotAwaiting(post: Post): void {
+  if (post.approval?.state === "pending") {
+    throw new ConflictError("This post is waiting for the person's approval (sent to them in Threadsmith, Telegram or Discord); it goes out once they approve.");
+  }
+  if (post.approval?.state === "changes_requested") {
+    throw new ConflictError(`The person asked for changes before this can go out: "${post.approval.note ?? ""}". Revise it with update_post, which asks them again.`);
+  }
+}
+
+/**
+ * The current actor wants this post out (schedule, publish now, retry, append). Returns true when it must wait for
+ * the person: the request is recorded as pending. The person's own request approves pending content.
+ */
+function gate(post: Post): "asks" | "approved" | null {
+  if (needsApproval(post)) {
+    if (post.approval?.state === "approved") return null;
+    setApproval(post.id, "pending", null);
+    return "asks";
+  }
+  if (currentActor().kind === "owner" && (post.approval?.state === "pending" || post.approval?.state === "changes_requested")) {
+    setApproval(post.id, "approved", null);
+    return "approved";
+  }
+  return null;
+}
+
+/** Emit what gate() decided, after the transaction. */
+function emitGate(outcome: ReturnType<typeof gate>, post: Post): void {
+  if (outcome === "asks") bus.emit({ type: "post.approval_requested", post });
+  if (outcome === "approved") bus.emit({ type: "post.approved", post });
+}
+
+/**
+ * "Publish now" or "retry" asked by the current actor. When the person must approve first, the post is queued for
+ * right now and the request goes to them; that post is returned and nothing is published. Otherwise null: go ahead.
+ */
+export function holdForApproval(id: string): Post | null {
+  const post = requirePost(id);
+  if (!EDITABLE.includes(post.status)) throw new ConflictError(`Post is ${post.status}`);
+  if (currentActor().kind === "agent") assertNotAwaiting(post);
+  let outcome: ReturnType<typeof gate> = null;
+  tx(() => {
+    outcome = gate(post);
+    if (outcome === "asks") {
+      db.prepare("UPDATE posts SET status = 'scheduled', scheduled_at = ?, error = NULL, updated_at = ? WHERE id = ?").run(now(), now(), id);
+    }
+  });
+  const updated = requirePost(id);
+  if (outcome === "asks") bus.emit({ type: "post.scheduled", post: updated });
+  emitGate(outcome, updated);
+  return outcome === "asks" ? updated : null;
+}
+
+export type Decision = "approve" | "reject" | "request_changes";
+
+/**
+ * The person's decision on a post an agent queued. Approve: it goes out at its time (now, if that has passed).
+ * Request changes: it stays queued but blocked, with the note for the agent. Reject: back to drafts.
+ */
+export function decide(id: string, decision: Decision, note: string | null = null): Post {
+  const post = requirePost(id);
+  const state = post.approval?.state;
+  if (state !== "pending" && state !== "changes_requested") {
+    throw new ConflictError(state ? `This post is already ${state.replace("_", " ")}.` : "This post isn't waiting for approval.");
+  }
+  if (decision === "request_changes" && !note?.trim()) throw new BadInputError("Say what to change.");
+  tx(() => {
+    if (decision === "approve") {
+      setApproval(id, "approved", note);
+      db.prepare("UPDATE posts SET scheduled_at = ? WHERE id = ? AND status = 'scheduled' AND (scheduled_at IS NULL OR scheduled_at < ?)").run(now(), id, now());
+    } else if (decision === "reject") {
+      setApproval(id, "rejected", note);
+      if (EDITABLE.includes(post.status)) db.prepare("UPDATE posts SET status = 'draft', scheduled_at = NULL WHERE id = ?").run(id);
+    } else setApproval(id, "changes_requested", note!.trim());
+  });
+  const updated = requirePost(id);
+  const type = decision === "approve" ? "post.approved" : decision === "reject" ? "post.rejected" : "post.changes_requested";
+  bus.emit({ type, post: updated });
+  return updated;
+}
+
+/** Posts the person hasn't decided on, and posts sent back to the agent with feedback. */
+export function listAwaiting(): Post[] {
+  return (
+    db.prepare("SELECT * FROM posts WHERE approval IN ('pending', 'changes_requested') ORDER BY approval_at").all() as unknown as PostRow[]
+  ).map(toPost);
+}
+
 /**
  * Autosave target. Editing a published or in-flight post is refused, and so is changing the posts of a
  * partly published thread that are already live (Retry resumes after them by position).
@@ -237,12 +365,22 @@ export function updatePost(
     thread = lockLivePrefix(post.thread, normalizeThread(patch, post.thread), live, where);
   }
   const title = patch.title !== undefined ? patch.title : post.title;
+  let asks = false;
   tx(() => {
     db.prepare("UPDATE posts SET thread = ?, title = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(thread), title, now(), id);
     if (patch.targets) writeTargets(id, patch.targets, post.targets, thread);
+    // Approval covers content and destinations: an agent changing either on a post in review (or already
+    // approved) asks again. The person's own edits don't.
+    const after = requirePost(id);
+    const reviewed = post.approval && post.approval.state !== "rejected";
+    if (reviewed && contentKey(after) !== contentKey(post) && needsApproval(after)) {
+      setApproval(id, "pending", null);
+      asks = true;
+    }
   });
   const updated = requirePost(id);
   bus.emit({ type: "post.updated", post: updated });
+  if (asks) bus.emit({ type: "post.approval_requested", post: updated });
   return updated;
 }
 
@@ -347,6 +485,7 @@ export function appendToPost(id: string, add: { text?: string; thread?: SegmentI
   if (post.targets.length && !continuable.length) {
     throw new ConflictError("None of this post's destinations can be continued (LinkedIn posts aren't threads).");
   }
+  let asks = false;
   tx(() => {
     db.prepare("UPDATE posts SET thread = ?, status = 'scheduled', scheduled_at = ?, error = NULL, updated_at = ? WHERE id = ?").run(
       JSON.stringify([...post.thread, ...extra]),
@@ -354,6 +493,11 @@ export function appendToPost(id: string, add: { text?: string; thread?: SegmentI
       now(),
       id,
     );
+    // New content: an earlier approval doesn't cover it.
+    if (needsApproval(post)) {
+      setApproval(id, "pending", null);
+      asks = true;
+    }
     for (const t of continuable) {
       db.prepare("UPDATE post_targets SET thread = ?, snapshot = 0, status = 'pending', error = NULL WHERE post_id = ? AND account_id = ?").run(
         JSON.stringify([...(t.thread ?? post.thread), ...extra]),
@@ -364,6 +508,7 @@ export function appendToPost(id: string, add: { text?: string; thread?: SegmentI
   });
   const updated = requirePost(id);
   bus.emit({ type: "post.scheduled", post: updated });
+  if (asks) bus.emit({ type: "post.approval_requested", post: updated });
   return updated;
 }
 
@@ -381,13 +526,20 @@ export function deletePost(id: string): void {
 export function schedulePost(id: string, at: string): Post {
   const post = requirePost(id);
   if (!EDITABLE.includes(post.status)) throw new ConflictError(`Post is ${post.status} and cannot be rescheduled`);
-  db.prepare("UPDATE posts SET status = 'scheduled', scheduled_at = ?, error = NULL, updated_at = ? WHERE id = ?").run(
-    assertTime(at),
-    now(),
-    id,
-  );
+  let outcome: ReturnType<typeof gate> = null;
+  tx(() => {
+    db.prepare("UPDATE posts SET status = 'scheduled', scheduled_at = ?, error = NULL, updated_at = ? WHERE id = ?").run(
+      assertTime(at),
+      now(),
+      id,
+    );
+    // An agent rescheduling a post that is still waiting (on the person, or on its own revision) doesn't ask again.
+    const waiting = post.approval?.state === "pending" || post.approval?.state === "changes_requested";
+    if (!(waiting && currentActor().kind === "agent")) outcome = gate(post);
+  });
   const updated = requirePost(id);
   bus.emit({ type: "post.scheduled", post: updated });
+  emitGate(outcome, updated);
   return updated;
 }
 
@@ -395,6 +547,8 @@ export function unschedulePost(id: string): Post {
   const post = requirePost(id);
   if (!EDITABLE.includes(post.status)) throw new ConflictError(`Post is ${post.status}`);
   db.prepare("UPDATE posts SET status = 'draft', scheduled_at = NULL, updated_at = ? WHERE id = ?").run(now(), id);
+  // Taken off the queue: an open approval request is withdrawn (scheduling it again asks again).
+  if (post.approval?.state === "pending" || post.approval?.state === "changes_requested") setApproval(id, null, null);
   const updated = requirePost(id);
   bus.emit({ type: "post.updated", post: updated });
   return updated;
@@ -407,7 +561,7 @@ export function unschedulePost(id: string): Post {
 export function claimNextDuePost(at = new Date()): Post | undefined {
   return tx(() => {
     const row = db
-      .prepare("SELECT id FROM posts WHERE status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at, created_at LIMIT 1")
+      .prepare("SELECT id FROM posts WHERE status = 'scheduled' AND scheduled_at <= ? AND (approval IS NULL OR approval = 'approved') ORDER BY scheduled_at, created_at LIMIT 1")
       .get(at.toISOString()) as { id: string } | undefined;
     if (!row) return undefined;
     db.prepare("UPDATE posts SET status = 'publishing', updated_at = ? WHERE id = ? AND status = 'scheduled'").run(now(), row.id);
@@ -419,6 +573,7 @@ export function claimNextDuePost(at = new Date()): Post | undefined {
 export function claimPost(id: string): Post {
   const post = requirePost(id);
   if (!EDITABLE.includes(post.status)) throw new ConflictError(`Post is ${post.status}`);
+  if (currentActor().kind === "agent") assertNotAwaiting(post);
   const ts = now();
   const res = db
     .prepare("UPDATE posts SET status = 'publishing', scheduled_at = ?, updated_at = ? WHERE id = ? AND status = ?")

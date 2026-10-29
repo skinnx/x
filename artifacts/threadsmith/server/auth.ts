@@ -2,6 +2,8 @@
 import { timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
+import type { Context } from "hono";
+import { runAs, type Actor } from "./actor.ts";
 import { env } from "./env.ts";
 import { validMediaSignature } from "./media.ts";
 
@@ -50,14 +52,29 @@ export const guardRequest: MiddlewareHandler = async (c, next) => {
   return next();
 };
 
+/**
+ * Who a request acts for. AGENT_TOKEN always means an agent. The owner is the web UI, or (once AGENT_TOKEN exists,
+ * so agents have their own token) whoever holds AUTH_TOKEN. Without AGENT_TOKEN, everything but the web UI counts as
+ * an agent: the approval gate then holds for agents that play by the rules, but an agent that can reach the server
+ * could pretend to be the UI; give agents AGENT_TOKEN for a gate they can't get around.
+ */
+function actorFor(c: Context, token: "owner" | "agent" | null): Actor {
+  const header = c.req.header("x-threadsmith-source");
+  const via = c.req.path.startsWith("/mcp") ? "mcp" : header === "ui" || header === "cli" ? header : "api";
+  if (token === "agent") return { kind: "agent", via };
+  if (token === "owner" && env.agentToken) return { kind: "owner", via };
+  return { kind: via === "ui" ? "owner" : "agent", via };
+}
+
 /** Accepts `Authorization: Bearer <token>`, the `threadsmith_token` cookie (img/EventSource), or `?token=`. */
 export const requireAuth: MiddlewareHandler = async (c, next) => {
-  if (!env.authToken) return next();
+  if (!env.authToken) return runAs(actorFor(c, null), next);
   // Signed, expiring image links (for platforms that fetch images by URL) work without the token.
   const media = /^\/media\/([^/]+)$/.exec(c.req.path);
   if (media && validMediaSignature(media[1]!, c.req.query("exp"), c.req.query("sig"))) return next();
   const header = c.req.header("authorization")?.replace(/^Bearer\s+/i, "");
   const supplied = header ?? getCookie(c, AUTH_COOKIE) ?? c.req.query("token");
-  if (supplied && same(supplied, env.authToken)) return next();
-  return c.json({ error: "unauthorized", message: "Send Authorization: Bearer <AUTH_TOKEN>" }, 401);
+  if (supplied && same(supplied, env.authToken)) return runAs(actorFor(c, "owner"), next);
+  if (supplied && env.agentToken && same(supplied, env.agentToken)) return runAs(actorFor(c, "agent"), next);
+  return c.json({ error: "unauthorized", message: "Send Authorization: Bearer <AUTH_TOKEN> (or AGENT_TOKEN for agents)" }, 401);
 };

@@ -1,12 +1,14 @@
 ---
 name: threadsmith
-description: Publish for the user through their self-hosted Threadsmith server - draft, check, schedule and manage posts and threads for X (Twitter), Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord, read how published posts perform, and continue threads. Use when the user wants to write a post or thread, cross-post it to several platforms (with per-platform versions), turn notes or an article into a thread, queue something for a time or the next free slot, see what's scheduled, edit, reschedule or delete queued posts, get a thread ready to post by hand, or check how published posts performed and follow up on them.
+description: Run the user's social publishing end to end through their self-hosted Threadsmith server - draft, check and queue posts and threads for X (Twitter), Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord (the user approves from Threadsmith or their Telegram/Discord chat), act on their feedback, read how published posts perform, and continue threads. Use when the user wants to write a post or thread, cross-post it to several platforms (with per-platform versions), turn notes or an article into a thread, queue something for a time or the next free slot, see what's scheduled, edit, reschedule or delete queued posts, get a thread ready to post by hand, or check how published posts performed and follow up on them.
 ---
 
 # Threadsmith
 
-Threadsmith is the user's publishing layer for you, the agent: you write and decide, it handles credentials, per-platform
-counting, resumable publishing, scheduling and engagement data, and the user approves. It stores drafts and threads, counts characters the way each
+Threadsmith is the user's publishing layer for you, the agent: you do the work end to end, it handles credentials,
+per-platform counting, resumable publishing, scheduling and engagement data, and the user only decides. By default
+nothing you queue is published until they approve it: they get the exact preview in the web UI and in their
+Telegram/Discord chat and press Approve, Request changes or Reject. It stores drafts and threads, counts characters the way each
 platform does, queues posts into posting slots, and publishes them to the user's connected accounts on X, Bluesky,
 Mastodon, Threads, LinkedIn, Telegram and Discord. A post with no destinations uses the original single-X mode: the
 X API keys in the server's .env, or (manual mode) a notification at the scheduled time so the user pastes it into X.
@@ -18,26 +20,26 @@ Prefer, in this order:
 1. **MCP tools**, if a `threadsmith` MCP server is connected (tools such as `get_settings`, `count_characters`,
    `create_post`, `list_queue`). They return structured results. To connect Claude Code:
    `claude mcp add --transport http threadsmith http://127.0.0.1:3000/mcp`
-   (add `--header "Authorization: Bearer <AUTH_TOKEN>"` when the server has a token). There are no copilot tools
-   over MCP: you write the text yourself.
+   (add `--header "Authorization: Bearer <token>"` when the server has a token; agents get AGENT_TOKEN if it is set).
 2. **The CLI**: `threadsmith <command>` if it's on PATH, otherwise `node <threadsmith-repo>/cli/threadsmith.mjs <command>`.
    It reads `THREADSMITH_URL` (default `http://127.0.0.1:3000`) and `THREADSMITH_TOKEN` (the server's AUTH_TOKEN).
    Add `--json` for machine-readable output. Exit codes: 0 ok, 1 API or network error (also when `publish` or
    `retry` ends with the post `failed`), 2 usage error.
-3. **REST**, with `Authorization: Bearer $THREADSMITH_TOKEN` when auth is on and `X-Threadsmith-Source: ai` on writes.
+3. **REST**, with `Authorization: Bearer $THREADSMITH_TOKEN` when auth is on.
    Every POST under `/api` accepts `Idempotency-Key`: a repeat with the same key on the same path replays the first
    successful answer instead of acting twice. `GET $THREADSMITH_URL/llms-full.txt` documents every route;
    `/openapi.json` is the full spec.
 
 Start with `threadsmith health --json` and `threadsmith accounts --json` (or `get_settings`, which has both) to learn
 the connected accounts, the X mode for posts without destinations (`api` or `manual`), X's per-post limit (`maxChars`),
-the timezone and whether the server's AI copilot is on. If the server isn't reachable, tell the
+the timezone, the approval policy and whether publishing is paused. Then `threadsmith reviews` / `list_reviews`: posts the user
+sent back with feedback come first. If the server isn't reachable, tell the
 user how to start it (`pnpm start` or `pnpm dev` in the Threadsmith folder) rather than guessing.
 
 ## Workflow
 
 1. **Understand the ask.** Topic, audience, any facts, numbers or links that must appear, where it should go
-   (which connected accounts) and when. Ask for missing facts instead of inventing them.
+   (which connected accounts) and when. Ask for missing facts instead of inventing them; decide everything else yourself.
 2. **Draft** in the user's voice and language. `get_settings` returns `voiceExamples` (their past posts): match
    their tone, sentence length and formatting. Write the thread as one text with a line containing only `---`
    between posts.
@@ -45,14 +47,18 @@ user how to start it (`pnpm start` or `pnpm dev` in the Threadsmith folder) rath
    `count_characters` with `platform`. Shorten every post that is over; a post over a destination's limit is saved but
    that destination fails when publishing. If one text can't suit every platform, write a version for the odd one out
    (typically a tighter X thread, or one long LinkedIn post).
-4. **Show the user the whole thread** (with counts) and ask how to queue it: the next free slot, a specific time,
-   or keep it as a draft. Don't schedule, publish or delete without their go-ahead.
+4. **Queue it; the approval is the ask.** With approval on (`get_settings` → `approval.require: "agents"`, the default),
+   schedule finished, checked posts (`--at next` or a time) with a clear `--title`: the user decides from their chat, so
+   don't ask "shall I schedule?" first. With approval off, show them the thread and ask before scheduling or publishing.
+   Never delete without their go-ahead.
 5. **Save**: `threadsmith new --file draft.txt --to bluesky,mastodon --version x=x.txt --at next --json` (or
    `create_post` with `to`, `versions` and `schedule: "next"`), then `threadsmith preview <id>` / `preview_post` and
    fix every `problem`. Leave out `--to` / `to` only for the legacy single-X mode.
    An exact time is ISO-8601 with an offset, e.g. `2026-11-03T09:00:00+07:00`. Without an offset
    (`2026-11-03T09:00`) the server reads it in its configured `timezone`; a date alone or a past time is refused.
-6. **Confirm**: report the post id and the scheduled time in the user's timezone. The CLI prints times in the
+6. **Report**: what you queued, for when, and that it waits for their approval. When they request changes
+   (`approval.state: "changes_requested"`, `approval.note`), revise with `edit` / `update_post`; that asks them again.
+   Report the scheduled time in the user's timezone. The CLI prints times in the
    server's timezone and names it (`--json` gives UTC); convert if the user lives elsewhere. `threadsmith queue`
    shows the timeline and the remaining free slots.
 
@@ -70,9 +76,11 @@ Common follow-ups:
 | Reschedule / unqueue | `threadsmith schedule <id> next` / `unschedule <id>` | `schedule_post` / `unschedule_post` |
 | Post by hand | `threadsmith copy <id> --clipboard`, then `posted <id> --url <link>` | `export_thread`, `mark_published` |
 | Failed or due post | `threadsmith show <id>` (read `error`), fix, `retry <id>` | `get_post`, `retry_post` |
+| Waiting on the user / sent back | `threadsmith reviews` | `list_reviews` |
+| Something went wrong: stop everything | `threadsmith pause "why"` (only the user resumes) | `pause_publishing` |
 | Add an image | `threadsmith new ... --image 2:chart.png` | `attach_image_from_url` |
 
-Ids can be shortened to a unique prefix in the CLI. Piping works: `threadsmith ai threadify --file notes.md | threadsmith new --file -`.
+Ids can be shortened to a unique prefix in the CLI. Piping works: `cat draft.txt | threadsmith new --file - --at next`.
 
 ## Destinations, versions and platforms
 
@@ -100,8 +108,7 @@ An account can override its limit (`maxChars`); `threadsmith platforms` / `list_
 
 Platform habits worth following: Mastodon discovery runs on hashtags (one to three CamelCase tags help); Threads allows
 one topic tag; LinkedIn shows only ~210 characters before "see more", so the opening line carries it; Bluesky links
-count in full, so prefer short links. With the server's AI on, `threadsmith ai adapt linkedin --file draft.txt`
-(REST `POST /api/ai/adapt`) rewrites a thread for a platform within its limit.
+count in full, so prefer short links.
 
 ## Things Threadsmith deliberately leaves to you (the agent)
 
@@ -114,12 +121,12 @@ auto-plug rule or evergreen recycler, because you do these better with the data:
 - **When to post**: derive good hours per platform from the same data, then propose slot changes for
   `threadsmith.config.json` to the person (you can't edit it through the API; that is intentional).
 - **Plug / follow-up**: when a published thread is clearly outperforming (relative to that account's own history),
-  draft a follow-up and, after the person agrees, `append_to_post` (CLI `threadsmith append <id>`): it replies to the
+  draft a follow-up and `append_to_post` (CLI `threadsmith append <id>`): it replies to the
   last live post on every destination that threads. Remember a link costs $0.20 per post on X's API.
 - **Evergreen**: find old top performers, rewrite rather than repeat verbatim (platforms penalise duplicates), and
   queue them as new posts with `create_post` (or `POST /api/posts/{id}/duplicate`, then edit).
-- **Running it on a schedule**: a scheduled agent (e.g. a Claude Code routine or cron + the CLI) that runs the above
-  weekly and asks the person before anything is published. X metric reads are billed: only with their OK (`paid`).
+- **Running it on a schedule**: a scheduled agent (a Claude Code routine, Claude Duet, cron + the CLI, or Threadsmith's
+  own operator) runs the above; the approval gate keeps the person in charge. X metric reads are billed: only with their OK (`paid`).
 
 ## Writing threads that work
 
@@ -157,7 +164,8 @@ auto-plug rule or evergreen recycler, because you do these better with the data:
 - **X's API costs money per post** (the .env keys and connected X accounts alike; every other platform is free). On X's pay-per-use API each post costs about $0.015, and a post containing a URL
   about $0.20. A thread is billed per post (6 posts ≈ $0.09). Avoid gratuitous links; mention the cost when the user
   publishes something long or link-heavy.
-- **Publishing is public and irreversible.** Only use `publish` / `publish_now` when the user explicitly asks to post now.
+- **Publishing is public and irreversible.** With approval on, `publish` / `publish_now` asks the user and goes out once they
+  approve; with approval off, only use them when the user explicitly asks to post now. You can never approve.
   Deleting in Threadsmith never removes anything already published anywhere.
 - **Failed threads resume.** `retry` continues after the last item that went out on each destination, so it doesn't duplicate.
   Posts already live are locked: an edit that changes, removes or reorders them is refused (409); edit only the
@@ -166,5 +174,5 @@ auto-plug rule or evergreen recycler, because you do these better with the data:
 - **Missed times are not posted late unattended.** If the server was off when a post was due and it is more than
   `lateGraceMinutes` (default 60) late, it becomes `due` with `error` explaining why. Ask the user whether to
   publish it now (`retry` in API mode), post it by hand, or reschedule it.
-- **The server's AI copilot** (`threadsmith ai threadify|hooks|fit|rewrite`) is optional and may be off; you can always
-  write the text yourself.
+- **Approval is enforced by the server**, not by these instructions: pending and sent-back posts never publish, and
+  deciding needs the user. Don't look for ways around it; if something must go out urgently, say so in the post's title.

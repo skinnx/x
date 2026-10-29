@@ -104,6 +104,45 @@ const MIGRATIONS = [
   `
   ALTER TABLE post_targets ADD COLUMN metrics TEXT;
   `,
+  `
+  ALTER TABLE posts ADD COLUMN approval TEXT;
+  ALTER TABLE posts ADD COLUMN approval_note TEXT;
+  ALTER TABLE posts ADD COLUMN approval_by TEXT;
+  ALTER TABLE posts ADD COLUMN approval_at TEXT;
+
+  CREATE TABLE audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    post_id TEXT,
+    detail TEXT
+  );
+  CREATE INDEX audit_post ON audit(post_id);
+
+  -- Chat messages that carry an approval request, so a decision can update them everywhere.
+  CREATE TABLE approval_messages (
+    post_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (channel, ref)
+  );
+  CREATE INDEX approval_messages_post ON approval_messages(post_id);
+
+  CREATE TABLE operator_runs (
+    id TEXT PRIMARY KEY,
+    trigger TEXT NOT NULL,
+    task TEXT,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    summary TEXT,
+    error TEXT,
+    tool_calls INTEGER NOT NULL DEFAULT 0
+  );
+  `,
 ];
 
 const current = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;

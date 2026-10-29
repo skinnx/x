@@ -23,6 +23,11 @@ export const env = {
   publicUrl: str("PUBLIC_URL"),
   /** When set, every /api, /mcp and /media request needs `Authorization: Bearer <token>`. */
   authToken: str("AUTH_TOKEN"),
+  /**
+   * Token to give agents instead of AUTH_TOKEN: same API, but it can't approve posts, resume publishing or touch
+   * accounts. Requires AUTH_TOKEN (otherwise a request without a token would be treated as the owner).
+   */
+  agentToken: str("AGENT_TOKEN"),
   /** Extra hostnames accepted in the Host header when no AUTH_TOKEN is set (comma-separated). */
   allowedHosts: (str("ALLOWED_HOSTS") ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean),
 
@@ -38,6 +43,21 @@ export const env = {
     anthropicKey: str("ANTHROPIC_API_KEY"),
   },
 
+  /** Approval chat on Telegram: a bot from @BotFather, and the chat (your private chat with it, or a group). */
+  telegram: {
+    botToken: str("TELEGRAM_APPROVAL_BOT_TOKEN"),
+    chatId: str("TELEGRAM_APPROVAL_CHAT_ID"),
+    /** Telegram user ids allowed to decide (comma-separated). Default: anyone in that chat. */
+    approverIds: (str("TELEGRAM_APPROVER_IDS") ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+  },
+  /** Approval channel on Discord: a bot and the channel it posts approval requests in. */
+  discord: {
+    botToken: str("DISCORD_APPROVAL_BOT_TOKEN"),
+    channelId: str("DISCORD_APPROVAL_CHANNEL_ID"),
+    /** Discord user ids allowed to decide (comma-separated). Default: anyone who can see the channel. */
+    approverIds: (str("DISCORD_APPROVER_IDS") ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+  },
+
   vapidSubject: str("VAPID_SUBJECT") ?? "mailto:threadsmith@localhost",
 };
 
@@ -51,6 +71,11 @@ if (env.publicUrl) {
   if (!ok) throw new Error(`PUBLIC_URL must be a full http(s) URL such as https://threads.example.com (got "${env.publicUrl}")`);
   env.publicUrl = env.publicUrl.replace(/\/+$/, "");
 }
+
+if (env.agentToken && !env.authToken) {
+  throw new Error("AGENT_TOKEN needs AUTH_TOKEN too: without it, a request with no token would act as the owner and could approve its own posts.");
+}
+if (env.agentToken && env.agentToken === env.authToken) throw new Error("AGENT_TOKEN must differ from AUTH_TOKEN.");
 
 export const xConfigured = Boolean(env.x.apiKey && env.x.apiSecret && env.x.accessToken && env.x.accessSecret);
 

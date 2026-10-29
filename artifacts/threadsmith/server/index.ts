@@ -5,6 +5,9 @@ import { getConfig } from "./config.ts";
 import { env, publicUrl, VERSION, xConfigured } from "./env.ts";
 import { sendToAll, startPush } from "./push.ts";
 import { startAccountChecks } from "./accounts.ts";
+import { startAudit } from "./audit.ts";
+import { alert, channelStatuses, startNotify } from "./notify/hub.ts";
+import { startOperator } from "./operator.ts";
 import { recoverInterrupted } from "./repo.ts";
 import { startScheduler } from "./scheduler.ts";
 import { startWebhooks } from "./webhooks.ts";
@@ -13,17 +16,23 @@ const config = getConfig();
 const recovered = recoverInterrupted();
 if (recovered) console.warn(`⚠ ${recovered} post(s) were mid-publish when the process stopped; marked failed for review.`);
 
+startAudit();
 startWebhooks();
 startPush();
+const stopNotify = startNotify();
 startAccountChecks((a) => {
   console.warn(`⚠ ${a.label}: ${a.lastError}`);
   void sendToAll({ title: `${a.label} needs attention`, body: a.lastError ?? "", url: "/connect", postId: null, tag: `account-${a.id}` });
+  alert(`⚠ ${a.label} needs attention: ${a.lastError ?? ""}\nPosts to it will fail until you reconnect it in Threadsmith.`);
 });
 const stopScheduler = startScheduler();
+const stopOperator = startOperator();
 
 const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, () => {
   console.log(`Threadsmith ${VERSION} → ${publicUrl()}`);
   console.log(`  timezone ${config.timezone} · publishing: ${xConfigured ? "X API v2" : "manual (notify + copy) — add X keys to .env to auto-post"}`);
+  const chats = channelStatuses().filter((c) => c.configured).map((c) => c.id);
+  console.log(`  approvals: ${getConfig().approval.require === "never" ? "off (agents publish directly)" : "agents need your OK"} · chats: ${chats.join(", ") || "none (approve in the web UI)"}`);
   console.log(`  API docs ${publicUrl()}/docs · MCP ${publicUrl()}/mcp · agents ${publicUrl()}/llms.txt`);
   if (!env.authToken && env.host !== "127.0.0.1" && env.host !== "localhost") {
     console.warn("⚠ Listening beyond localhost without AUTH_TOKEN — anyone who can reach this port can post as you.");
@@ -31,6 +40,8 @@ const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (
 });
 
 function shutdown() {
+  stopOperator();
+  stopNotify();
   stopScheduler();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();

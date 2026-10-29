@@ -9,7 +9,24 @@ export type PostStatus = (typeof POST_STATUSES)[number];
 // published  – live on X (via API, or marked by hand)
 // failed     – X API error; `error` says why, `xPostIds` lists any tweets that did go out
 
-export type PostSource = "ui" | "api" | "mcp" | "cli" | "ai";
+export type PostSource = "ui" | "api" | "mcp" | "cli" | "ai" | "operator";
+
+export const APPROVAL_STATES = ["pending", "approved", "changes_requested", "rejected"] as const;
+export type ApprovalState = (typeof APPROVAL_STATES)[number];
+// pending           – an agent wants it out; nothing is published until the person decides
+// approved          – the person approved this content (an agent's later content edit asks again)
+// changes_requested – the person sent feedback (`note`); the agent revises, which asks again
+// rejected          – the person said no; the post went back to drafts
+
+/** The person's decision on agent-made content. null: no decision needed (made by the person, or never queued). */
+export interface Approval {
+  state: ApprovalState;
+  /** Feedback from the person (changes requested or rejection reason). */
+  note: string | null;
+  /** Who decided, e.g. "ui", "telegram:@alice", "discord:alice"; who asked while pending. */
+  by: string | null;
+  at: string | null;
+}
 
 export interface Segment {
   id: string;
@@ -85,6 +102,8 @@ export interface Post {
    * With targets, each one publishes and resumes independently; the post's status summarises them.
    */
   targets: PostTarget[];
+  /** Human approval of agent-made content (see ApprovalState). Scheduled posts only go out when null or approved. */
+  approval: Approval | null;
   source: PostSource;
   createdAt: string;
   updatedAt: string;
@@ -122,8 +141,22 @@ export interface Queue {
 }
 
 export type AppEvent =
-  | { type: "post.created" | "post.updated" | "post.scheduled" | "post.due" | "post.published" | "post.failed"; post: Post }
-  | { type: "post.deleted"; id: string };
+  | {
+      type:
+        | "post.created"
+        | "post.updated"
+        | "post.scheduled"
+        | "post.due"
+        | "post.published"
+        | "post.failed"
+        | "post.approval_requested"
+        | "post.approved"
+        | "post.changes_requested"
+        | "post.rejected";
+      post: Post;
+    }
+  | { type: "post.deleted"; id: string }
+  | { type: "publishing.paused" | "publishing.resumed"; by: string; reason: string | null };
 
 export type AppEventType = AppEvent["type"];
 
@@ -135,7 +168,69 @@ export const APP_EVENT_TYPES: AppEventType[] = [
   "post.published",
   "post.failed",
   "post.deleted",
+  "post.approval_requested",
+  "post.approved",
+  "post.changes_requested",
+  "post.rejected",
+  "publishing.paused",
+  "publishing.resumed",
 ];
+
+/** Kill switch: while set, nothing is published (scheduler and "publish now"). */
+export interface PauseState {
+  at: string;
+  by: string;
+  reason: string | null;
+}
+
+export interface AuditEntry {
+  id: number;
+  at: string;
+  /** "agent:mcp", "agent:operator", "owner:ui", "owner:telegram:@alice", "system:scheduler", … */
+  actor: string;
+  action: string;
+  postId: string | null;
+  detail: string | null;
+}
+
+export interface ChannelStatus {
+  id: "telegram" | "discord";
+  configured: boolean;
+  connected: boolean;
+  error: string | null;
+}
+
+export interface OperatorRun {
+  id: string;
+  trigger: string;
+  task: string | null;
+  status: "running" | "done" | "failed";
+  startedAt: string;
+  finishedAt: string | null;
+  summary: string | null;
+  error: string | null;
+  toolCalls: number;
+}
+
+export interface OperatorStatus {
+  configured: boolean;
+  enabled: boolean;
+  reason: string | null;
+  model: string | null;
+  running: boolean;
+  nextRunAt: string | null;
+  lastRun: OperatorRun | null;
+}
+
+export interface ControlState {
+  paused: PauseState | null;
+  approval: { require: "agents" | "never"; except: PlatformId[] };
+  /** What the caller is: the person (owner) or an agent. Only the owner can approve, resume, connect accounts. */
+  role: "owner" | "agent";
+  channels: ChannelStatus[];
+  operator: OperatorStatus;
+  pendingApprovals: number;
+}
 
 export interface Health {
   ok: true;
@@ -144,5 +239,6 @@ export interface Health {
   maxChars: number;
   x: { configured: boolean; mode: "api" | "manual" };
   ai: { configured: boolean; provider: string | null; model: string | null };
+  paused: boolean;
   auth: { required: boolean };
 }

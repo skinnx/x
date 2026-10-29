@@ -21,6 +21,7 @@ export function createRouter() {
 export function errorResponse(err: Error, c: Context) {
   if (err instanceof NotFoundError) return c.json({ error: "not_found", message: err.message }, 404);
   if (err instanceof ConflictError) return c.json({ error: "conflict", message: err.message }, 409);
+  if ("status" in err && err.status === 403) return c.json({ error: "forbidden", message: err.message }, 403);
   if ("status" in err && typeof err.status === "number" && err.status >= 400 && err.status < 500) {
     return c.json({ error: "bad_request", message: err.message }, err.status as 400);
   }

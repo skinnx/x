@@ -3,3 +3,4 @@ dist
 data
 .env
 threadsmith.config.json
+operator.md

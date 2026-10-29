@@ -2,7 +2,7 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { TZDate } from "@date-fns/tz";
 import { z } from "zod";
-import type { Post, Queue, QueueDay, QueueItem } from "../shared/types.ts";
+import { PLATFORM_IDS, type Post, type Queue, type QueueDay, type QueueItem } from "../shared/types.ts";
 import { env } from "./env.ts";
 import { BadInputError, ConflictError, listPosts } from "./repo.ts";
 
@@ -29,8 +29,32 @@ const ConfigSchema = z.object({
    * unattended; it becomes "due" so you decide. 0 = always post late posts.
    */
   lateGraceMinutes: z.number().int().min(0).default(60),
-  /** A few of your own past posts; the AI copilot imitates their voice. */
+  /** A few of your own past posts; agents (get_settings) and the operator imitate their voice. */
   voice: z.array(z.string()).default([]),
+  /**
+   * Human approval of what agents queue. "agents": nothing an agent (MCP, API, CLI, the operator) schedules or publishes
+   * goes out until the person approves it (UI, Telegram, Discord). "never": agents publish directly. `except`: platforms
+   * where agents may post without approval (e.g. a private Telegram log channel).
+   */
+  approval: z
+    .object({ require: z.enum(["agents", "never"]).default("agents"), except: z.array(z.enum(PLATFORM_IDS)).default([]) })
+    .default({ require: "agents", except: [] }),
+  /** Daily summary to the approval chats (Telegram/Discord) at this local time; null = off. Urgent things are sent at once. */
+  digest: z.object({ time: hhmm.nullable().default("08:30") }).default({ time: "08:30" }),
+  /**
+   * The built-in operator: Claude running unattended with Threadsmith's tools, following your brief (operator.md).
+   * It runs at `runAt` local times on `days`, when you ask (UI, Telegram /run), and when you request changes on its posts.
+   */
+  operator: z
+    .object({
+      enabled: z.boolean().default(false),
+      days: days.default("daily"),
+      runAt: z.array(hhmm).default(["08:00"]),
+      briefPath: z.string().default("operator.md"),
+      maxToolCalls: z.number().int().min(1).max(200).default(40),
+      maxRunsPerDay: z.number().int().min(1).max(100).default(12),
+    })
+    .default({ enabled: false, days: "daily", runAt: ["08:00"], briefPath: "operator.md", maxToolCalls: 40, maxRunsPerDay: 12 }),
 });
 export type Config = z.infer<typeof ConfigSchema>;
 
@@ -44,6 +68,9 @@ const DEFAULT_FILE = {
   schedulerIntervalSeconds: 15,
   lateGraceMinutes: 60,
   voice: [],
+  approval: { require: "agents", except: [] },
+  digest: { time: "08:30" },
+  operator: { enabled: false, days: "daily", runAt: ["08:00"], briefPath: "operator.md" },
 };
 
 let cache: { mtimeMs: number; config: Config } | undefined;
@@ -150,6 +177,29 @@ function slotInstants(day: LocalDay, config: Config): Date[] {
     .filter((ms) => !seen.has(ms) && seen.add(ms))
     .map((ms) => new Date(ms));
 }
+
+/**
+ * Next instant after `after` that is one of `times` (local HH:MM) on one of `days` ("daily", "mon-fri"…), in the
+ * configured timezone. For the operator's and digest's own schedules (they don't take posting slots).
+ */
+export function nextLocalTime(days: string, times: string[], after = new Date()): Date | null {
+  const config = getConfig();
+  const allowed = parseDays(days);
+  if (!allowed || !times.length) return null;
+  const mins = [...new Set(times.map(toMinutes))].sort((a, b) => a - b);
+  for (let i = 0; i <= 8; i++) {
+    const day = localDay(after.getTime(), config.timezone, i);
+    if (!allowed.has(day.weekday)) continue;
+    for (const min of mins) {
+      const at = new Date(new TZDate(day.y, day.m, day.d, Math.floor(min / 60), min % 60, config.timezone).getTime());
+      if (at > after) return at;
+    }
+  }
+  return null;
+}
+
+/** Today's date (YYYY-MM-DD) in the configured timezone. */
+export const localDateKey = (ms = Date.now()) => localDay(ms, getConfig().timezone).key;
 
 const minuteKey = (iso: string | Date) => new Date(iso).toISOString().slice(0, 16);
 const OCCUPYING = ["scheduled", "publishing", "due", "published", "failed"] as const;

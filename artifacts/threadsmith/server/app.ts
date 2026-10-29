@@ -4,8 +4,9 @@ import path from "node:path";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { Scalar } from "@scalar/hono-api-reference";
-import { aiRoutes } from "./ai/routes.ts";
 import { apiRoutes, mediaFileRoutes } from "./api.ts";
+import { controlRoutes } from "./control-api.ts";
+import { operatorRoutes } from "./operator.ts";
 import { guardRequest, requireAuth } from "./auth.ts";
 import { env, ROOT, VERSION } from "./env.ts";
 import { errorResponse } from "./http.ts";
@@ -27,8 +28,9 @@ app.use("/media/*", requireAuth);
 app.use("/llms-full.txt", requireAuth);
 
 app.route("/api", apiRoutes);
+app.route("/api", controlRoutes);
+app.route("/api/operator", operatorRoutes);
 app.route("/api/push", pushRoutes);
-app.route("/api/ai", aiRoutes);
 app.route("/media", mediaFileRoutes);
 app.route("/mcp", mcpRoutes);
 app.route("/", llmsRoutes);
@@ -40,9 +42,10 @@ app.doc31("/openapi.json", (c) => ({
     title: "Threadsmith API",
     version: VERSION,
     description:
-      "The publishing layer for AI agents: draft, check, schedule and publish posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram " +
-      "and Discord, read their engagement, and continue published threads. Credentials stay on the server; counting, resumable publishing and " +
-      "scheduling are handled here. The same capabilities are on MCP at /mcp and the `threadsmith` CLI. " +
+      "Social publishing run by AI agents: draft, check, schedule and publish posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram " +
+      "and Discord, read their engagement, and continue published threads. Agents do the work; the person decides: what an agent queues waits for " +
+      "their approval (web UI, Telegram, Discord; see the Approvals tag and each post's `approval`), and they can pause everything. Credentials stay on " +
+      "the server; counting, resumable publishing and scheduling are handled here. The same capabilities are on MCP at /mcp and the `threadsmith` CLI. " +
       "Threads are arrays of segments, or one string with lines of `---` between posts. Send `Idempotency-Key` on POSTs you might retry.",
   },
   servers: [{ url: env.publicUrl ?? new URL(c.req.url).origin }],
@@ -53,8 +56,9 @@ app.doc31("/openapi.json", (c) => ({
     { name: "Platforms", description: "What each supported platform allows (limits, images, how threads land) and costs." },
     { name: "Accounts", description: "Connected accounts per platform. Credentials are verified on connect, stored encrypted and never returned." },
     { name: "Metrics", description: "Engagement data per destination, for agents to analyse. No built-in dashboards or rules: the agent decides." },
+    { name: "Approvals", description: "The person's side: approve or send back what agents queue, pause everything, audit log, digest, approval chats." },
+    { name: "Operator", description: "The built-in operator: Claude running unattended on a schedule with these tools, following operator.md." },
     { name: "Media", description: "Images attached to posts (PNG, JPEG, WebP, GIF; ≤5 MB; ≤4 per post)." },
-    { name: "AI", description: "Writing copilot (Claude)." },
     { name: "Events", description: "Server-Sent Events stream of every state change." },
     { name: "Webhooks", description: "HMAC-signed outbound webhooks for the same events." },
     { name: "Notifications", description: "Web Push reminders for the browser." },

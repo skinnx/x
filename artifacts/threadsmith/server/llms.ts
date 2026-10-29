@@ -4,26 +4,34 @@ import { Hono } from "hono";
 import { PLATFORMS } from "../shared/platforms.ts";
 import { listAccounts } from "./accounts.ts";
 import { threadGuide } from "./ai/guide.ts";
-import { aiStatus } from "./ai/provider.ts";
 import { getConfig } from "./config.ts";
 import { env, xConfigured } from "./env.ts";
 import { mcpCatalog } from "./mcp.ts";
+import { operatorStatus } from "./operator.ts";
 
 export const llmsRoutes = new Hono();
 
 const origin = (url: string) => env.publicUrl?.replace(/\/+$/, "") ?? new URL(url).origin;
 const authLine = () =>
   env.authToken
-    ? "Every /api, /mcp and /media request needs `Authorization: Bearer <AUTH_TOKEN>` (the token is in the server's .env)."
+    ? `Every /api, /mcp and /media request needs \`Authorization: Bearer <token>\`${env.agentToken ? " (agents get AGENT_TOKEN: everything except deciding on approvals, resuming publishing and managing accounts)" : ""}.`
     : "This instance needs no token (it should only be reachable from this machine or a private network).";
+
+const approvalLine = () => {
+  const { approval } = getConfig();
+  return approval.require === "agents"
+    ? `Approval: everything an agent schedules or publishes waits for the person's decision (web UI, Telegram, Discord)${approval.except.length ? `, except posts only to ${approval.except.join(", ")}` : ""}. Queuing is the ask. A post's \`approval.state\` is pending, then approved (it goes out), changes_requested (\`approval.note\` says what to change: revise with PATCH, which asks again) or rejected (back to drafts). Agents can't approve.`
+    : "Approval: off on this instance (approval.require = never): what agents schedule or publish goes out as is.";
+};
 
 llmsRoutes.get("/llms.txt", (c) => {
   const base = origin(c.req.url);
   return c.text(`# Threadsmith
 
-> The publishing layer for AI agents: draft, check, schedule and publish posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord, read their engagement and continue threads — while the person keeps the credentials and approves. Draft once, give each platform its own version if needed, count characters the way each platform does, queue posts into time slots, and publish to every connected account (or, for X without accounts, by copy-paste when a notification fires). Everything the UI does is available to agents over REST, MCP, a CLI, webhooks and server-sent events.
+> The publishing layer for AI agents: draft, check, schedule and publish posts and threads on X, Bluesky, Mastodon, Threads, LinkedIn, Telegram and Discord, read their engagement and continue threads. Agents do the work; the person keeps the credentials and only decides: they approve, send back or reject what agents queue, from the web UI or their Telegram/Discord chat, and can pause everything. Draft once, give each platform its own version if needed, count characters the way each platform does, queue posts into time slots, and publish to every connected account (or, for X without accounts, by copy-paste when a notification fires). Everything the UI does is available to agents over REST, MCP, a CLI, webhooks and server-sent events.
 
 Base URL: ${base}. ${authLine()}
+${approvalLine()}
 Threads are one text with a line containing only \`---\` between posts (or an array of segments). Times are ISO-8601 date-times (without an offset they are read in ${getConfig().timezone}); \`"next"\` means the next free posting slot. X limit: ${getConfig().maxChars} weighted characters per post; other platforms: \`GET /api/platforms\`.
 Destinations: a post's \`targets\` are connected accounts (\`GET /api/accounts\`), each optionally with its own version; a post without targets uses the legacy single-X mode (.env X keys, or manual copy & post). \`GET /api/posts/{id}/preview\` shows what each destination gets and whether it fits. Posting through X's API is paid per post; the other platforms are free.
 
@@ -35,12 +43,13 @@ Destinations: a post's \`targets\` are connected accounts (\`GET /api/accounts\`
 ## Agent interfaces
 - [MCP endpoint](${base}/mcp): Streamable HTTP, stateless. Claude Code: \`claude mcp add --transport http threadsmith ${base}/mcp${env.authToken ? ' --header "Authorization: Bearer <AUTH_TOKEN>"' : ""}\`${env.authToken ? `. Clients that can't send headers (claude.ai / ChatGPT connectors) use ${base}/mcp?token=<AUTH_TOKEN> over HTTPS` : ""}
 - [CLI](${base}/llms-full.txt): zero-dependency Node script \`cli/threadsmith.mjs\` (\`threadsmith new "text" --at next\`, \`threadsmith queue\`, \`--json\` everywhere); set THREADSMITH_URL and THREADSMITH_TOKEN
-- [Health](${base}/api/health): version, X mode (api or manual), AI copilot status, timezone and limit
+- [Health](${base}/api/health): version, X mode (api or manual), whether publishing is paused, timezone and limit
+- [Approvals](${base}/api/approvals): what waits for the person or was sent back with changes; [control](${base}/api/control): approval policy, pause, chats, operator
 - [Accounts](${base}/api/accounts) and [platforms](${base}/api/platforms): where posts can go, each platform's limits, counting and cost
 
 ## Events
 - [Webhooks](${base}/openapi.json): \`POST /api/webhooks {url, events?}\`; deliveries are signed with \`X-Threadsmith-Signature: sha256=<HMAC-SHA256 of the raw body>\`
-- [Event stream](${base}/api/events): server-sent events for post.created, post.updated, post.scheduled, post.due, post.published, post.failed, post.deleted
+- [Event stream](${base}/api/events): server-sent events for every post change, approvals (post.approval_requested, post.approved, post.changes_requested, post.rejected) and publishing.paused/resumed
 
 ## Optional
 - [Writing guide](${base}/llms-full.txt): what makes a thread work, each platform's counting rules and limits, and X's per-post API costs
@@ -51,7 +60,7 @@ llmsRoutes.get("/llms-full.txt", async (c) => {
   const { app, VERSION } = await import("./app.ts"); // lazy: app.ts imports this module
   const base = origin(c.req.url);
   const config = getConfig();
-  const ai = aiStatus();
+  const op = operatorStatus();
   const accounts = listAccounts();
   const doc = app.getOpenAPI31Document({ openapi: "3.1.0", info: { title: "Threadsmith API", version: VERSION } });
 
@@ -77,7 +86,8 @@ llmsRoutes.get("/llms-full.txt", async (c) => {
       : "none yet (posts use the legacy single-X mode until the person connects accounts in the UI)"
   }
 - X mode for posts without destinations: ${xConfigured ? "api — scheduled posts publish automatically through the X API" : "manual — no X API keys; at the scheduled time the person is notified and copies the thread into X, then marks it published"}
-- AI copilot: ${ai.configured ? `${ai.provider} (${ai.model}) at /api/ai/*` : "off (/api/ai/* answers 409 ai_not_configured)"}
+- ${approvalLine()}
+- Built-in operator: ${op.enabled ? `on (${op.model ?? "Claude"}), next run ${op.nextRunAt ?? "not scheduled"}` : `off${op.reason ? ` (${op.reason})` : ""}`}
 - Timezone: ${config.timezone}; X limit: ${config.maxChars} weighted characters per post (other platforms below)
 - Auth: ${authLine()}
 
@@ -106,26 +116,27 @@ llmsRoutes.get("/llms-full.txt", async (c) => {
   Date-only and free-form values and times in the past answer 400. \`"next"\` = next free slot from threadsmith.config.json.
 - Retries: every POST under /api accepts \`Idempotency-Key: <uuid>\`. Repeating a request with the same key on the same path
   replays the first response (status and JSON body) with the header \`Idempotent-Replayed: true\` instead of acting twice.
-- Attribution: send \`X-Threadsmith-Source: ai\` (or \`cli\`) on writes so the UI shows where a post came from.
-- Errors: JSON \`{error, message}\` with 400 (invalid input), 401 (token), 404, 409 (wrong state, e.g. editing a published post), 500.
+- Attribution: send \`X-Threadsmith-Source: cli\` from scripts; anything that isn't the web UI counts as an agent for approvals.
+- Errors: JSON \`{error, message}\` with 400 (invalid input), 401 (token), 403 (only the person may do that), 404, 409 (wrong state, e.g. editing a published post, or the post waits for approval), 500.
+- Kill switch: \`POST /api/control/pause {reason}\` stops every publish until the person resumes; use it when something goes wrong.
 
 ## Recommended workflow
-1. \`GET /api/health\` (mode, limit, timezone) and \`GET /api/config\` (slots, voice examples count).
-2. Pick destinations: \`GET /api/accounts\` (ask the person which ones if unclear).
+1. \`GET /api/health\` (mode, limit, timezone, paused), \`GET /api/config\` (slots, voice examples count) and \`GET /api/approvals\` (anything sent back to you).
+2. Pick destinations: \`GET /api/accounts\`.
 3. Draft in the person's voice and language; check counts per platform (MCP \`count_characters {platform}\`, CLI \`threadsmith count --platform p\`).
-   Where one thread can't suit every destination, write versions (or \`POST /api/ai/adapt {postId|text, platform|accountId}\` when AI is on).
-4. Show the draft to the person. Only after approval: \`POST /api/posts {text, targets, scheduledAt: "next" | ISO}\`, then
-   \`GET /api/posts/{id}/preview\` and fix every \`problem\`.
-5. Report the scheduled time in their timezone. \`GET /api/queue?days=7\` shows the timeline with free slots.
+   Where one thread can't suit every destination, write per-destination versions.
+4. Queue it: \`POST /api/posts {text, targets, title, scheduledAt: "next" | ISO}\`, then \`GET /api/posts/{id}/preview\` and fix every \`problem\`.
+   With approval on, this is the request: the person gets the exact preview and decides; follow up on \`post.changes_requested\` (webhook/SSE or \`GET /api/approvals\`).
+5. Report what you queued and when it would go out, in their timezone. \`GET /api/queue?days=7\` shows the timeline with free slots.
 6. Manual mode (posts without destinations): \`GET /api/posts/{id}/export\` gives text + an X intent URL; after posting, \`POST /api/posts/{id}/mark-published {url?}\`.
    If \`alreadyLive\` > 0 (a thread that failed partway through an API publish), post only \`remainingText\` / \`remainingPosts\`, as replies under \`replyToUrl\`.
 7. Images: \`POST /api/media\` (multipart \`file\`, \`alt\`) or \`POST /api/media/from-url {url, alt}\`, then put the media id in a segment's \`mediaIds\`
    (per-platform maximum and accepted types in the table below).
-Publishing now and deleting are irreversible; only do them when the person asks.
+Publishing is irreversible: with approval off, ask the person before publishing; never delete what they didn't ask you to.
 8. Data, not dashboards: \`GET /api/metrics\` (recent published posts with per-destination totals) and \`GET /api/posts/{id}/metrics?refresh=true\`
    (Bluesky, Mastodon, Threads free; X billed, only with \`paid=true\`). Threadsmith has no analytics views, best-time engine, auto-plug rules or
    evergreen recycler on purpose: analyse the numbers yourself, and act with \`POST /api/posts/{id}/append\` (continue a published thread: a follow-up
-   or plug, replying to the last live post on each destination) or a new post. Ask the person before publishing.
+   or plug, replying to the last live post on each destination; it asks for approval again) or a new post.
 
 ## REST routes (from ${base}/openapi.json)
 ${routes.join("\n") || "- (no routes registered)"}
@@ -133,7 +144,7 @@ ${routes.join("\n") || "- (no routes registered)"}
 ## MCP
 Endpoint: ${base}/mcp (Streamable HTTP, stateless, JSON responses). Claude Code: \`claude mcp add --transport http threadsmith ${base}/mcp${env.authToken ? ' --header "Authorization: Bearer <AUTH_TOKEN>"' : ""}\`.
 Resource \`threadsmith://guide\` holds the writing guide; prompt \`draft_thread {topic, notes?}\` walks through drafting and queueing.
-There are no AI copilot tools over MCP: you write the text yourself (the copilot is REST-only, at /api/ai/*). Tool errors come back as \`isError\` results with the same messages REST gives.
+You write the text yourself. Tool errors come back as \`isError\` results with the same messages REST gives.
 There is deliberately no tool to connect accounts (it needs the person's secrets); \`list_accounts\` shows what is connected.
 ${mcpCatalog()
   .map((t) => `- \`${t.name}\` — ${t.description}`)
@@ -148,7 +159,8 @@ Every command accepts \`--json\` for machine-readable output. Exit codes: 0 ok, 
 - \`publish <id>\`, \`retry <id>\`, \`copy <id> [--clipboard]\`, \`posted <id> [--url u]\`
 - \`accounts\` (\`accounts check <ref>\`), \`platforms\`
 - \`count [text|--file f] [--platform p] [--max n]\` — local count per post the way that platform counts (default X)
-- \`ai threadify|hooks|fit|rewrite|adapt ...\`, \`health\`, \`help\`
+- \`reviews\` (waiting on the person / sent back), \`pause [reason]\`, \`resume\`, \`approve|reject <id> [--note n]\`, \`changes <id> <note>\` (deciding needs the owner token), \`audit\`, \`digest\`, \`operator [run [task]]\`
+- \`health\`, \`help\`
 Account refs (\`--to\`, \`--version\`): id or id prefix, label, handle, or platform name when only one account of it is connected.
 Ids can be shortened to any unique prefix.
 
@@ -157,7 +169,8 @@ Ids can be shortened to any unique prefix.
   \`X-Threadsmith-Event\` and \`X-Threadsmith-Signature: sha256=<hex HMAC-SHA256 of the raw body, keyed with the secret>\`; 3 attempts with backoff.
   Verify in Node: \`crypto.createHmac("sha256", secret).update(rawBody).digest("hex")\` and compare with timingSafeEqual.
 - \`GET /api/events\` streams the same events as server-sent events (event name = type, data = JSON).
-- Event types: post.created, post.updated, post.scheduled, post.due, post.published, post.failed, post.deleted.
+- Event types: post.created, post.updated, post.scheduled, post.due, post.published, post.failed, post.deleted, post.approval_requested,
+  post.approved, post.changes_requested, post.rejected (each with \`post\`), publishing.paused, publishing.resumed (with \`by\`, \`reason\`).
 
 ${threadGuide().replace(/^(#+) /gm, "#$1 ")}`);
 });
