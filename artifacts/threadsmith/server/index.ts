@@ -3,7 +3,8 @@ import { serve } from "@hono/node-server";
 import { app } from "./app.ts";
 import { getConfig } from "./config.ts";
 import { env, publicUrl, VERSION, xConfigured } from "./env.ts";
-import { startPush } from "./push.ts";
+import { sendToAll, startPush } from "./push.ts";
+import { startAccountChecks } from "./accounts.ts";
 import { recoverInterrupted } from "./repo.ts";
 import { startScheduler } from "./scheduler.ts";
 import { startWebhooks } from "./webhooks.ts";
@@ -14,6 +15,10 @@ if (recovered) console.warn(`⚠ ${recovered} post(s) were mid-publish when the 
 
 startWebhooks();
 startPush();
+startAccountChecks((a) => {
+  console.warn(`⚠ ${a.label}: ${a.lastError}`);
+  void sendToAll({ title: `${a.label} needs attention`, body: a.lastError ?? "", url: "/connect", postId: null, tag: `account-${a.id}` });
+});
 const stopScheduler = startScheduler();
 
 const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, () => {

@@ -61,7 +61,7 @@ function payloadFor(event: AppEvent): PushPayload | null {
   }
 }
 
-async function sendToAll(payload: PushPayload) {
+export async function sendToAll(payload: PushPayload) {
   const subs = db.prepare("SELECT endpoint, keys FROM push_subscriptions").all() as unknown as { endpoint: string; keys: string }[];
   const { publicKey, privateKey } = vapidKeys();
   const result = { subscriptions: subs.length, sent: 0, failed: 0, removed: 0 };

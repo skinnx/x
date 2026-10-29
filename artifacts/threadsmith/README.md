@@ -60,7 +60,7 @@ Postiz hơn ở số nền tảng (Instagram, Facebook, TikTok, YouTube, Pintere
 | Telegram | 4096 (chú thích ảnh 1024) | tin nhắn trả lời nối tiếp | 10 | Miễn phí, bot là admin kênh |
 | Discord | 2000 | tin nhắn liên tiếp | 10 | Miễn phí, webhook |
 
-Token Threads và LinkedIn hết hạn sau khoảng 60 ngày; khi đó tài khoản hiện lỗi đỏ, bấm Check sau khi dán token mới.
+Token Threads và LinkedIn hết hạn sau khoảng 60 ngày. Server tự kiểm tra lại mọi tài khoản mỗi ngày: token hết hạn hiện lỗi đỏ ở trang Connect và gửi thông báo trình duyệt **trước** khi một bài hẹn giờ thất bại vì nó. Dán token mới rồi bấm Check.
 
 **Kết nối AI**: xem [mục riêng bên dưới](#kết-nối-ai).
 
@@ -252,6 +252,18 @@ const ok = timingSafeEqual(Buffer.from(expected), Buffer.from(req.headers["x-thr
 ```
 
 ---
+
+## Chạy bằng Docker
+
+Image chạy bằng user không phải root; toàn bộ dữ liệu (SQLite, ảnh, `secret.key`, config) nằm trong volume `/data`. Từ thư mục gốc của repo:
+
+```bash
+cp artifacts/threadsmith/.env.example artifacts/threadsmith/.env      # tùy chọn
+docker compose -f artifacts/threadsmith/docker-compose.yml up -d --build
+# → http://127.0.0.1:3000 ; sửa khung giờ: docker compose ... exec threadsmith vi /data/threadsmith.config.json
+```
+
+Compose chỉ mở cổng trên `127.0.0.1`. Muốn truy cập từ ngoài, đặt HTTPS (Caddy bên dưới) phía trước và đặt `AUTH_TOKEN`, `PUBLIC_URL` trong `.env`. Sao lưu = sao lưu volume `threadsmith-data`.
 
 ## Triển khai trên VPS
 

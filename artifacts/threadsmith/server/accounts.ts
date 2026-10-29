@@ -159,3 +159,27 @@ export function deleteAccount(id: string): void {
   db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
 }
 
+
+const DAY = 86_400_000;
+
+/**
+ * Re-check every account once a day so an expired token (Threads and LinkedIn tokens last about 60 days) shows up
+ * as an account error, with a browser notification, before a scheduled post fails on it.
+ */
+export function startAccountChecks(onNewError: (account: Account) => void): () => void {
+  const run = async () => {
+    for (const a of listAccounts()) {
+      if (a.verifiedAt && Date.now() - Date.parse(a.verifiedAt) < DAY - 60_000) continue;
+      const checked = await recheckAccount(a.id);
+      if (checked.lastError && checked.lastError !== a.lastError) onNewError(checked);
+    }
+  };
+  const first = setTimeout(() => void run().catch((err) => console.error("[accounts] check failed:", err)), 60_000);
+  const timer = setInterval(() => void run().catch((err) => console.error("[accounts] check failed:", err)), 3_600_000);
+  first.unref();
+  timer.unref();
+  return () => {
+    clearTimeout(first);
+    clearInterval(timer);
+  };
+}
