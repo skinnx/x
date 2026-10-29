@@ -41,6 +41,8 @@ export interface PostTarget {
   accountId: string;
   platform: PlatformId;
   thread: Segment[] | null;
+  /** true when `thread` is the shared thread as it was when this destination published (history, not a version). */
+  snapshot: boolean;
   status: TargetStatus;
   externalIds: string[]; // items already posted on that platform, in order (resume after a partial failure)
   url: string | null;

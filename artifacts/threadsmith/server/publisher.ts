@@ -19,6 +19,7 @@ export function preflight(account: Account, items: PublishItem[], offset = 0): s
   const limit = limitFor(account);
   for (const [i, item] of items.entries()) {
     const n = items.length + offset > 1 ? `Post ${i + 1 + offset}` : "The post";
+    const where = items.length + offset > 1 ? ` in post ${i + 1 + offset}` : "";
     if (!item.text.trim() && !item.mediaIds.length) return `${n} is empty; add text or remove it.`;
     const captionLimit = account.platform === "telegram" && item.mediaIds.length ? TELEGRAM_CAPTION_LIMIT : limit;
     const length = countFor(account.platform, item.text);
@@ -28,11 +29,11 @@ export function preflight(account: Account, items: PublishItem[], offset = 0): s
     if (item.mediaIds.length > info.maxImages) return `${n} has ${item.mediaIds.length} images; ${info.name} allows at most ${info.maxImages}.`;
     if (info.maxImageBytes) {
       const big = item.mediaIds.map(getMedia).find((m) => m && m.size > info.maxImageBytes!);
-      if (big) return `${n}: ${big.filename} is ${(big.size / 1e6).toFixed(1)} MB; ${info.name} accepts images up to ${info.maxImageBytes / 1e6} MB.`;
+      if (big) return `${big.filename}${where} is ${(big.size / 1e6).toFixed(1)} MB; ${info.name} accepts images up to ${info.maxImageBytes / 1e6} MB.`;
     }
     if (info.imageTypes) {
       const bad = item.mediaIds.map(getMedia).find((m) => m && !info.imageTypes!.includes(m.mime));
-      if (bad) return `${n}: ${info.name} doesn't accept ${bad.mime.replace("image/", "").toUpperCase()} images (${bad.filename}); use ${info.imageTypes.map((t) => t.replace("image/", "").toUpperCase()).join(" or ")}.`;
+      if (bad) return `${info.name} doesn't accept ${bad.mime.replace("image/", "").toUpperCase()} images (${bad.filename}${where}); use ${info.imageTypes.map((t) => t.replace("image/", "").toUpperCase()).join(" or ")}.`;
     }
   }
   return null;
@@ -61,7 +62,7 @@ async function publishTarget(post: Post, target: PostTarget): Promise<string | n
       posted: target.externalIds,
       record: (ids) => recordTargetProgress(post.id, account.id, ids),
     });
-    markTargetPublished(post.id, account.id, { externalIds: result.ids, url: result.url });
+    markTargetPublished(post.id, account.id, { externalIds: result.ids, url: result.url, posted: target.thread ?? post.thread });
     setAccountError(account.id, null);
     console.log(`[publish] ${post.id} → ${account.label}: ${result.url ?? "ok"}`);
     return null;
@@ -72,7 +73,7 @@ async function publishTarget(post: Post, target: PostTarget): Promise<string | n
     // The X client already reports its own progress in the message.
     const progress =
       account.platform !== "x" && done && done < items.length
-        ? ` ${done} of ${items.length} are live on ${name}${resumable ? "; Retry continues after them" : ""}.`
+        ? ` ${done} of ${items.length} ${done === 1 ? "is" : "are"} live on ${name}${resumable ? "; Retry continues after them" : ""}.`
         : "";
     markTargetFailed(post.id, account.id, message + progress);
     if (err instanceof PlatformError && (err.status === 401 || err.status === 403)) setAccountError(account.id, message);

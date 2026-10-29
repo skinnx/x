@@ -97,6 +97,10 @@ const MIGRATIONS = [
   );
   CREATE INDEX post_targets_account ON post_targets(account_id);
   `,
+  `
+  ALTER TABLE accounts ADD COLUMN removed_at TEXT;
+  ALTER TABLE post_targets ADD COLUMN snapshot INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 const current = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;

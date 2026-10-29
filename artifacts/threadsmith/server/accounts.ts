@@ -33,10 +33,10 @@ const toAccount = (r: AccountRow): Account => ({
   createdAt: r.created_at,
 });
 
-const row = (id: string) => db.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as AccountRow | undefined;
+const row = (id: string) => db.prepare("SELECT * FROM accounts WHERE id = ? AND removed_at IS NULL").get(id) as AccountRow | undefined;
 
 export function listAccounts(): Account[] {
-  return (db.prepare("SELECT * FROM accounts ORDER BY created_at").all() as unknown as AccountRow[]).map(toAccount);
+  return (db.prepare("SELECT * FROM accounts WHERE removed_at IS NULL ORDER BY created_at").all() as unknown as AccountRow[]).map(toAccount);
 }
 
 export function getAccount(id: string): Account {
@@ -156,7 +156,13 @@ export function deleteAccount(id: string): void {
   if (pending.n) {
     throw new ConflictError(`${pending.n} draft, queued or unfinished post(s) still go to this account; remove it from them first.`);
   }
-  db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
+  // Published posts keep showing where they went: such an account is retired (credentials wiped), not deleted.
+  const history = db.prepare("SELECT 1 FROM post_targets WHERE account_id = ? LIMIT 1").get(id);
+  if (history) {
+    db.prepare("UPDATE accounts SET removed_at = ?, credentials = ?, last_error = NULL WHERE id = ?").run(new Date().toISOString(), seal("{}"), id);
+  } else {
+    db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
+  }
 }
 
 

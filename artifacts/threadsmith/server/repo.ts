@@ -39,6 +39,7 @@ interface PostRow {
 
 interface TargetRow {
   account_id: string;
+  snapshot: number;
   platform: PlatformId;
   thread: string | null;
   status: TargetStatus;
@@ -51,7 +52,7 @@ interface TargetRow {
 function targetsOf(postId: string): PostTarget[] {
   const rows = db
     .prepare(
-      `SELECT t.account_id, a.platform, t.thread, t.status, t.external_ids, t.url, t.error, t.published_at
+      `SELECT t.account_id, t.snapshot, a.platform, t.thread, t.status, t.external_ids, t.url, t.error, t.published_at
        FROM post_targets t JOIN accounts a ON a.id = t.account_id WHERE t.post_id = ? ORDER BY t.position`,
     )
     .all(postId) as unknown as TargetRow[];
@@ -59,6 +60,7 @@ function targetsOf(postId: string): PostTarget[] {
     accountId: r.account_id,
     platform: r.platform,
     thread: r.thread ? JSON.parse(r.thread) : null,
+    snapshot: r.snapshot === 1,
     status: r.status,
     externalIds: JSON.parse(r.external_ids),
     url: r.url,
@@ -251,7 +253,7 @@ function writeTargets(postId: string, targets: TargetInput[], existing: PostTarg
   for (const t of targets) {
     if (seen.has(t.accountId)) throw new BadInputError(`Account ${t.accountId} is listed twice`);
     seen.add(t.accountId);
-    if (!db.prepare("SELECT 1 FROM accounts WHERE id = ?").get(t.accountId)) {
+    if (!db.prepare("SELECT 1 FROM accounts WHERE id = ? AND removed_at IS NULL").get(t.accountId) && !existing.some((e) => e.accountId === t.accountId)) {
       throw new BadInputError(`Unknown account ${t.accountId}. List accounts with GET /api/accounts.`);
     }
   }
@@ -260,11 +262,17 @@ function writeTargets(postId: string, targets: TargetInput[], existing: PostTarg
       throw new ConflictError(`${PLATFORMS[old.platform].name} already has part of this thread live; it can't be removed until it's finished.`);
     }
   }
+  // Published destinations are history: they stay, whatever the new list says.
+  const kept = existing.filter((e) => e.status === "published" && !seen.has(e.accountId)).map((e) => ({ accountId: e.accountId }));
   db.prepare("DELETE FROM post_targets WHERE post_id = ?").run(postId);
-  targets.forEach((t, position) => {
+  [...targets, ...kept].forEach((t: TargetInput, position) => {
     const old = existing.find((e) => e.accountId === t.accountId);
     let thread: Segment[] | null =
-      t.thread === undefined ? (old?.thread ?? null) : t.thread ? normalizeThread({ thread: t.thread }, old?.thread ?? []) : null;
+      t.thread === undefined || old?.status === "published"
+        ? (old?.thread ?? null)
+        : t.thread
+          ? normalizeThread({ thread: t.thread }, old?.thread ?? [])
+          : null;
     // What is live on this destination came from its own version or the shared thread; whichever it publishes
     // next (switching either way included) must start with exactly those posts.
     if (old && old.status !== "published" && old.externalIds.length && PLATFORMS[old.platform].threadMode !== "single") {
@@ -275,13 +283,14 @@ function writeTargets(postId: string, targets: TargetInput[], existing: PostTarg
       else lockLivePrefix(before, structuredClone(shared), old.externalIds.length, name);
     }
     db.prepare(
-      `INSERT INTO post_targets (post_id, account_id, position, thread, status, external_ids, url, error, published_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO post_targets (post_id, account_id, position, thread, snapshot, status, external_ids, url, error, published_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       postId,
       t.accountId,
       position,
       thread ? JSON.stringify(thread) : null,
+      old?.status === "published" && old.snapshot ? 1 : 0,
       old?.status ?? "pending",
       JSON.stringify(old?.externalIds ?? []),
       old?.url ?? null,
@@ -299,7 +308,20 @@ export function recordTargetProgress(postId: string, accountId: string, external
 /** Links that come from a remote platform are only kept if they are plain http(s) (never javascript: or data:). */
 export const httpUrl = (u: string | null | undefined): string | null => (u && /^https?:\/\/[^\s]+$/i.test(u) ? u : null);
 
-export function markTargetPublished(postId: string, accountId: string, result: { externalIds: string[]; url: string | null }): void {
+/**
+ * `posted` is what went out. A destination that used the shared thread keeps it as a snapshot, so later edits of the
+ * shared thread (to fix another destination) never rewrite what this one shows as published.
+ */
+export function markTargetPublished(
+  postId: string,
+  accountId: string,
+  result: { externalIds: string[]; url: string | null; posted: Segment[] },
+): void {
+  db.prepare("UPDATE post_targets SET thread = ?, snapshot = 1 WHERE post_id = ? AND account_id = ? AND thread IS NULL").run(
+    JSON.stringify(result.posted),
+    postId,
+    accountId,
+  );
   db.prepare(
     "UPDATE post_targets SET status = 'published', external_ids = ?, url = ?, error = NULL, published_at = ? WHERE post_id = ? AND account_id = ?",
   ).run(JSON.stringify(result.externalIds), httpUrl(result.url), now(), postId, accountId);
