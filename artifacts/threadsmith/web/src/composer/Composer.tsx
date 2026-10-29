@@ -310,6 +310,7 @@ export function Composer(props: Props) {
   const customize = (a: Account) => {
     const base = draft.sharedThread ?? [];
     setTargets(draft.targets.map((t) => (t.accountId === a.id ? { ...t, thread: base.map((s) => ({ ...s, id: uid() })) } : t)));
+    dismissToast("preflight");
     switchVersion(a.id);
   };
   const resetVersion = (a: Account) => {

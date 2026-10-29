@@ -87,10 +87,15 @@ export function Destinations(p: Props) {
 
       {selected.length > 0 && (versions.length > 0 || !p.readOnly) && (
         <div className="flex items-center gap-1 overflow-x-auto">
+          {versions.length > 0 && (
           <div role="tablist" aria-label="Versions" className="flex shrink-0 items-center gap-0.5 rounded-lg border border-line p-0.5">
             <button role="tab" aria-selected={!p.version} onClick={() => p.onVersion(null)} className={tab(!p.version)}>
               Shared
-              {versions.length > 0 && <span className="font-normal text-ink-3">{plain.length}</span>}
+              {versions.length > 0 && (
+                <span className="font-normal text-ink-3" title={`Goes to ${plain.length} account${plain.length === 1 ? "" : "s"}`}>
+                  · {plain.length}
+                </span>
+              )}
             </button>
             {versions.map((t) => {
               const a = p.accounts.find((x) => x.id === t.accountId);
@@ -103,15 +108,16 @@ export function Destinations(p: Props) {
               );
             })}
           </div>
+          )}
           {!p.readOnly && plain.length > 0 && (
             <div className="relative shrink-0">
               {plain.length === 1 ? (
-                <button onClick={() => p.onCustomize(plain[0]!)} className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-ink-3 hover:bg-subtle hover:text-ink">
+                <button onClick={() => p.onCustomize(plain[0]!)} className="-ml-2 flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-ink-3 hover:bg-subtle hover:text-ink">
                   <GitFork size={13} /> Customize for {plain[0]!.label}
                 </button>
               ) : (
                 <>
-                  <button onClick={() => setMenu(!menu)} className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-ink-3 hover:bg-subtle hover:text-ink">
+                  <button onClick={() => setMenu(!menu)} className="-ml-2 flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-ink-3 hover:bg-subtle hover:text-ink">
                     <GitFork size={13} /> Customize for…
                   </button>
                   <Popover open={menu} onClose={() => setMenu(false)} className="top-full left-0 mt-1 w-60 p-1">
@@ -147,7 +153,7 @@ export function Destinations(p: Props) {
               {p.aiEnabled && (
                 <button
                   onClick={() => p.onAdapt(active)}
-                  disabled={p.adapting === active.id}
+                  disabled={p.adapting === active.id || Boolean(activeProgress?.externalIds.length)}
                   className="flex h-7 items-center gap-1 rounded-md px-1.5 font-medium text-ai hover:bg-ai-soft disabled:opacity-60"
                 >
                   {p.adapting === active.id ? <LoaderCircle size={12} className="animate-spin" /> : <Sparkles size={12} />}

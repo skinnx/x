@@ -103,7 +103,7 @@ function AccountRow({ account: a, health }: { account: Account; health: Health }
           </p>
         )}
       </div>
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1 max-sm:w-full max-sm:pl-10">
         <button onClick={() => check.mutate()} disabled={check.isPending} className={smallBtn} title="Check the credentials with the platform">
           {check.isPending ? <LoaderCircle size={13} className="animate-spin" /> : <RefreshCw size={13} />} Check
         </button>
