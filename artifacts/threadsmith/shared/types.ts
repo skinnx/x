@@ -23,7 +23,7 @@ export interface Approval {
   state: ApprovalState;
   /** Feedback from the person (changes requested or rejection reason). */
   note: string | null;
-  /** Who decided, e.g. "ui", "telegram:@alice", "discord:alice"; who asked while pending. */
+  /** Who asked (while pending) or decided, as actor:surface, e.g. "agent:mcp", "owner:ui", "owner:telegram:@alice". */
   by: string | null;
   at: string | null;
 }

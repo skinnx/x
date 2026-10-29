@@ -1,11 +1,12 @@
 // App shell: auth gate, sidebar + view routing, command palette, live events, global shortcuts.
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Bell, CalendarClock, CircleCheck, Inbox, Menu, PenLine, Plug, Plus, Search, Settings2 } from "lucide-react";
+import { BookOpen, Bell, CalendarClock, CircleCheck, CirclePause, FileText, Inbox, Menu, PenLine, Plug, Plus, Search, Settings2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Health } from "../../shared/types.ts";
 import { api, ApiError, auth } from "./api.ts";
 import { Composer } from "./composer/Composer.tsx";
 import { ConnectView } from "./connect/ConnectView.tsx";
+import { InboxView } from "./inbox/InboxView.tsx";
 import { useReminders } from "./connect/Reminders.tsx";
 import { Palette } from "./components/Palette.tsx";
 import { Logo, Sidebar } from "./components/Sidebar.tsx";
@@ -76,7 +77,7 @@ export function App() {
   );
 }
 
-const TITLES = { compose: "Write", queue: "Queue", connect: "Agents" } as const;
+const TITLES = { inbox: "Inbox", compose: "Write", queue: "Queue", connect: "Agents" } as const;
 
 /** A broken edit of threadsmith.config.json: the server keeps the last good config, so this is a notice, not an outage. */
 function ConfigProblem() {
@@ -122,13 +123,14 @@ function Shell({ health }: { health: Health }) {
   const commands = useMemo<Command[]>(
     () => [
       { id: "new", group: "Go", title: "New draft", icon: Plus, keywords: "compose write create", run: () => newDraft() },
-      { id: "go-write", group: "Go", title: "Go to composer", icon: PenLine, run: () => navigate("/") },
+      { id: "go-inbox", group: "Go", title: "Go to inbox", icon: Inbox, keywords: "approvals approve review decide", run: () => navigate("/") },
+      { id: "go-write", group: "Go", title: "Go to composer", icon: PenLine, keywords: "write", run: () => navigate("/write") },
       { id: "go-queue", group: "Go", title: "Go to queue", icon: CalendarClock, keywords: "schedule calendar", run: () => navigate("/queue") },
       {
         id: "go-drafts",
         group: "Go",
         title: "Go to drafts",
-        icon: Inbox,
+        icon: FileText,
         run: () => {
           if (matchMedia("(min-width: 1024px)").matches) document.querySelector<HTMLButtonElement>("#drafts-list button")?.focus();
           else setDrawerOpen(true);
@@ -137,6 +139,7 @@ function Shell({ health }: { health: Health }) {
       { id: "go-published", group: "Go", title: "Published posts", icon: CircleCheck, run: () => navigate("/queue?tab=published") },
       { id: "connect", group: "Agents", title: "Connect agents (MCP, API, CLI)", icon: Plug, keywords: "mcp claude settings webhooks", run: () => navigate("/connect") },
       { id: "docs", group: "Agents", title: "Open API reference", icon: BookOpen, keywords: "openapi rest docs", run: () => open("/docs", "_blank") },
+      { id: "pause", group: "Control", title: "Pause or resume publishing", icon: CirclePause, keywords: "kill switch stop", run: () => navigate("/") },
       { id: "reminders", group: "Settings", title: "Enable reminders", icon: Bell, keywords: "notifications push", run: () => enable.mutate() },
     ],
     [enable],
@@ -180,6 +183,7 @@ function Shell({ health }: { health: Health }) {
         </div>
         <ConfigProblem />
 
+        {view === "inbox" && <InboxView health={health} />}
         {view === "compose" && (
           <Composer
             key={composerKey(postId)}

@@ -1,4 +1,4 @@
-// The home screen: a thread as sortable post cards (or one text area), autosaved, with scheduling and the copilot.
+// The composer ("Write"): a thread as sortable post cards (or one text area), autosaved, with scheduling and approval.
 // With connected accounts selected as destinations, each card counts per platform and accounts can get their own version.
 import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -11,12 +11,8 @@ import {
   Image as ImageIcon,
   LayoutList,
   LoaderCircle,
-  MessageSquareQuote,
-  PenLine,
   Plus,
-  Rows3,
   Send,
-  Sparkles,
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
@@ -24,16 +20,17 @@ import { PLATFORMS } from "../../../shared/platforms.ts";
 import { joinThread, splitThread, weightedLength } from "../../../shared/thread.ts";
 import type { Account, Health, Post, Segment } from "../../../shared/types.ts";
 import { api, ApiError, intentUrl, liveSummary, remainingThread } from "../api.ts";
+import { ApprovalPill } from "../components/Approval.tsx";
 import { Popover } from "../components/Popover.tsx";
 import { dismissToast, toast, toastError } from "../components/Toasts.tsx";
 import { useCommands, type Command } from "../lib/commands.ts";
 import { copyThread as copyExport, useLiveEvent } from "../lib/live.ts";
 import { adoptPostId, navigate, newDraft } from "../lib/router.ts";
-import { joinedMeter, limitFor, PlatformIcon, postMeters, strictest, useAccounts, type Meter } from "../lib/platforms.tsx";
+import { joinedMeter, PlatformIcon, postMeters, strictest, useAccounts, type Meter } from "../lib/platforms.tsx";
 import { formatWhen } from "../lib/time.ts";
 import { cx, keys, uid } from "../lib/util.ts";
-import { AiPanel, type AiSection } from "./AiPanel.tsx";
 import { AltTextDialog } from "./AltTextDialog.tsx";
+import { ApprovalBanner } from "./ApprovalBanner.tsx";
 import { Destinations } from "./Destinations.tsx";
 import { MAX_IMAGES, PostCard, type PendingUpload } from "./PostCard.tsx";
 import { ScheduleBar, type Busy } from "./ScheduleBar.tsx";
@@ -165,7 +162,6 @@ export function Composer(props: Props) {
   const { health, sessionKey } = props;
   const qc = useQueryClient();
   const maxChars = health.maxChars;
-  const aiEnabled = health.ai.configured;
 
   const onCreated = useCallback(
     (post: Post) => {
@@ -217,21 +213,14 @@ export function Composer(props: Props) {
   const imageRules = activeAccounts
     .filter((a, i, all) => (PLATFORMS[a.platform].imageTypes || PLATFORMS[a.platform].maxImageBytes) && all.findIndex((b) => b.platform === a.platform) === i)
     .map((a) => ({ name: PLATFORMS[a.platform].name, types: PLATFORMS[a.platform].imageTypes, maxBytes: PLATFORMS[a.platform].maxImageBytes }));
-  const threadLimits = activeAccounts.filter((a) => PLATFORMS[a.platform].threadMode !== "single").map((a) => limitFor(a, health));
-  const activeLimit = legacy || !threadLimits.length ? maxChars : Math.min(...threadLimits);
 
   const [textMode, setTextMode] = useState(() => pref("threadsmith:textMode", false));
-  const [aiOpen, setAiOpen] = useState(() => pref("threadsmith:copilot", aiEnabled));
-  const [aiFocus, setAiFocus] = useState<{ section: AiSection; nonce: number } | null>(null);
-  const [focusedId, setFocusedId] = useState<string | null>(null);
   const [uploads, setUploads] = useState<Record<string, PendingUpload[]>>({});
   const [altFor, setAltFor] = useState<string | null>(null);
-  const [fitting, setFitting] = useState<string | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [slotTarget, setSlotTarget] = useState(props.slot);
-  const [adapting, setAdapting] = useState<string | null>(null);
   /** Why a destination would refuse the post, from the last pre-flight check; cleared by the next edit. */
   const [refusals, setRefusals] = useState<{ accountId: string | null; label: string; problem: string }[] | null>(null);
   /** What the refused action was: the banner says "Not queued", "Not published", or that a scheduled post would fail. */
@@ -239,7 +228,6 @@ export function Composer(props: Props) {
 
   const textareas = useRef(new Map<string, HTMLTextAreaElement>());
   const pendingFocus = useRef<{ id: string; at: "start" | "end" } | null>(null);
-  const aiUndo = useRef<Segment[] | null>(null);
   const autoFocused = useRef(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const deleting = useRef<string | null>(null);
@@ -273,19 +261,14 @@ export function Composer(props: Props) {
         toast({ title: "This draft was deleted elsewhere" });
         newDraft();
       }
-    } else draft.applyRemote(event.post);
+    } else if ("post" in event) draft.applyRemote(event.post);
   });
 
   const empty = !draft.sharedThread || isBlank(draft.sharedThread);
   const segIndex = (id: string) => draft.thread?.findIndex((s) => s.id === id) ?? -1;
   const focusCard = (id: string, at: "start" | "end") => (pendingFocus.current = { id, at });
 
-  /** Any user edit invalidates the AI undo snapshot. */
   const edit = (next: Segment[] | ((prev: Segment[]) => Segment[])) => {
-    if (aiUndo.current) {
-      aiUndo.current = null;
-      dismissToast("ai-undo");
-    }
     setRefusals(null);
     draft.setThread(next);
   };
@@ -295,9 +278,6 @@ export function Composer(props: Props) {
     draft.setTargets(next);
   };
   const switchVersion = (id: string | null) => {
-    aiUndo.current = null;
-    dismissToast("ai-undo");
-    setFocusedId(null);
     draft.setVersion(id);
   };
   const toggleTarget = (a: Account) => {
@@ -321,35 +301,6 @@ export function Composer(props: Props) {
     setTargets(before.map((t) => (t.accountId === a.id ? { ...t, thread: null } : t)));
     toast({ title: `${a.label} gets the shared thread again`, actions: [{ label: "Undo", onClick: () => setTargets(before) }], duration: 8000 });
   };
-  const adapt = async (a: Account) => {
-    const shared = draft.sharedThread ?? [];
-    setAdapting(a.id);
-    try {
-      const { posts } = await api.ai.adapt(joinThread(shared.map((s) => s.text)), a.platform, a.id);
-      if (!posts.length) throw new Error("The copilot returned nothing");
-      // Images stay with the post at the same position; any beyond the new length go on the last post.
-      const cap = PLATFORMS[a.platform].maxImages;
-      const next = posts.map((text, i) => ({ id: uid(), text, mediaIds: shared[i]?.mediaIds ?? [] }));
-      const extra = shared.slice(posts.length).flatMap((s) => s.mediaIds);
-      const last = next[next.length - 1]!;
-      last.mediaIds = [...last.mediaIds, ...extra].slice(0, cap);
-      const before = draft.targets;
-      setTargets(before.map((t) => (t.accountId === a.id ? { ...t, thread: next } : t)));
-      switchVersion(a.id);
-      toast({
-        id: "ai-undo",
-        title: `Adapted for ${PLATFORMS[a.platform].name}`,
-        tone: "success",
-        actions: [{ label: "Undo", onClick: () => setTargets(before) }],
-        duration: 10_000,
-      });
-    } catch (e) {
-      toastError(`Couldn't adapt for ${PLATFORMS[a.platform].name}`, e);
-    } finally {
-      setAdapting(null);
-    }
-  };
-
   /**
    * Ask the server what each destination would do with the saved post (limits, image counts, empty posts) and
    * refuse to queue or publish when any would be rejected.
@@ -378,20 +329,6 @@ export function Composer(props: Props) {
       actions: forkable ? [{ label: `Customize for ${acct.label}`, onClick: () => customize(acct) }] : undefined,
     });
     return false;
-  };
-
-  const applyAi = (next: Segment[], label: string) => {
-    if (viewLocked) return toast({ title: "This post can no longer be edited", tone: "error" });
-    aiUndo.current = draft.thread;
-    draft.setThread(next);
-    toast({ id: "ai-undo", title: label, tone: "success", actions: [{ label: `Undo (${keys.undo})`, onClick: undoAi }], duration: 10_000 });
-  };
-  const undoAi = () => {
-    if (!aiUndo.current) return;
-    draft.setThread(aiUndo.current);
-    aiUndo.current = null;
-    dismissToast("ai-undo");
-    toast({ id: "ai-reverted", title: "Reverted the AI change" });
   };
 
   const onCardChange = (id: string, value: string) => {
@@ -443,11 +380,9 @@ export function Composer(props: Props) {
     } else if (e.key === "ArrowUp" && plain && atStart && i > 0) {
       e.preventDefault();
       focusCard(list[i - 1]!.id, "end");
-      setFocusedId(list[i - 1]!.id);
     } else if (e.key === "ArrowDown" && plain && atEnd && i < list.length - 1) {
       e.preventDefault();
       focusCard(list[i + 1]!.id, "start");
-      setFocusedId(list[i + 1]!.id);
     }
   };
 
@@ -481,22 +416,6 @@ export function Composer(props: Props) {
     );
   };
 
-  const fitPost = async (seg: Segment) => {
-    setFitting(seg.id);
-    const limit = strictest(metersFor(seg))?.max ?? maxChars;
-    try {
-      const { text } = await api.ai.fit(seg.text, limit);
-      applyAi(
-        (draft.thread ?? []).map((s) => (s.id === seg.id ? { ...s, text } : s)),
-        `Fit post ${segIndex(seg.id) + 1} to ${limit}`,
-      );
-    } catch (e) {
-      toastError("Couldn't shorten the post", e);
-    } finally {
-      setFitting(null);
-    }
-  };
-
   // Single-X mode only; with destinations the server's pre-flight (destinationsAccept) decides.
   const overLimit = () => (draft.targets.length ? -1 : (draft.sharedThread ?? []).findIndex((s) => weightedLength(s.text) > maxChars));
 
@@ -526,7 +445,7 @@ export function Composer(props: Props) {
     if (over >= 0)
       return toast({
         title: `Post ${over + 1} is over the ${maxChars} limit`,
-        description: aiEnabled ? "Shorten it, or use “Fit” on the card." : "Shorten it before scheduling.",
+        description: "Shorten it before scheduling.",
         tone: "error",
       });
     setBusy("queue");
@@ -542,7 +461,7 @@ export function Composer(props: Props) {
         tone: "success",
         actions: [
           { label: "View queue", onClick: () => navigate("/queue") },
-          { label: "Edit", onClick: () => navigate(`/?post=${id}`) },
+          { label: "Edit", onClick: () => navigate(`/write?post=${id}`) },
         ],
       });
       void qc.invalidateQueries({ queryKey: ["queue"] });
@@ -662,28 +581,18 @@ export function Composer(props: Props) {
       savePref("threadsmith:textMode", !v);
       return !v;
     });
-  const toggleAi = (open?: boolean) =>
-    setAiOpen((v) => {
-      const next = open ?? !v;
-      savePref("threadsmith:copilot", next);
-      return next;
-    });
-  const openAi = (section: AiSection) => {
-    toggleAi(true);
-    setAiFocus({ section, nonce: Date.now() });
-  };
 
   // Latest handlers for global shortcuts and palette commands (registered once).
-  const actions = useRef({ schedule, queueShortcut, copyThread, undoAi, toggleText, openAi, publishNow, setPickerOpen });
+  const actions = useRef({ schedule, queueShortcut, copyThread, toggleText, publishNow, setPickerOpen });
   useEffect(() => {
-    actions.current = { schedule, queueShortcut, copyThread, undoAi, toggleText, openAi, publishNow, setPickerOpen };
+    actions.current = { schedule, queueShortcut, copyThread, toggleText, publishNow, setPickerOpen };
   });
 
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       // Shortcuts belong to the thread editor or the page, not to other fields (mark-posted URL, time picker,
-      // copilot prompt) or dialogs on top of it (alt text, palette), which handle their own keys.
+      // inline notes) or dialogs on top of it (alt text, palette), which handle their own keys.
       const field = e.target instanceof Element ? e.target.closest("input, textarea, select, [contenteditable='true'], dialog") : null;
       if (!mod || e.defaultPrevented || (field && !field.closest("[data-thread-editor]"))) return;
       const a = actions.current;
@@ -693,9 +602,6 @@ export function Composer(props: Props) {
       } else if (e.shiftKey && e.key.toLowerCase() === "c") {
         e.preventDefault();
         void a.copyThread();
-      } else if (e.key.toLowerCase() === "z" && !e.shiftKey && aiUndo.current) {
-        e.preventDefault();
-        a.undoAi();
       }
     };
     addEventListener("keydown", onKey);
@@ -711,9 +617,6 @@ export function Composer(props: Props) {
       { id: "pick", group: "Thread", title: "Schedule for a specific time…", icon: CalendarClock, run: () => a().setPickerOpen(true) },
       { id: "copy", group: "Thread", title: "Copy thread", icon: Copy, shortcut: keys.copy, run: () => void a().copyThread() },
       { id: "text", group: "Thread", title: "Toggle text mode", icon: AlignLeft, keywords: "cards markdown plain", run: () => a().toggleText() },
-      { id: "ai-threadify", group: "AI", title: "Threadify notes into a thread…", icon: Rows3, keywords: "copilot generate", run: () => a().openAi("threadify") },
-      { id: "ai-hooks", group: "AI", title: "Suggest opening hooks", icon: MessageSquareQuote, keywords: "copilot first post", run: () => a().openAi("hooks") },
-      { id: "ai-rewrite", group: "AI", title: "Rewrite the focused post…", icon: PenLine, keywords: "copilot edit", run: () => a().openAi("rewrite") },
     ];
     if (health.x.mode === "api" || hasTargets)
       list.push({ id: "publish", group: "Thread", title: "Publish now", icon: Send, run: () => void a().publishNow() });
@@ -734,9 +637,6 @@ export function Composer(props: Props) {
       </div>
     );
 
-  const focused = thread?.find((s) => s.id === focusedId) ?? null;
-  const focusedIndex = focused && thread ? thread.indexOf(focused) : -1;
-  const aiTarget = focused && !isLocked(focusedIndex) ? { index: focusedIndex, text: focused.text } : null;
   const showText = textMode && !viewLocked && liveCount === 0;
   // "Open in X" prefills the first post that isn't on X yet, as a reply when earlier posts are live.
   const shared = draft.sharedThread;
@@ -747,6 +647,7 @@ export function Composer(props: Props) {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center gap-2 px-4 sm:px-6">
           <StatusLabel post={post} saveState={draft.saveState} tz={health.timezone} />
+          {post && <ApprovalPill post={post} className="max-sm:hidden" />}
           <div className="flex-1" />
           {!viewLocked && (
             <div role="group" aria-label="Editor mode" className="flex rounded-lg border border-line p-0.5">
@@ -777,18 +678,6 @@ export function Composer(props: Props) {
               ))}
             </div>
           )}
-          <button
-            onClick={() => toggleAi()}
-            aria-pressed={aiOpen}
-            aria-label="Copilot"
-            className={cx(
-              "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium transition-colors",
-              aiOpen ? "bg-ai-soft text-ai" : "text-ink-2 hover:bg-subtle hover:text-ink",
-            )}
-          >
-            <Sparkles size={15} className={aiEnabled ? "text-ai" : undefined} />
-            <span className="max-sm:hidden">Copilot</span>
-          </button>
           <div className="relative">
             <button onClick={() => (setMenuOpen(!menuOpen), setConfirmDelete(false))} aria-label="More" className="grid size-8 place-items-center rounded-lg text-ink-2 hover:bg-subtle">
               <Ellipsis size={16} />
@@ -833,13 +722,10 @@ export function Composer(props: Props) {
                 health={health}
                 readOnly={readOnly}
                 version={version}
-                aiEnabled={aiEnabled}
-                adapting={adapting}
                 onToggle={toggleTarget}
                 onVersion={switchVersion}
                 onCustomize={customize}
                 onReset={resetVersion}
-                onAdapt={(a) => void adapt(a)}
               />
             )}
             {refusals && (
@@ -858,6 +744,7 @@ export function Composer(props: Props) {
                 </ul>
               </div>
             )}
+            {post && <ApprovalBanner post={post} tz={health.timezone} flush={draft.flush} onChange={draft.setPost} />}
             {post && (
               <StatusBanner
                 post={post}
@@ -914,17 +801,13 @@ export function Composer(props: Props) {
                     readOnly={isLocked(i)}
                     live={i < liveCount ? { where: live.where, url: live.url(i) } : undefined}
                     uploads={uploads[seg.id] ?? []}
-                    aiEnabled={aiEnabled}
-                    fitting={fitting === seg.id}
                     textareaRef={(el) => (el ? textareas.current.set(seg.id, el) : textareas.current.delete(seg.id))}
                     onChange={(v) => onCardChange(seg.id, v)}
                     onKeyDown={onCardKeyDown(seg)}
-                    onFocus={() => setFocusedId(seg.id)}
                     onRemove={() => removePost(seg.id)}
                     onFiles={(files) => void addImages(seg.id, files)}
                     onRemoveImage={(mid) => edit((prev) => prev.map((s) => (s.id === seg.id ? { ...s, mediaIds: s.mediaIds.filter((m) => m !== mid) } : s)))}
                     onEditImage={setAltFor}
-                    onFit={() => void fitPost(seg)}
                   />
                 ))}
               </Cards>
@@ -1012,39 +895,7 @@ export function Composer(props: Props) {
         )}
       </div>
 
-      {aiOpen && (
-        <>
-          <div onClick={() => toggleAi(false)} className="fixed inset-0 z-30 animate-fade bg-black/20 xl:hidden" />
-          <aside className="z-40 w-[340px] shrink-0 border-l border-line bg-canvas max-xl:fixed max-xl:inset-y-0 max-xl:right-0 max-xl:w-[min(360px,100vw)] max-xl:animate-slide-in max-xl:shadow-2xl">
-            <AiPanel
-              ai={health.ai}
-              maxChars={activeLimit}
-              thread={thread ?? []}
-              target={aiTarget}
-              focus={aiFocus}
-              onClose={() => toggleAi(false)}
-              onThreadify={(posts, mode) => {
-                const fresh = posts.map((t) => blankSegment(t));
-                const current = draft.thread ?? [];
-                // Posts already live on X stay first and untouched, whatever the mode.
-                const live = current.slice(0, liveCount);
-                const keep = current.slice(liveCount).filter((s) => s.text.trim() || s.mediaIds.length);
-                applyAi(
-                  mode === "replace" ? [...live, ...fresh] : [...live, ...keep, ...fresh],
-                  mode === "replace" ? `Wrote ${posts.length} posts` : `Added ${posts.length} posts`,
-                );
-              }}
-              onReplacePost={(index, text, label) =>
-                isLocked(index)
-                  ? toast({ title: `Post ${index + 1} can't be changed`, description: `${liveText(liveCount, live.where)}.`, tone: "error" })
-                  : applyAi((draft.thread ?? []).map((s, i) => (i === index ? { ...s, text } : s)), label)
-              }
-            />
-          </aside>
-        </>
-      )}
-
-      {altFor && <AltTextDialog mediaId={altFor} aiEnabled={aiEnabled} onClose={() => setAltFor(null)} />}
+      {altFor && <AltTextDialog mediaId={altFor} onClose={() => setAltFor(null)} />}
     </div>
   );
 }
@@ -1067,7 +918,7 @@ function TextMode(p: { thread: Segment[]; meter: (text: string, images: number) 
   const ref = useRef<HTMLTextAreaElement>(null);
   const sig = JSON.stringify(p.thread.map((s) => s.text));
   // Raw text is local while typing; resync (and re-base the image mapping) when the thread changes from
-  // elsewhere (AI, another device).
+  // elsewhere (an agent, another device).
   const [raw, setRaw] = useState(() => ({ text: joinThread(p.thread.map((s) => s.text)), sig, base: p.thread }));
   if (raw.sig !== sig && JSON.stringify(splitThread(raw.text)) !== JSON.stringify(p.thread.map((s) => s.text.trim()).filter(Boolean))) {
     setRaw({ text: joinThread(p.thread.map((s) => s.text)), sig, base: p.thread });

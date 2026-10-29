@@ -1,12 +1,13 @@
-// Left rail: navigation, drafts list (title = first line), and live status of X / AI.
+// Left rail: navigation (Inbox first, with waiting approvals), drafts list (title = first line), live status of publishing / operator.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarClock, Command, PenLine, Plug, Plus, Trash2 } from "lucide-react";
+import { CalendarClock, Command, Inbox, PenLine, Plug, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { Health, Post } from "../../../shared/types.ts";
 import { api } from "../api.ts";
+import { useControl } from "../lib/control.ts";
 import { useAccounts } from "../lib/platforms.tsx";
 import { navigate, newDraft, openPost, type View } from "../lib/router.ts";
-import { timeAgo } from "../lib/time.ts";
+import { formatWhen, timeAgo } from "../lib/time.ts";
 import { cx, firstLine, keys, modKey } from "../lib/util.ts";
 import { toastError } from "./Toasts.tsx";
 
@@ -41,14 +42,26 @@ export function Sidebar(p: Props) {
     queryFn: () => api.listPosts({ status: ["due", "failed"], limit: 50 }),
   });
   const { data: accounts } = useAccounts();
+  const { data: control } = useControl();
+  const paused = control?.paused ?? null;
+  const op = control?.operator;
   const go = (fn: () => void) => () => {
     fn();
     p.onNavigate?.();
   };
 
-  const nav: { view: View; label: string; icon: typeof PenLine; to: string; badge?: number }[] = [
-    { view: "compose", label: "Write", icon: PenLine, to: "/" },
-    { view: "queue", label: "Queue", icon: CalendarClock, to: "/queue", badge: attention?.length },
+  const nav: { view: View; label: string; icon: typeof PenLine; to: string; badge?: number; badgeTone?: string; badgeTitle?: string }[] = [
+    {
+      view: "inbox",
+      label: "Inbox",
+      icon: Inbox,
+      to: "/",
+      badge: control?.pendingApprovals,
+      badgeTone: "bg-violet-600",
+      badgeTitle: "Posts waiting for your approval",
+    },
+    { view: "compose", label: "Write", icon: PenLine, to: "/write" },
+    { view: "queue", label: "Queue", icon: CalendarClock, to: "/queue", badge: attention?.length, badgeTitle: "Due or failed posts" },
     { view: "connect", label: "Agents", icon: Plug, to: "/connect" },
   ];
 
@@ -57,11 +70,20 @@ export function Sidebar(p: Props) {
       <div className="flex h-14 shrink-0 items-center gap-2.5 px-4">
         <Logo />
         <span className="font-semibold tracking-tight">Threadsmith</span>
+        {paused && (
+          <button
+            onClick={go(() => navigate("/"))}
+            title={`Publishing paused${paused.reason ? `: ${paused.reason}` : ""}`}
+            className="flex h-5 shrink-0 items-center gap-1 rounded-full bg-red-100 px-1.5 text-[11px] font-medium text-red-800 dark:bg-red-950 dark:text-red-300"
+          >
+            <span className="size-1.5 rounded-full bg-red-500" /> Paused
+          </button>
+        )}
         <div className="flex-1" />
         <button
           onClick={p.onOpenPalette}
           title={`Command palette (${keys.palette})`}
-          className="flex h-7 items-center gap-0.5 rounded-md border border-line px-1.5 text-[11px] text-ink-3 hover:border-line-strong hover:text-ink [@media(hover:none)]:hidden"
+          className="flex h-7 shrink-0 items-center gap-0.5 rounded-md border border-line px-1.5 text-[11px] whitespace-nowrap text-ink-3 hover:border-line-strong hover:text-ink [@media(hover:none)]:hidden"
         >
           {modKey === "⌘" ? <Command size={11} /> : "Ctrl "}K
         </button>
@@ -81,7 +103,12 @@ export function Sidebar(p: Props) {
             <n.icon size={16} />
             <span className="flex-1 text-left">{n.label}</span>
             {!!n.badge && (
-              <span className="grid h-5 min-w-5 place-items-center rounded-full bg-amber-500 px-1.5 text-[11px] font-semibold text-white">{n.badge}</span>
+              <span
+                title={n.badgeTitle}
+                className={cx("grid h-5 min-w-5 place-items-center rounded-full px-1.5 text-[11px] font-semibold text-white", n.badgeTone ?? "bg-amber-500")}
+              >
+                {n.badge}
+              </span>
             )}
           </button>
         ))}
@@ -133,10 +160,34 @@ export function Sidebar(p: Props) {
             X: {p.health.x.mode === "api" ? "auto-posting" : "manual (copy & post)"}
           </button>
         )}
-        <button onClick={go(() => navigate("/connect"))} className="flex w-full items-center gap-2 hover:text-ink">
-          <span className={cx("size-1.5 rounded-full", p.health.ai.configured ? "bg-ai" : "bg-ink-3")} />
-          <span className="truncate">Copilot: {p.health.ai.configured ? (p.health.ai.model ?? p.health.ai.provider) : "not connected"}</span>
-        </button>
+        {paused && (
+          <button onClick={go(() => navigate("/"))} className="flex w-full items-center gap-2 font-medium text-red-700 hover:text-red-900 dark:text-red-400">
+            <span className="size-1.5 rounded-full bg-red-500" />
+            <span className="truncate">Publishing paused</span>
+          </button>
+        )}
+        {op && (
+          <button onClick={go(() => navigate("/"))} title={op.reason ?? undefined} className="flex w-full items-center gap-2 hover:text-ink">
+            <span
+              className={cx(
+                "size-1.5 shrink-0 rounded-full",
+                op.running ? "animate-pulse bg-sky-500" : op.reason ? "bg-amber-500" : op.enabled ? "bg-emerald-500" : "bg-ink-3",
+              )}
+            />
+            <span className="truncate">
+              Operator:{" "}
+              {op.running
+                ? "running"
+                : op.reason
+                  ? "not set up"
+                  : op.enabled && op.nextRunAt
+                    ? `next ${formatWhen(op.nextRunAt, p.health.timezone)}`
+                    : op.enabled
+                      ? "on"
+                      : "on request"}
+            </span>
+          </button>
+        )}
       </div>
     </div>
   );

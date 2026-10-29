@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Bot, ExternalLink, FileText, Send, Terminal } from "lucide-react";
 import type { Health } from "../../../shared/types.ts";
 import { api } from "../api.ts";
+import { useControl } from "../lib/control.ts";
 import { Card, Code } from "../components/Card.tsx";
 import { useAccounts } from "../lib/platforms.tsx";
 import { cx } from "../lib/util.ts";
@@ -38,8 +39,8 @@ export function ConnectView({ health }: { health: Health }) {
 
         <Card icon={<Bot size={16} />} title="MCP server" badge="for Claude, Cursor, any MCP client">
           <p>
-            Streamable HTTP endpoint with tools for drafts, the queue and publishing. Point any MCP client at it. Your agent writes the posts
-            itself; the built-in copilot is on the REST API (<code className="font-mono text-xs">/api/ai/*</code>) and the CLI.
+            Streamable HTTP endpoint with tools for drafts, the queue and publishing. Point any MCP client at it. Your agent writes the posts;
+            what it queues waits for your approval in the Inbox and your approval chats.
           </p>
           <Code label="Endpoint" value={mcpUrl} />
           <Code label="Claude Code" value={`claude mcp add --transport http threadsmith ${mcpUrl}${authHeader}`} />
@@ -93,7 +94,6 @@ node cli/threadsmith.mjs queue
 node cli/threadsmith.mjs new "First post
 ---
 Second post" --at next
-node cli/threadsmith.mjs ai threadify --file notes.md | node cli/threadsmith.mjs new --at next
 node cli/threadsmith.mjs copy <id> --clipboard
 node cli/threadsmith.mjs help`}
           />
@@ -111,7 +111,9 @@ node cli/threadsmith.mjs help`}
 
 function StatusGrid({ health }: { health: Health }) {
   const { data: accounts } = useAccounts();
+  const { data: control } = useControl();
   const n = accounts?.length ?? 0;
+  const chats = control?.channels.filter((c) => c.configured).map((c) => (c.id === "telegram" ? "Telegram" : "Discord")) ?? [];
   const items = [
     n
       ? {
@@ -132,12 +134,12 @@ function StatusGrid({ health }: { health: Health }) {
               : "At slot time you get a reminder and a one-click copy. Connect an account below, or add X API keys to .env, to auto-post.",
         },
     {
-      label: "AI copilot",
-      ok: health.ai.configured,
-      value: health.ai.configured ? `${health.ai.provider ?? "AI"}${health.ai.model ? ` · ${health.ai.model}` : ""}` : "Not connected",
-      note: health.ai.configured
-        ? "Threadify, hooks, rewrite, fit and alt text are on."
-        : "Set ANTHROPIC_API_KEY in .env, then restart.",
+      label: "Approvals",
+      ok: control?.approval.require !== "never",
+      value: !control ? "…" : control.approval.require === "never" ? "Agents publish without asking" : "Agent posts wait for you",
+      note: chats.length
+        ? `Decide in the Inbox or in ${chats.join(" and ")}.`
+        : "Decide in the Inbox. Add a Telegram or Discord approval chat in .env to decide from your phone.",
     },
     {
       label: "Access",
@@ -205,7 +207,7 @@ function Schedule() {
           ))}
         </dd>
         <dt className="text-ink-3">Voice samples</dt>
-        <dd className="text-ink">{config.voiceCount ? `${config.voiceCount} (the copilot matches their style)` : "None yet"}</dd>
+        <dd className="text-ink">{config.voiceCount || "None yet"}</dd>
       </dl>
     </Card>
   );

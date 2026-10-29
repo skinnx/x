@@ -130,7 +130,7 @@ export function Palette({ open, onClose }: { open: boolean; onClose: () => void 
                   i === active ? "bg-subtle text-ink" : "text-ink-2",
                 )}
               >
-                {Icon && <Icon size={16} className={cx("shrink-0", c.group === "AI" ? "text-ai" : "text-ink-3")} />}
+                {Icon && <Icon size={16} className="shrink-0 text-ink-3" />}
                 <span className="flex-1 truncate">{c.title}</span>
                 {c.shortcut && <kbd className="text-xs text-ink-3">{c.shortcut}</kbd>}
                 {i === active && <CornerDownLeft size={14} className="text-ink-3" />}

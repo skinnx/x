@@ -2,7 +2,7 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink, GripVertical, ImagePlus, LoaderCircle, Lock, Scissors, Trash2, TriangleAlert, X } from "lucide-react";
+import { ExternalLink, GripVertical, ImagePlus, LoaderCircle, Lock, Trash2, TriangleAlert, X } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { Segment } from "../../../shared/types.ts";
 import { api } from "../api.ts";
@@ -36,17 +36,14 @@ interface Props {
   /** Set when this post is already live (a thread that stopped partway): shown locked, with a link when known. */
   live?: { where: string; url: string | null };
   uploads: PendingUpload[];
-  aiEnabled: boolean;
-  fitting: boolean;
   textareaRef: (el: HTMLTextAreaElement | null) => void;
   onChange: (text: string) => void;
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
-  onFocus: () => void;
+  onFocus?: () => void;
   onRemove: () => void;
   onFiles: (files: File[]) => void;
   onRemoveImage: (mediaId: string) => void;
   onEditImage: (mediaId: string) => void;
-  onFit: () => void;
 }
 
 const imageFiles = (list: FileList | null | undefined) => [...(list ?? [])].filter((f) => f.type.startsWith("image/"));
@@ -213,16 +210,6 @@ export function PostCard(p: Props) {
                 if (files.length) p.onFiles(files);
               }}
             />
-            {over && p.aiEnabled && ring && (
-              <button
-                onClick={p.onFit}
-                disabled={p.fitting}
-                className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-ai hover:bg-ai-soft disabled:opacity-60"
-              >
-                {p.fitting ? <LoaderCircle size={13} className="animate-spin" /> : <Scissors size={13} />}
-                Fit to {ring.max}
-              </button>
-            )}
             {p.meters.length > 1 && (
               <span
                 className="flex min-w-0 flex-1 flex-wrap gap-x-2.5 gap-y-0.5 py-1 pl-1 text-[11px] leading-4 tabular-nums"

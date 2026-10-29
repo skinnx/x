@@ -1,6 +1,21 @@
 // Typed client for the Threadsmith REST API (same origin). Auth token lives in localStorage + a cookie for <img>/SSE.
 import type { PlatformInfo, ThreadMode } from "../../shared/platforms.ts";
-import type { Account, AppEventType, Health, Media, PlatformId, Post, PostStatus, Queue, Segment } from "../../shared/types.ts";
+import type {
+  Account,
+  AppEventType,
+  AuditEntry,
+  ChannelStatus,
+  ControlState,
+  Health,
+  Media,
+  OperatorRun,
+  OperatorStatus,
+  PlatformId,
+  Post,
+  PostStatus,
+  Queue,
+  Segment,
+} from "../../shared/types.ts";
 
 const TOKEN_KEY = "threadsmith_token";
 
@@ -197,14 +212,21 @@ export const api = {
   pushUnsubscribe: (endpoint: string) => call<{ ok: true }>("POST", "/api/push/unsubscribe", { body: { endpoint } }),
   pushTest: () => call<{ ok: true; message: string }>("POST", "/api/push/test"),
 
-  ai: {
-    threadify: (text: string, instructions?: string) =>
-      call<{ posts: string[] }>("POST", "/api/ai/threadify", { body: { text, instructions: instructions || undefined } }),
-    rewrite: (text: string, instruction: string) => call<{ text: string }>("POST", "/api/ai/rewrite", { body: { text, instruction } }),
-    hooks: (text: string, count = 3) => call<{ variants: string[] }>("POST", "/api/ai/hooks", { body: { text, count } }),
-    fit: (text: string, maxChars: number) => call<{ text: string }>("POST", "/api/ai/fit", { body: { text, maxChars } }),
-    adapt: (text: string, platform: PlatformId, accountId?: string) =>
-      call<{ posts: string[] }>("POST", "/api/ai/adapt", { body: { text, platform, accountId } }),
-    altText: (mediaId: string) => call<{ alt: string }>("POST", "/api/ai/alt-text", { body: { mediaId } }),
-  },
+
+  // The person's side: approvals, the kill switch, the audit log, approval chats, the built-in operator.
+  control: () => call<ControlState>("GET", "/api/control"),
+  approvals: () => call<{ posts: Post[] }>("GET", "/api/approvals").then((r) => r.posts),
+  approve: (id: string, note?: string) => call<Post>("POST", `/api/posts/${id}/approve`, { body: note ? { note } : {} }),
+  reject: (id: string, note?: string) => call<Post>("POST", `/api/posts/${id}/reject`, { body: note ? { note } : {} }),
+  requestChanges: (id: string, note: string) => call<Post>("POST", `/api/posts/${id}/request-changes`, { body: { note } }),
+  pause: (reason?: string) => call<ControlState>("POST", "/api/control/pause", { body: reason ? { reason } : {} }),
+  resume: () => call<ControlState>("POST", "/api/control/resume"),
+  audit: (opts: { limit?: number; postId?: string } = {}) =>
+    call<{ entries: AuditEntry[] }>("GET", `/api/audit${q({ limit: opts.limit, postId: opts.postId })}`).then((r) => r.entries),
+  digest: () => call<{ text: string }>("GET", "/api/digest").then((r) => r.text),
+  testChannels: (digest?: boolean) =>
+    call<{ channels: ChannelStatus[] }>("POST", "/api/channels/test", { body: digest ? { digest } : {} }).then((r) => r.channels),
+  operatorStatus: () => call<OperatorStatus>("GET", "/api/operator/status"),
+  operatorRuns: (limit = 10) => call<{ runs: OperatorRun[] }>("GET", `/api/operator/runs?limit=${limit}`).then((r) => r.runs),
+  runOperator: (task?: string) => call<OperatorRun>("POST", "/api/operator/run", { body: task ? { task } : {} }),
 };

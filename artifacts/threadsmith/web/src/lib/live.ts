@@ -1,11 +1,12 @@
-// Live updates over SSE (/api/events): refresh queries, notify on due/failed/published, fan out to the composer.
+// Live updates over SSE (/api/events): refresh queries, notify on approvals/due/failed/published, fan out to the composer.
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { APP_EVENT_TYPES, type AppEvent, type Post } from "../../../shared/types.ts";
 import { api, liveSummary } from "../api.ts";
 import { dismissToast, toast, toastError } from "../components/Toasts.tsx";
+import { askerLabel } from "./actors.ts";
 import { notifyLocally } from "./reminders.ts";
-import { openPost } from "./router.ts";
+import { navigate, openPost } from "./router.ts";
 import { copyText, firstLine } from "./util.ts";
 
 const LIVE_EVENT = "threadsmith:event";
@@ -43,6 +44,20 @@ export async function copyThread(id: string | Promise<string>, quiet = false): P
   }
 }
 
+function announceApproval(post: Post) {
+  const body = firstLine(post.thread[0]?.text ?? "", 120);
+  toast({
+    id: `approval-${post.id}`,
+    title: "Approval needed",
+    description: `${askerLabel(post)} wants to publish: ${body || "an empty post"}`,
+    duration: 0,
+    actions: [
+      { label: "Review in Inbox", primary: true, onClick: () => navigate("/") },
+      { label: "Open", onClick: () => openPost(post.id) },
+    ],
+  });
+}
+
 function announceDue(post: Post) {
   const body = firstLine(post.thread[0]?.text ?? "", 120);
   toast({
@@ -68,15 +83,32 @@ export function useLiveEvents() {
       void qc.invalidateQueries({ queryKey: ["posts"] });
       void qc.invalidateQueries({ queryKey: ["queue"] });
       void qc.invalidateQueries({ queryKey: ["slots"] });
+      // The control room: waiting decisions, the kill switch, who did what.
+      void qc.invalidateQueries({ queryKey: ["control"] });
+      void qc.invalidateQueries({ queryKey: ["approvals"] });
+      void qc.invalidateQueries({ queryKey: ["audit"] });
+      if (event.type === "publishing.paused" || event.type === "publishing.resumed") {
+        dispatchEvent(new CustomEvent<AppEvent>(LIVE_EVENT, { detail: event }));
+        if (!event.by.endsWith(":ui"))
+          toast({
+            id: "publishing-state",
+            title: event.type === "publishing.paused" ? "Publishing paused" : "Publishing resumed",
+            description: event.type === "publishing.paused" ? (event.reason ?? "Nothing goes out until you resume.") : undefined,
+            tone: event.type === "publishing.paused" ? "error" : "success",
+          });
+        return;
+      }
       // A publish can flag an account (expired token…): keep the Connect page and destination chips current.
       if (event.type === "post.published" || event.type === "post.failed") void qc.invalidateQueries({ queryKey: ["accounts"] });
       dispatchEvent(new CustomEvent<AppEvent>(LIVE_EVENT, { detail: event }));
       // A "Time to post" / "failed" alert is stale once the post has moved on (posted, retried, rescheduled, deleted).
-      const id = event.type === "post.deleted" ? event.id : event.post.id;
-      const status = event.type === "post.deleted" ? null : event.post.status;
-      if (status !== "due") dismissToast(`due-${id}`);
-      if (status !== "failed") dismissToast(`failed-${id}`);
-      if (event.type === "post.due") announceDue(event.post);
+      const post = "post" in event ? event.post : null;
+      const id = post ? post.id : "id" in event ? event.id : "";
+      if (post?.status !== "due") dismissToast(`due-${id}`);
+      if (post?.status !== "failed") dismissToast(`failed-${id}`);
+      if (post?.approval?.state !== "pending") dismissToast(`approval-${id}`);
+      if (event.type === "post.approval_requested") announceApproval(event.post);
+      else if (event.type === "post.due") announceDue(event.post);
       else if (event.type === "post.failed")
         toast({
           id: `failed-${event.post.id}`,

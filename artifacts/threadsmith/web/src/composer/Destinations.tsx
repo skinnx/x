@@ -1,5 +1,5 @@
 // Where this post goes: connected-account chips, then tabs for the shared thread and per-account versions.
-import { Check, CircleAlert, GitFork, LoaderCircle, RotateCcw, Sparkles } from "lucide-react";
+import { Check, CircleAlert, GitFork, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { PLATFORMS } from "../../../shared/platforms.ts";
 import type { Account, Health, Post, Segment } from "../../../shared/types.ts";
@@ -18,13 +18,10 @@ interface Props {
   health: Health;
   readOnly: boolean;
   version: string | null;
-  aiEnabled: boolean;
-  adapting: string | null;
   onToggle: (account: Account) => void;
   onVersion: (accountId: string | null) => void;
   onCustomize: (account: Account) => void;
   onReset: (account: Account) => void;
-  onAdapt: (account: Account) => void;
 }
 
 const tab = (on: boolean) =>
@@ -250,16 +247,6 @@ export function Destinations(p: Props) {
           </span>
           {!p.readOnly && activeProgress?.status !== "published" && (
             <span className="flex items-center gap-1">
-              {p.aiEnabled && (
-                <button
-                  onClick={() => p.onAdapt(active)}
-                  disabled={p.adapting === active.id || Boolean(activeProgress?.externalIds.length)}
-                  className="flex h-7 items-center gap-1 rounded-md px-1.5 font-medium text-ai hover:bg-ai-soft disabled:opacity-60"
-                >
-                  {p.adapting === active.id ? <LoaderCircle size={12} className="animate-spin" /> : <Sparkles size={12} />}
-                  Adapt for {PLATFORMS[active.platform].name}
-                </button>
-              )}
               <button
                 onClick={() => p.onReset(active)}
                 disabled={Boolean(activeProgress?.externalIds.length)}

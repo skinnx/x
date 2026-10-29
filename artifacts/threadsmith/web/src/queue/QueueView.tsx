@@ -4,6 +4,7 @@ import { Bell, CircleCheck, Copy, ExternalLink, Image, LoaderCircle, Plus, Rotat
 import { useMemo, useState } from "react";
 import type { Health, Post, QueueDay, QueueItem } from "../../../shared/types.ts";
 import { api, liveSummary, remainingThread, type AppConfig } from "../api.ts";
+import { ApprovalPill } from "../components/Approval.tsx";
 import { TargetIcons, TargetList } from "../components/TargetStatus.tsx";
 import { toast, toastError } from "../components/Toasts.tsx";
 import type { useReminders } from "../connect/Reminders.tsx";
@@ -244,8 +245,14 @@ function PostRow({ post, at, date, tz }: { post: Post; at: string; date: string;
         <div className="min-w-0 flex-1">
           <Preview post={post} />
           {post.status === "scheduled" && <WouldFail post={post} />}
+          {post.approval?.state === "changes_requested" && post.approval.note && (
+            <p className="mt-1 line-clamp-2 text-xs break-words text-orange-800 dark:text-orange-300">You asked: “{post.approval.note}”</p>
+          )}
         </div>
-        <StatusBadge status={post.status} />
+        <span className="flex shrink-0 flex-col items-end gap-1">
+          <StatusBadge status={post.status} />
+          <ApprovalPill post={post} />
+        </span>
       </button>
       {failed && (
         <div className="flex flex-wrap items-center gap-2 px-3 pb-3 sm:pl-27">
