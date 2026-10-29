@@ -34,7 +34,7 @@ type Kind = "verify" | "media" | "status" | "read";
 function explain(kind: Kind, status: number, headers: Headers, detail: string, replying: boolean): PlatformError {
   if (kind === "read" && (status === 401 || status === 403 || status === 404)) {
     // Read-only metrics: statusMetrics turns these into the right advice (or "deleted").
-    return new PlatformError(`Mastodon refused to show the post (${status}: ${detail}).`, status);
+    return new PlatformError(`Mastodon ${status}: ${detail}`, status);
   }
   if (status === 401) return new PlatformError(`Mastodon rejected the access token (401: ${detail}). ${TOKEN_HELP}, then Retry.`, 401);
   if (status === 403 && /scope/i.test(detail)) {
