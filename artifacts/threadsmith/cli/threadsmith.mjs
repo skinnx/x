@@ -10,41 +10,57 @@ import { parseArgs } from "node:util";
 const BASE = (process.env.THREADSMITH_URL || "http://127.0.0.1:3000").replace(/\/+$/, "");
 const TOKEN = process.env.THREADSMITH_TOKEN;
 
-const HELP = `threadsmith — draft, queue and publish X posts and threads on your Threadsmith server
+const HELP = `threadsmith — draft, queue and publish posts and threads (X, Bluesky, Mastodon, Threads, LinkedIn, Telegram,
+Discord) on your Threadsmith server
 
 Usage: threadsmith <command> [args] [--json]
 
 Posts
-  new [text] [--file f|-] [--at next|time] [--image [N:]path]... [--title t]
+  new [text] [--file f|-] [--at next|time] [--to ref,ref] [--version ref=file]... [--image [N:]path]... [--title t]
                               Create a draft (or schedule it with --at). Posts are separated by a line "---".
+                              --to sends it to connected accounts (see accounts); without it the post uses the
+                              legacy single-X mode (X keys in the server's .env, or manual copy & post).
+                              --version gives one destination its own text (posts separated by ---).
                               --image attaches to post N (default 1); repeat for more images.
-  queue [--days 7]            Day-by-day timeline with scheduled posts and free slots
+  queue [--days 7]            Day-by-day timeline with scheduled posts, their destinations and free slots
   list [--status s,s]         Posts, newest first (draft, scheduled, due, publishing, published, failed)
-  show <id>                   One post in full, with per-post character counts
-  edit <id> [text] [--file f|-] [--title t]
-                              Replace the text (images stay with their post); with only --title, just rename
+  show <id>                   One post in full, with per-post counts and each destination's status
+  preview <id>                What each destination will publish, counted its way, and what would stop it
+  edit <id> [text] [--file f|-] [--title t] [--to ref,ref|none] [--version ref=file|ref=none]...
+                              Replace the text (images stay with their post), the destinations (none = legacy X
+                              mode) or a destination's version (none = use the main text); --title alone renames
   schedule <id> <next|time>   Queue for the next free slot or a time
   unschedule <id>             Back to drafts
-  publish <id>                Post to X now (needs X API keys on the server); exit 1 if X refused it
+  publish <id>                Publish now to every destination (legacy mode: X API keys needed); exit 1 if any failed
   retry <id>                  Retry a failed post or publish a due one; threads resume where they stopped
   copy <id> [--clipboard]     Print the thread (or copy it) to post by hand; only the posts not yet live
   posted <id> [--url u]       Mark as posted by hand
   rm <id>                     Delete
   slots [n]                   Next free posting slots
-  count [text|--file f]       Count characters the way X does (no server needed; --max n to set the limit)
+  count [text|--file f] [--platform p] [--max n]
+                              Count characters the way a platform does (default x; no server needed)
+
+Accounts
+  accounts                    Connected accounts (connect them in the web UI: it needs your secrets)
+  accounts check <ref>        Re-verify an account's stored credentials
+  platforms                   Supported platforms: limits, counting, images, cost
+
+  An account ref is its id (or a unique id prefix), its label, its handle, or a platform name when only one
+  account of that platform is connected.
 
 AI copilot (needs an AI provider on the server)
   ai threadify [text|--file f] [-i instructions]   Notes → thread (prints posts separated by ---)
   ai hooks [text|--file f] [--count 3]             Alternative opening posts
   ai fit [text|--file f] [--max n]                 Shorten posts that are over the limit
   ai rewrite "<instruction>" [text|--file f]       Rewrite following an instruction
+  ai adapt <platform|ref> [text|--file f]          Rewrite a thread for a platform (LinkedIn: one post)
 
 Other
   health                      Server status: version, X mode, AI, timezone, limit
   help                        This help
 
 Ids can be shortened to any unique prefix. Text can also come from stdin, e.g.
-  threadsmith ai threadify --file notes.md | threadsmith new --at next
+  threadsmith ai threadify --file notes.md | threadsmith new --at next --to bluesky,mastodon
 
 Times are shown in the server's timezone (threadsmith health), and a time you type is read there too unless it
 has an offset: 2026-11-03T09:00 is 09:00 in that zone; 2026-11-03T09:00+07:00 or ...Z is exact.
@@ -94,6 +110,37 @@ function weightedLength(raw) {
   return total + plainWeight(text.slice(last));
 }
 
+// ---------- per-platform counting (mirrors shared/platforms.ts countFor; keep in parity) ----------
+
+const PLATFORMS = {
+  x: { name: "X", maxChars: 280, maxImages: 4, threadMode: "replies" },
+  bluesky: { name: "Bluesky", maxChars: 300, maxImages: 4, threadMode: "replies" },
+  mastodon: { name: "Mastodon", maxChars: 500, maxImages: 4, threadMode: "replies" },
+  threads: { name: "Threads", maxChars: 500, maxImages: 20, threadMode: "replies" },
+  linkedin: { name: "LinkedIn", maxChars: 3000, maxImages: 20, threadMode: "single" },
+  telegram: { name: "Telegram", maxChars: 4096, maxImages: 10, threadMode: "messages" },
+  discord: { name: "Discord", maxChars: 2000, maxImages: 10, threadMode: "messages" },
+};
+const URL_ANY = /\bhttps?:\/\/\S+/gi;
+
+function countFor(platform, text) {
+  switch (platform) {
+    case "x":
+      return weightedLength(text);
+    case "bluesky":
+      return [...segmenter.segment(text.normalize("NFC"))].length; // graphemes; links count in full
+    case "mastodon":
+      return [...text.replace(URL_ANY, "x".repeat(23))].length; // every URL counts 23
+    case "threads": {
+      let n = 0; // an emoji counts as its UTF-8 byte length, everything else per character
+      for (const { segment } of segmenter.segment(text)) n += EMOJI_RE.test(segment) ? Buffer.byteLength(segment) : [...segment].length;
+      return n;
+    }
+    default:
+      return [...text].length;
+  }
+}
+
 const splitThread = (text) =>
   text
     .split(/^\s*-{3,}\s*$/m)
@@ -121,6 +168,9 @@ try {
       count: { type: "string" },
       max: { type: "string" },
       instructions: { type: "string", short: "i" },
+      to: { type: "string" },
+      version: { type: "string", multiple: true },
+      platform: { type: "string", short: "p" },
       help: { type: "boolean", short: "h" },
     },
   }));
@@ -183,6 +233,84 @@ async function resolveId(ref) {
   throw new ApiError(hits.length ? `"${ref}" matches ${hits.length} posts; use more characters.` : `No post id starts with "${ref}".`);
 }
 
+// ---------- destinations ----------
+
+let accountsPromise;
+const accountsList = () => (accountsPromise ??= api("GET", "/api/accounts").then((d) => d.accounts));
+const describeAccount = (a) => `${a.label} (${PLATFORMS[a.platform]?.name ?? a.platform}${a.handle ? ` ${a.handle}` : ""}, ${short(a.id)})`;
+
+/** Same rules as the MCP tools: id, id prefix, label, handle, or a platform name with exactly one account. */
+function resolveAccount(ref, accounts) {
+  const r = ref.trim().toLowerCase();
+  const exact = accounts.find((a) => a.id.toLowerCase() === r);
+  if (exact) return exact;
+  const strong = accounts.filter(
+    (a) => a.label.toLowerCase() === r || (a.handle && a.handle.toLowerCase().replace(/^@/, "") === r.replace(/^@/, "")) || (r.length >= 4 && a.id.startsWith(r)),
+  );
+  if (strong.length === 1) return strong[0];
+  const platform = Object.keys(PLATFORMS).find((p) => p === r || PLATFORMS[p].name.toLowerCase() === r);
+  const matches = strong.length ? strong : platform ? accounts.filter((a) => a.platform === platform) : [];
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) throw new UsageError(`"${ref}" matches ${matches.length} accounts; use an id or label: ${matches.map(describeAccount).join("; ")}`);
+  if (!accounts.length) throw new UsageError(`No accounts are connected, so "${ref}" can't be a destination. Connect accounts in the web UI, or omit --to (legacy X mode).`);
+  throw new UsageError(`No connected account matches "${ref}". Connected: ${accounts.map(describeAccount).join("; ")}`);
+}
+
+/** --version ref=file pairs → [{account, value}] where value is the text, or null for "none". */
+async function versionSpecs() {
+  const out = [];
+  for (const spec of opt.version ?? []) {
+    const m = /^([^=]+)=(.*)$/.exec(spec);
+    if (!m) throw new UsageError(`--version ${spec}: use ref=file (or ref=none to drop a version).`);
+    const account = resolveAccount(m[1], await accountsList());
+    out.push({ account, value: m[2] === "none" ? null : readFile(m[2], "utf8") });
+  }
+  return out;
+}
+
+/** A version's segments: images carry over by position from `base` (extra images go on its last post). */
+function versionThread(text, base) {
+  const parts = splitThread(text);
+  if (!parts.length) throw new UsageError("A --version file is empty.");
+  return parts.map((t, i) => ({ text: t, mediaIds: i === parts.length - 1 ? base.slice(i).flatMap((s) => s.mediaIds ?? []) : (base[i]?.mediaIds ?? []) }));
+}
+
+/** --to and --version → the `targets` body field, or undefined to leave destinations as they are. */
+async function targetsFrom(current, sharedThread) {
+  if (opt.to === undefined && !opt.version?.length) return undefined;
+  const accounts = opt.to !== undefined || opt.version?.length ? await accountsList() : [];
+  const ids =
+    opt.to === undefined
+      ? (current?.targets ?? []).map((t) => t.accountId)
+      : opt.to.trim() === "none" || opt.to.trim() === ""
+        ? []
+        : opt.to.split(",").map((r) => resolveAccount(r, accounts).id);
+  if (new Set(ids).size !== ids.length) throw new UsageError("--to names the same account twice.");
+  const targets = ids.map((accountId) => ({ accountId })); // no `thread`: the server keeps an existing version
+  for (const { account, value } of await versionSpecs()) {
+    const t = targets.find((x) => x.accountId === account.id);
+    if (!t) throw new UsageError(`--version: ${describeAccount(account)} is not a destination; add it to --to.`);
+    const previous = current?.targets.find((x) => x.accountId === account.id)?.thread;
+    t.thread = value === null ? null : versionThread(value, previous ?? sharedThread);
+  }
+  if (!current) for (const t of targets) t.thread ??= null;
+  return targets;
+}
+
+function targetLine(t, accounts) {
+  const a = accounts.find((x) => x.id === t.accountId);
+  const name = a ? describeAccount(a) : `${t.platform} ${short(t.accountId)}`;
+  const detail = t.url ? ` ${t.url}` : t.error ? ` — ${t.error}` : t.externalIds.length ? ` (${t.externalIds.length} live)` : "";
+  return `${t.status.padEnd(9)} ${name}${t.thread ? " [own version]" : ""}${detail}`;
+}
+
+/** After saving: what would stop each destination (server preview), or X's limit in legacy mode. */
+async function warnProblems(post) {
+  if (!post.targets?.length) return warnOver(post);
+  const { targets } = await api("GET", `/api/posts/${post.id}/preview`);
+  for (const t of targets) if (t.problem) console.error(`warning: ${t.label}: ${t.problem}`);
+}
+
 const int = (v, name, fallback) => {
   if (v === undefined) return fallback;
   if (!/^\d+$/.test(v)) throw new UsageError(`${name} must be a whole number.`);
@@ -227,7 +355,8 @@ function emit(data, human) {
 }
 
 function line(p) {
-  return `${short(p.id)}  ${p.status.padEnd(10)} ${(when(p.scheduledAt) || "—").padEnd(22)} ${p.title ? `[${p.title}] ` : ""}${firstLine(p)}`;
+  const to = p.targets?.length ? `→ ${p.targets.map((t) => PLATFORMS[t.platform]?.name ?? t.platform).join(",")} ` : "";
+  return `${short(p.id)}  ${p.status.padEnd(10)} ${(when(p.scheduledAt) || "—").padEnd(22)} ${to}${p.title ? `[${p.title}] ` : ""}${firstLine(p)}`;
 }
 
 function printPost(p, limit = 280) {
@@ -242,8 +371,12 @@ function printPost(p, limit = 280) {
 }
 
 function status(p) {
-  const extra = p.status === "scheduled" ? ` for ${whenTz(p.scheduledAt)}` : p.url ? ` ${p.url}` : p.error ? ` — ${p.error}` : "";
+  const extra = p.status === "scheduled" ? ` for ${whenTz(p.scheduledAt)}` : p.url && !p.targets?.length ? ` ${p.url}` : p.error ? ` — ${p.error}` : "";
   console.log(`${short(p.id)} ${p.status}${extra}`);
+  for (const t of p.targets ?? []) {
+    if (p.status === "scheduled" && t.status === "pending") continue;
+    console.log(`  ${(PLATFORMS[t.platform]?.name ?? t.platform).padEnd(9)} ${t.status}${t.url ? ` ${t.url}` : t.error ? ` — ${t.error}` : ""}`);
+  }
 }
 
 async function warnOver(post) {
@@ -291,14 +424,13 @@ const commands = {
       if (n < 1 || n > parts.length) throw new UsageError(`--image ${spec}: the thread has ${parts.length} post(s).`);
       media[n - 1].push((await upload(path)).id);
     }
-    const post = await api("POST", "/api/posts", {
-      thread: parts.map((text, i) => ({ text, mediaIds: media[i] })),
-      title: opt.title,
-      scheduledAt: opt.at,
-    });
+    const thread = parts.map((text, i) => ({ text, mediaIds: media[i] }));
+    const targets = await targetsFrom(undefined, thread);
+    const post = await api("POST", "/api/posts", { thread, title: opt.title, scheduledAt: opt.at, targets });
     if (!opt.json) await useServerTimezone();
-    emit(post, (p) => console.log(`${p.scheduledAt ? `Scheduled ${short(p.id)} for ${whenTz(p.scheduledAt)}` : `Saved draft ${short(p.id)}`} (${p.thread.length} post${p.thread.length > 1 ? "s" : ""})`));
-    await warnOver(post);
+    const to = post.targets.length ? ` → ${post.targets.length} destination${post.targets.length > 1 ? "s" : ""}` : " (legacy X mode)";
+    emit(post, (p) => console.log(`${p.scheduledAt ? `Scheduled ${short(p.id)} for ${whenTz(p.scheduledAt)}` : `Saved draft ${short(p.id)}`} (${p.thread.length} post${p.thread.length > 1 ? "s" : ""})${to}`));
+    await warnProblems(post);
   },
 
   async queue() {
@@ -314,6 +446,9 @@ const commands = {
           // Overdue due/failed posts from earlier days are listed under today: show their own date.
           const time = dayKey(at) === date ? hhmm(at) : `${new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: TZ })} ${hhmm(at)}`;
           console.log(`  ${time}  ${post.status.padEnd(10)} ${short(post.id)}  ${firstLine(post)}`);
+          for (const t of post.targets ?? []) {
+            console.log(`         ${" ".repeat(time.length - 5)}↳ ${(PLATFORMS[t.platform]?.name ?? t.platform).padEnd(9)} ${t.status}${t.error ? ` — ${clip(t.error, 80)}` : ""}`);
+          }
         }
         const free = items.filter((i) => i.type === "slot").map((i) => hhmm(i.at));
         if (free.length) console.log(`  free: ${free.join(", ")}`);
@@ -336,18 +471,38 @@ const commands = {
     const post = await api("GET", `/api/posts/${await resolveId(ref)}`);
     if (!opt.json) await useServerTimezone();
     const limit = opt.json ? 0 : await maxChars();
-    emit(post, (p) => printPost(p, limit));
+    const accounts = !opt.json && post.targets.length ? await accountsList() : [];
+    emit(post, (p) => {
+      printPost(p, limit);
+      console.log(p.targets.length ? `\ndestinations:\n${p.targets.map((t) => `  ${targetLine(t, accounts)}`).join("\n")}` : "\ndestinations: none (legacy single-X mode)");
+    });
+  },
+
+  async preview([ref]) {
+    const data = await api("GET", `/api/posts/${await resolveId(ref)}/preview`);
+    emit(data, ({ targets }) => {
+      for (const t of targets) {
+        const mode = t.threadMode === "single" && t.items.length === 1 ? ", joined into one post" : "";
+        console.log(`${t.label} — ${PLATFORMS[t.platform]?.name ?? t.platform}, limit ${t.limit}${mode}, ${t.status}${t.live ? `, ${t.live} live` : ""}`);
+        t.items.forEach((it, i) => console.log(`  [${i + 1}] ${it.count}/${t.limit}${it.fits ? "" : " OVER"}${it.images ? `  images: ${it.images}` : ""}  ${clip(it.text.replace(/\s+/g, " "), 60)}`));
+        console.log(t.problem ? `  problem: ${t.problem}` : "  ready");
+      }
+    });
+    if (data.targets.some((t) => t.problem)) process.exitCode = 1;
   },
 
   async edit([ref, ...rest]) {
     const id = await resolveId(ref);
     // A title-only rename never reads stdin: in a `while read` loop or under xargs it holds other input, not the text.
-    const text = opt.file || rest.length || opt.title === undefined ? readText(rest) : undefined;
+    const onlyMeta = opt.title !== undefined || opt.to !== undefined || opt.version?.length;
+    const text = opt.file || rest.length || !onlyMeta ? readText(rest) : undefined;
     if (text !== undefined && !splitThread(text).length) throw new UsageError("The post is empty.");
+    const current = opt.to !== undefined || opt.version?.length ? await api("GET", `/api/posts/${id}`) : undefined;
+    const targets = current ? await targetsFrom(current, current.thread) : undefined;
     // `text` keeps each post's id and images by position (the server maps them).
-    const post = await api("PATCH", `/api/posts/${id}`, { title: opt.title, text });
-    emit(post, (p) => console.log(`Updated ${short(p.id)} (${p.thread.length} post${p.thread.length > 1 ? "s" : ""})`));
-    await warnOver(post);
+    const post = await api("PATCH", `/api/posts/${id}`, { title: opt.title, text, targets });
+    emit(post, (p) => console.log(`Updated ${short(p.id)} (${p.thread.length} post${p.thread.length > 1 ? "s" : ""}, ${p.targets.length ? `${p.targets.length} destination(s)` : "legacy X mode"})`));
+    await warnProblems(post);
   },
 
   async schedule([ref, at]) {
@@ -403,14 +558,50 @@ const commands = {
   },
 
   async count(args) {
-    const limit = await maxChars();
-    const posts = splitThread(readText(args)).map((text, i) => {
-      const chars = weightedLength(text);
+    const platform = (opt.platform ?? "x").toLowerCase();
+    if (!PLATFORMS[platform]) throw new UsageError(`--platform must be one of: ${Object.keys(PLATFORMS).join(", ")}`);
+    const limit = platform === "x" ? await maxChars() : opt.max ? int(opt.max, "--max") : PLATFORMS[platform].maxChars;
+    let parts = splitThread(readText(args));
+    const joined = PLATFORMS[platform].threadMode === "single" && parts.length > 1;
+    if (joined) parts = [parts.join("\n\n")]; // LinkedIn publishes the thread as one post
+    const posts = parts.map((text, i) => {
+      const chars = countFor(platform, text);
       return { post: i + 1, chars, remaining: limit - chars, fits: chars <= limit };
     });
-    emit({ limit, allFit: posts.length > 0 && posts.every((p) => p.fits), posts }, () =>
-      posts.forEach((p) => console.log(`[${p.post}] ${p.chars}/${limit}${p.fits ? "" : `  OVER by ${-p.remaining}`}`)),
-    );
+    emit({ platform, limit, joined, allFit: posts.length > 0 && posts.every((p) => p.fits), posts }, () => {
+      if (platform !== "x" || joined) console.log(`${PLATFORMS[platform].name}${joined ? " (thread joined into one post)" : ""}`);
+      posts.forEach((p) => console.log(`[${p.post}] ${p.chars}/${limit}${p.fits ? "" : `  OVER by ${-p.remaining}`}`));
+    });
+  },
+
+  async accounts([sub, ref]) {
+    if (sub === "check") {
+      if (!ref) throw new UsageError("Usage: threadsmith accounts check <ref>");
+      const a = await api("POST", `/api/accounts/${resolveAccount(ref, await accountsList()).id}/check`);
+      emit(a, () => console.log(a.lastError ? `${describeAccount(a)}: ${a.lastError}` : `${describeAccount(a)}: OK`));
+      if (a.lastError) process.exitCode = 1;
+      return;
+    }
+    if (sub) throw new UsageError("Usage: threadsmith accounts [check <ref>]");
+    const accounts = await accountsList();
+    emit({ accounts }, () => {
+      if (!accounts.length) return console.log("No accounts connected. Connect them in the web UI; until then posts use the legacy X mode.");
+      for (const a of accounts) {
+        const limit = a.maxChars ? ` · limit ${a.maxChars}` : "";
+        console.log(`${short(a.id)}  ${(PLATFORMS[a.platform]?.name ?? a.platform).padEnd(9)} ${a.label}${a.handle ? `  ${a.handle}` : ""}${limit}${a.lastError ? `\n          error: ${a.lastError}` : ""}`);
+      }
+    });
+  },
+
+  async platforms() {
+    const data = await api("GET", "/api/platforms");
+    const mode = { replies: "reply chain", single: "one joined post", messages: "messages" };
+    emit(data, ({ platforms }) => {
+      for (const p of platforms) {
+        const types = p.imageTypes ? ` (${p.imageTypes.map((t) => t.replace("image/", "")).join("/")})` : "";
+        console.log(`${p.id.padEnd(9)} ${String(p.maxChars).padStart(5)} chars · ${p.maxImages} images${types} · ${mode[p.threadMode]} · ${p.costNote}`);
+      }
+    });
   },
 
   async ai([task, ...args]) {
@@ -433,8 +624,15 @@ const commands = {
         const data = await api("POST", "/api/ai/rewrite", { instruction, text: readText(rest) });
         emit(data, ({ text }) => console.log(text));
       },
+      adapt: async () => {
+        const [ref, ...rest] = args;
+        if (!ref) throw new UsageError("Usage: threadsmith ai adapt <platform|account ref> [text|--file f]");
+        const target = PLATFORMS[ref.toLowerCase()] ? { platform: ref.toLowerCase() } : { accountId: resolveAccount(ref, await accountsList()).id };
+        const data = await api("POST", "/api/ai/adapt", { ...target, text: readText(rest) });
+        emit(data, ({ posts }) => console.log(joinThread(posts)));
+      },
     };
-    if (!tasks[task]) throw new UsageError("Usage: threadsmith ai threadify|hooks|fit|rewrite ...");
+    if (!tasks[task]) throw new UsageError("Usage: threadsmith ai threadify|hooks|fit|rewrite|adapt ...");
     await tasks[task]();
   },
 

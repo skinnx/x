@@ -153,7 +153,7 @@ export function listPosts(filter: ListFilter = {}): Post[] {
 
 export interface TargetInput {
   accountId: string;
-  /** A version of the thread just for this account; null/absent = the post's own thread. */
+  /** A version of the thread just for this account; null = the post's own thread; absent = keep the current choice. */
   thread?: SegmentInput[] | null;
 }
 
@@ -263,7 +263,8 @@ function writeTargets(postId: string, targets: TargetInput[], existing: PostTarg
   db.prepare("DELETE FROM post_targets WHERE post_id = ?").run(postId);
   targets.forEach((t, position) => {
     const old = existing.find((e) => e.accountId === t.accountId);
-    let thread: Segment[] | null = t.thread ? normalizeThread({ thread: t.thread }, old?.thread ?? []) : null;
+    let thread: Segment[] | null =
+      t.thread === undefined ? (old?.thread ?? null) : t.thread ? normalizeThread({ thread: t.thread }, old?.thread ?? []) : null;
     if (old && old.status !== "published" && old.externalIds.length && PLATFORMS[old.platform].threadMode !== "single") {
       const base = old.thread ?? null;
       if (base) thread = lockLivePrefix(base, thread ?? [], old.externalIds.length, PLATFORMS[old.platform].name);

@@ -196,7 +196,11 @@ function brief(p: Post) {
     postCount: p.thread.length,
     preview: first.length > 100 ? first.slice(0, 99) + "…" : first,
     destinations: p.targets.length
-      ? p.targets.map((t) => `${PLATFORMS[t.platform].name} ${accountLabel(t.accountId)}: ${t.status}`)
+      ? p.targets.map((t) => {
+          const label = accountLabel(t.accountId);
+          const name = PLATFORMS[t.platform].name;
+          return `${label.toLowerCase().includes(name.toLowerCase()) ? label : `${label} (${name})`}: ${t.status}`;
+        })
       : [`X (legacy ${xConfigured ? "API" : "manual"} mode)`],
     url: p.url,
     error: p.error,

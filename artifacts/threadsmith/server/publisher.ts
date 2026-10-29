@@ -14,11 +14,11 @@ export function limitFor(account: Account): number {
 }
 
 /** Everything that would make the platform reject an item, found before anything is posted. */
-export function preflight(account: Account, items: PublishItem[]): string | null {
+export function preflight(account: Account, items: PublishItem[], offset = 0): string | null {
   const info = PLATFORMS[account.platform];
   const limit = limitFor(account);
   for (const [i, item] of items.entries()) {
-    const n = items.length > 1 ? `Post ${i + 1}` : "The post";
+    const n = items.length + offset > 1 ? `Post ${i + 1 + offset}` : "The post";
     if (!item.text.trim() && !item.mediaIds.length) return `${n} is empty; add text or remove it.`;
     const captionLimit = account.platform === "telegram" && item.mediaIds.length ? TELEGRAM_CAPTION_LIMIT : limit;
     const length = countFor(account.platform, item.text);
@@ -47,7 +47,7 @@ async function publishTarget(post: Post, target: PostTarget): Promise<string | n
     return `${name}: the account was removed.`;
   }
   const items = itemsFor(target.platform, target.thread ?? post.thread);
-  const problem = preflight(account, items.slice(target.externalIds.length));
+  const problem = preflight(account, items.slice(target.externalIds.length), target.externalIds.length);
   if (problem) {
     markTargetFailed(post.id, account.id, `${problem} Nothing more was posted there.`);
     return `${account.label}: ${problem}`;
