@@ -1,12 +1,27 @@
 # Threadsmith
 
-Công cụ soạn và lên lịch thread cho X (Twitter) tự host, thay thế Typefully. Toàn bộ chạy trong **một tiến trình**, dữ liệu lưu trong **một file SQLite**, không cần tài khoản và chạy được trên localhost hoặc VPS.
+Công cụ soạn và lên lịch thread tự host cho **X, Bluesky, Mastodon, Threads, LinkedIn, Telegram và Discord**, thay thế Typefully và Postiz. Toàn bộ chạy trong **một tiến trình**, dữ liệu lưu trong **một file SQLite**, không cần tài khoản và chạy được trên localhost hoặc VPS.
 
 Thay vì làm một ứng dụng lịch có gắn thêm AI, Threadsmith coi AI agent là người dùng ngang hàng với bạn. Mọi thao tác trên giao diện đều làm được qua REST và OpenAPI, MCP, CLI, webhooks, luồng sự kiện SSE và `llms.txt`. Claude Code còn dùng được Threadsmith qua một Agent Skill có sẵn. Ngoài ra có một copilot viết bài chạy bằng Claude hoặc bất kỳ model tương thích OpenAI nào, kể cả Ollama chạy local miễn phí.
 
-> **Trạng thái.** Bản 0.1. Phần đăng lên X đã được kiểm tra với một máy chủ X giả lập (đăng thread nối tiếp, upload ảnh, lỗi giữa chừng rồi đăng tiếp phần còn lại). Phần này **chưa** được chạy với tài khoản X thật vì lúc xây dựng chưa có khóa API. Xem thêm [Giới hạn](#giới-hạn-đã-biết).
+> **Trạng thái.** Bản 0.2. Phần đăng lên cả 7 nền tảng đã được kiểm tra với máy chủ giả lập mô phỏng theo tài liệu API chính thức (đăng thread nối tiếp, upload ảnh, lỗi giữa chừng rồi đăng tiếp phần còn lại). Phần này **chưa** được chạy với tài khoản thật trên bất kỳ nền tảng nào vì lúc xây dựng chưa có thông tin đăng nhập. Xem thêm [Giới hạn](#giới-hạn-đã-biết).
 
 ---
+
+## So với Postiz
+
+| | Threadsmith | Postiz |
+|---|---|---|
+| Hạ tầng tự host | **1 tiến trình Node + 1 file SQLite** | Postgres + Redis + Temporal + nhiều service |
+| Nền tảng | 7 (X, Bluesky, Mastodon, Threads, LinkedIn, Telegram, Discord) | ~30 |
+| Agent điều khiển qua | REST + OpenAPI, MCP (19 tool), CLI `--json`, `llms.txt`, webhook ký HMAC, SSE, Agent Skill | REST, MCP (~9 tool), CLI |
+| Đăng tiếp sau lỗi giữa thread | Có, theo từng kênh, không đăng trùng; bài đã lên bị khóa | — |
+| Đếm ký tự | Theo luật từng nền tảng (X weighted, Bluesky grapheme, Mastodon URL=23, Threads emoji theo byte…) | Đếm chung |
+| Phiên bản riêng cho từng kênh + AI "Adapt" | Có | Có (AI) |
+| Không cần khóa X | Chế độ thủ công: nhắc giờ + sao chép | Cần kết nối |
+| Chi phí X API | Ghi rõ ($0,015/bài, $0,20 nếu có link) | — |
+
+Postiz hơn ở số nền tảng (Instagram, Facebook, TikTok, YouTube, Pinterest…), làm việc nhóm và analytics. Threadsmith chọn ít kênh hơn nhưng nhẹ, an toàn khi lỗi giữa chừng và dễ cho agent điều khiển hơn. Số liệu Postiz lấy từ các trang so sánh tháng 7–10/2026, hãy kiểm tra lại trên postiz.com.
 
 ## Tính năng
 
@@ -27,6 +42,25 @@ Thay vì làm một ứng dụng lịch có gắn thêm AI, Threadsmith coi AI a
 - **Chế độ thủ công (miễn phí)**: không cần khóa X. Đến giờ, trình duyệt gửi thông báo (Web Push, vẫn nhận được khi tab đã đóng nếu trình duyệt còn chạy). Bạn bấm "Sao chép thread" hoặc "Mở trong X" rồi đánh dấu "Đã đăng". Nếu thread đã lên X một phần (lần đăng qua API bị lỗi giữa chừng), giao diện và `threadsmith copy` chỉ sao chép các bài chưa lên, kèm link bài cuối đã lên để bạn đăng tiếp dưới dạng trả lời (API export trả thêm `alreadyLive`, `remainingText`, `replyToUrl`).
 - Vòng lặp lập lịch chạy ngay trong tiến trình. Mỗi bài được "nhận" bằng một giao dịch nguyên tử nên không bao giờ đăng hai lần. Nếu máy chủ tắt giữa lúc đang đăng, bài đó được chuyển sang `failed` kèm hướng dẫn, thay vì tự đăng lại một cách mù quáng.
 - **Bài bị lỡ giờ khi app tắt** (laptop ngủ, container dừng…): khi bật lại, bài nào đã trễ quá `lateGraceMinutes` (mặc định 60 phút) thì **không tự đăng muộn**. Bài chuyển sang `due`, ghi lý do vào trường lỗi, hiện ở đầu hàng đợi và gửi thông báo "Time to post". Bạn tự quyết: Đăng ngay (ở chế độ API, Retry hoặc Publish now sẽ đăng bài này), sao chép để đăng tay, hoặc hẹn giờ khác. Đặt `"lateGraceMinutes": 0` nếu muốn luôn đăng, trễ bao lâu cũng được.
+
+**Đa nền tảng**
+- Kết nối tài khoản ở trang **Connect** (hoặc `POST /api/accounts`). Thông tin đăng nhập được kiểm tra với nền tảng ngay khi kết nối, rồi lưu **mã hóa AES-256-GCM** trong SQLite, không bao giờ trả ra qua API. Khóa mã hóa lấy từ `SECRET_KEY` hoặc tự sinh vào `data/secret.key`: **sao lưu file này cùng database**.
+- Mỗi bài chọn một hoặc nhiều kênh đích. Không chọn kênh nào thì bài chạy đúng như chế độ chỉ-X cũ (khóa X trong `.env`, hoặc sao chép thủ công).
+- Mỗi thẻ hiện bộ đếm theo từng kênh đã chọn. Có thể "Customize" để tạo phiên bản riêng cho một kênh, hoặc nhờ copilot **Adapt** viết lại cho hợp kênh đó.
+- Trước khi xếp hàng, server kiểm tra từng kênh (độ dài, số ảnh, định dạng và dung lượng ảnh) và chặn ngay nếu kênh nào sẽ từ chối.
+- Mỗi kênh đăng độc lập: kênh lỗi không chặn kênh khác, Retry chỉ đăng lại phần chưa lên.
+
+| Nền tảng | Giới hạn | Thread | Ảnh | Chi phí / điều kiện |
+|---|---|---|---|---|
+| X | 280 (weighted) | trả lời nối tiếp | 4 | Trả phí theo lượt |
+| Bluesky | 300 grapheme | trả lời nối tiếp | 4, ≤2 MB | Miễn phí, app password |
+| Mastodon | 500 (URL = 23) | trả lời nối tiếp | 4 | Miễn phí, token có scope `profile write:statuses write:media` |
+| Threads | 500 | trả lời nối tiếp | 20, JPEG/PNG | Miễn phí, cần app Meta và `PUBLIC_URL` HTTPS công khai |
+| LinkedIn | 3000 | gộp thành 1 bài | 20, JPEG/PNG/GIF | Miễn phí, app có `w_member_social` |
+| Telegram | 4096 (chú thích ảnh 1024) | tin nhắn trả lời nối tiếp | 10 | Miễn phí, bot là admin kênh |
+| Discord | 2000 | tin nhắn liên tiếp | 10 | Miễn phí, webhook |
+
+Token Threads và LinkedIn hết hạn sau khoảng 60 ngày; khi đó tài khoản hiện lỗi đỏ, bấm Check sau khi dán token mới.
 
 **Kết nối AI**: xem [mục riêng bên dưới](#kết-nối-ai).
 
@@ -358,9 +392,10 @@ Stack: Node 22+/24, TypeScript chạy bằng `tsx` (không cần bước build c
 
 ## Giới hạn đã biết
 
-- **Chưa đăng thử lên X thật.** Phần OAuth 1.0a đã được kiểm tra bằng ví dụ chữ ký trong tài liệu X. Thread nối tiếp, upload ảnh và đăng tiếp sau lỗi đã được kiểm tra với máy chủ X giả lập. Hành vi thực tế của X (mã lỗi, giới hạn) có thể khác. Hãy thử bằng một thread ngắn trước.
+- **Chưa đăng thử lên nền tảng thật nào.** OAuth 1.0a của X đã được kiểm tra bằng ví dụ chữ ký trong tài liệu X. Mọi adapter (X, Bluesky, Mastodon, Threads, LinkedIn, Telegram, Discord) được viết theo tài liệu API chính thức đọc vào tháng 10/2026 và kiểm tra với máy chủ giả lập. Mã lỗi, giới hạn và thời gian xử lý ảnh thực tế có thể khác. Hãy thử một bài ngắn trên từng kênh trước.
 - Mới hỗ trợ **ảnh** (PNG, JPEG, WebP, GIF, tối đa 5 MB). Chưa hỗ trợ video.
-- Mới hỗ trợ **X**. Chưa có LinkedIn, Threads, Bluesky.
+- Chưa hỗ trợ Instagram, Facebook, TikTok, YouTube, Pinterest (cần app review hoặc tài khoản business).
+- Telegram để mặc định bật xem trước link. Discord webhook trỏ vào thread con thì link trả về trỏ kênh cha.
 - Chưa có thống kê lượt xem hay tương tác (đọc dữ liệu từ X cũng tốn tiền theo lượt).
 - Một người dùng, một tài khoản X cho mỗi instance.
 - Bộ đếm ký tự bám theo quy tắc twitter-text v3. Phần nhận diện URL không có scheme (như `example.com`) chỉ là gần đúng, nên X có thể đếm lệch vài ký tự với tên miền lạ. Vì trước khi đăng, server dùng chính bộ đếm này để chặn bài vượt giới hạn (tránh thread bị đăng dở), một bài sát giới hạn có tên miền lạ hiếm khi có thể bị chặn dù X vẫn nhận.

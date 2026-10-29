@@ -46,7 +46,7 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
   - Game states: menu → playing → paused → game over
   - Error boundary for graceful WebGL fallback message
 
-### Threadsmith - AI-native X thread scheduler (`artifacts/threadsmith`)
+### Threadsmith - AI-native multi-platform thread scheduler (`artifacts/threadsmith`)
 - **Type**: single-process Node app (Hono API + React/Vite UI on one port), self-hosted, no accounts
 - **Run**: `cd artifacts/threadsmith && pnpm build && pnpm start` (dev: `pnpm dev`); see its README.md
 - **Stack**: Hono + @hono/zod-openapi (zod v4), node:sqlite, React 19, Vite 8, Tailwind 4, TanStack Query, dnd-kit, Anthropic SDK, MCP SDK

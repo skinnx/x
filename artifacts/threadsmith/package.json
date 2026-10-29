@@ -1,6 +1,6 @@
 {
   "name": "threadsmith",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "AI-native, self-hosted thread composer and scheduler for X. Single process, SQLite, no accounts.",
