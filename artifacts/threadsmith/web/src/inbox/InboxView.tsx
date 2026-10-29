@@ -16,6 +16,7 @@ import {
   PenLine,
   Play,
   Send,
+  Settings2,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import type { AuditEntry, ControlState, Health, OperatorRun, Post } from "../../../shared/types.ts";
@@ -30,6 +31,7 @@ import { PlatformIcon } from "../lib/platforms.tsx";
 import { openPost } from "../lib/router.ts";
 import { formatWhen, timeAgo } from "../lib/time.ts";
 import { cx, firstLine } from "../lib/util.ts";
+import { PluginSettingsDialog } from "../plugins/PluginSettings.tsx";
 
 const btn = "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors disabled:opacity-50";
 
@@ -447,11 +449,6 @@ function RunList({ runs }: { runs: OperatorRun[] }) {
 
 // ---------- approval chats ----------
 
-/** Setup hints for the bundled approval chats; a chat from another plugin is set up as its plugin documents. */
-const CHANNEL_ENV: Record<string, [string, string]> = {
-  telegram: ["TELEGRAM_APPROVAL_BOT_TOKEN", "TELEGRAM_APPROVAL_CHAT_ID"],
-  discord: ["DISCORD_APPROVAL_BOT_TOKEN", "DISCORD_APPROVAL_CHANNEL_ID"],
-};
 
 function ChannelsPanel({ control }: { control: ControlState | undefined }) {
   const qc = useQueryClient();
@@ -470,13 +467,17 @@ function ChannelsPanel({ control }: { control: ControlState | undefined }) {
     onError: (e) => toastError("Couldn't send the test message", e),
   });
   const anyConfigured = control?.channels.some((c) => c.configured) ?? false;
+  // Each chat comes from a plugin; its settings (bot token, chat id…) are set up on the Plugins page.
+  const { data: plugins } = useQuery({ queryKey: ["plugins"], queryFn: api.plugins, staleTime: 30_000 });
+  const pluginFor = (channelId: string) => plugins?.plugins.find((p) => p.channels.includes(channelId));
+  const [setup, setSetup] = useState<string | null>(null);
 
   return (
     <Card icon={<MessageCircle size={16} />} title="Approval chats">
       {control && !control.channels.length && <p className="text-xs text-ink-3">No approval-chat plugins are loaded.</p>}
       <ul className="space-y-2.5">
         {(control?.channels ?? []).map((s) => {
-          const env = CHANNEL_ENV[s.id];
+          const plugin = pluginFor(s.id);
           const status = !s.configured
             ? { dot: "bg-ink-3", text: "Not set up" }
             : s.error
@@ -492,17 +493,21 @@ function ChannelsPanel({ control }: { control: ControlState | undefined }) {
                 <span className="text-xs text-ink-3">{status.text}</span>
               </p>
               {s.error && <p className="mt-0.5 pl-4 text-xs break-words text-red-700 dark:text-red-300">{s.error}</p>}
-              {!s.configured && (
-                <p className="mt-0.5 pl-4 text-xs leading-relaxed text-ink-3">
-                  {env ? (
-                    <>
-                      Set <code className="font-mono text-[11px]">{env[0]}</code> and <code className="font-mono text-[11px]">{env[1]}</code> in .env,
-                      then restart.
-                    </>
-                  ) : (
-                    "Configure it as its plugin describes, then restart."
-                  )}
-                </p>
+              {!s.configured &&
+                (plugin?.hasSettings ? (
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 pl-4 text-xs leading-relaxed text-ink-3">
+                    <button onClick={() => setSetup(plugin.name)} className={cx(btn, "h-7 bg-ink text-canvas hover:opacity-90")}>
+                      <Settings2 size={12} /> Set up
+                    </button>
+                    <span className="min-w-0 flex-1 basis-48">Add its bot token and chat in the plugin's settings. Values in .env still work.</span>
+                  </div>
+                ) : (
+                  <p className="mt-0.5 pl-4 text-xs leading-relaxed text-ink-3">Configure it as its plugin describes, then restart.</p>
+                ))}
+              {s.configured && plugin?.hasSettings && (
+                <button onClick={() => setSetup(plugin.name)} className="mt-0.5 pl-4 text-xs text-ink-3 underline-offset-2 hover:text-ink hover:underline">
+                  Settings
+                </button>
               )}
             </li>
           );
@@ -513,7 +518,7 @@ function ChannelsPanel({ control }: { control: ControlState | undefined }) {
         <button
           onClick={() => test.mutate()}
           disabled={!anyConfigured || test.isPending}
-          title={anyConfigured ? undefined : "Set up a chat in .env first"}
+          title={anyConfigured ? undefined : "Set up a chat first"}
           className={cx(btn, "border border-line bg-surface text-ink hover:bg-subtle")}
         >
           {test.isPending ? <LoaderCircle size={13} className="animate-spin" /> : <Send size={13} />} Send test message
@@ -523,6 +528,7 @@ function ChannelsPanel({ control }: { control: ControlState | undefined }) {
         </button>
       </div>
       {digestOpen && <DigestDialog onClose={() => setDigestOpen(false)} />}
+      {setup && <PluginSettingsDialog name={setup} onClose={() => setSetup(null)} />}
     </Card>
   );
 }
@@ -579,6 +585,20 @@ function describe(e: AuditEntry, tz: string): string {
       return `${who} paused publishing${d ? `: ${quote(d)}` : ""}`;
     case "publishing.resumed":
       return `${who} resumed publishing`;
+    case "plugin.installed":
+      return `${who} installed the plugin ${d ?? ""}`.trim();
+    case "plugin.updated":
+      return `${who} updated the plugin ${d ?? ""}`.trim();
+    case "plugin.uninstalled":
+      return `${who} uninstalled the plugin ${d ?? ""}`.trim();
+    case "plugin.enabled":
+      return `${who} switched on the plugin ${d ?? ""}`.trim();
+    case "plugin.disabled":
+      return `${who} switched off the plugin ${d ?? ""}`.trim();
+    case "plugin.settings_changed":
+      return `${who} changed plugin settings${d ? ` (${d.replace(/:.*/, "")})` : ""}`;
+    case "system.restart":
+      return `${who} restarted Threadsmith`;
     default:
       return `${who}: ${e.action}${d ? ` ${quote(d)}` : ""}`;
   }

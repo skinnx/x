@@ -14,6 +14,7 @@ import {
   RefreshCw,
   RotateCw,
   Search,
+  Settings2,
   ShieldAlert,
   Trash2,
   Upload,
@@ -27,6 +28,7 @@ import { PlatformIcon, useAccounts, usePlatforms } from "../lib/platforms.tsx";
 import { navigate, useRoute } from "../lib/router.ts";
 import { timeAgo } from "../lib/time.ts";
 import { cx } from "../lib/util.ts";
+import { PluginSettingsDialog } from "./PluginSettings.tsx";
 
 const btn = "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors disabled:opacity-50";
 const btnQuiet = cx(btn, "border border-line bg-surface text-ink-2 hover:border-line-strong hover:text-ink");
@@ -272,6 +274,8 @@ function PluginRow({ plugin: pl, canInstall, onRestart }: { plugin: PluginInfo; 
   const provides = useProvides()(pl);
   const run = usePluginAction(onRestart);
   const [confirmUninstall, setConfirmUninstall] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const needsSetup = pl.settingsMissing.length > 0 && !pl.disabled;
   const busy = run.isPending ? run.variables.action : null;
   const on = !pl.disabled;
 
@@ -293,6 +297,15 @@ function PluginRow({ plugin: pl, canInstall, onRestart }: { plugin: PluginInfo; 
             <span className="font-medium break-all text-ink">{pl.name}</span>
             <span className="text-xs text-ink-3 tabular-nums">{pl.version}</span>
             <span className={cx("rounded-full px-2 py-px text-[11px] font-medium", status.tone)}>{status.label}</span>
+            {needsSetup && (
+              <button
+                onClick={() => setSettingsOpen(true)}
+                title="Required settings are missing"
+                className="flex items-center gap-1 rounded-full bg-amber-100 px-2 py-px text-[11px] font-medium text-amber-900 hover:bg-amber-200 dark:bg-amber-950 dark:text-amber-200"
+              >
+                <CircleAlert size={11} /> Needs setup
+              </button>
+            )}
           </p>
           {pl.description && <p className="mt-0.5 text-sm leading-relaxed text-ink-2">{pl.description}</p>}
           <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
@@ -318,9 +331,14 @@ function PluginRow({ plugin: pl, canInstall, onRestart }: { plugin: PluginInfo; 
               Switched off in threadsmith.config.json. To switch it on, remove it from <code className={code}>plugins.disable</code> there.
             </p>
           )}
-          {pl.source === "installed" && (
+          {(pl.source === "installed" || pl.hasSettings) && (
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              {pl.restartRequired ? (
+              {pl.hasSettings && (
+                <button onClick={() => setSettingsOpen(true)} className={needsSetup ? btnPrimary : btnQuiet}>
+                  <Settings2 size={13} /> {needsSetup ? "Set up" : "Settings"}
+                </button>
+              )}
+              {pl.source !== "installed" ? null : pl.restartRequired ? (
                 <button onClick={onRestart} className={btnPrimary}>
                   <RotateCw size={13} /> Restart to finish
                 </button>
@@ -335,14 +353,14 @@ function PluginRow({ plugin: pl, canInstall, onRestart }: { plugin: PluginInfo; 
                   {busy === "update" ? "Updating…" : "Update"}
                 </button>
               )}
-              <button
+              {pl.source === "installed" && <button
                 onClick={() => setConfirmUninstall(true)}
                 disabled={run.isPending}
                 className={cx(btn, "text-ink-2 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950/50 dark:hover:text-red-300")}
               >
                 {busy === "uninstall" ? <LoaderCircle size={13} className="animate-spin" /> : <Trash2 size={13} />}
                 {busy === "uninstall" ? "Uninstalling…" : "Uninstall"}
-              </button>
+              </button>}
               {pl.spec && (
                 <span className="min-w-0 truncate text-[11px] text-ink-3" title={`Installed from ${pl.spec}`}>
                   from <span className="font-mono">{specLabel(pl.spec)}</span>
@@ -360,6 +378,7 @@ function PluginRow({ plugin: pl, canInstall, onRestart }: { plugin: PluginInfo; 
           onChange={() => run.mutate({ action: on ? "disable" : "enable", plugin: pl })}
         />
       </div>
+      {settingsOpen && <PluginSettingsDialog name={pl.name} onClose={() => setSettingsOpen(false)} />}
       {confirmUninstall && (
         <UninstallDialog
           plugin={pl}

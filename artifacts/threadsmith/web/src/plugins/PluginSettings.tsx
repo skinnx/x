@@ -129,7 +129,7 @@ function SettingsForm({ data, onClose }: { data: PluginSettings; onClose: () => 
                     </span>
                   )}
                 </label>
-                <span className={cx("text-xs", missing ? "text-red-700 dark:text-red-300" : "text-ink-3")}>
+                <span className={cx("text-xs", missing ? "text-amber-700 dark:text-amber-300" : "text-ink-3")}>
                   {willClear ? "Cleared on save" : sourceNote(f, source)}
                   {canClear && (
                     <>
@@ -210,7 +210,7 @@ function SettingsForm({ data, onClose }: { data: PluginSettings; onClose: () => 
                   autoComplete={f.secret ? "new-password" : "off"}
                   spellCheck={false}
                   aria-invalid={missing || undefined}
-                  className={cx(input, "h-10", f.secret && "font-mono", missing && "border-red-300 dark:border-red-800")}
+                  className={cx(input, "h-10", f.secret && "font-mono", missing && "border-amber-300 dark:border-amber-800")}
                 />
               )}
               {f.help && <p className="mt-1 text-xs leading-relaxed text-ink-3">{f.help}</p>}
