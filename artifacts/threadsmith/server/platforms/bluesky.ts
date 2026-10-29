@@ -7,7 +7,14 @@
 // app.bsky.embed.images ≤4 images, image blob maxSize 2,000,000 bytes ("formerly limited to 1 MB"), alt required,
 // aspectRatio {width, height} (github.com/bluesky-social/bsky lexicons/app/bsky). XRPC errors are {error, message}.
 // Item ids are stored as "<at-uri>|<cid>" so a retry can rebuild the reply refs from ctx.posted alone.
+// Metrics: app.bsky.feed.getPosts {uris: ≤25 at-uris} → {posts: postView[]}, postView has optional likeCount,
+// repostCount, replyCount, quoteCount, bookmarkCount; posts the AppView can't see are simply left out (lexicons
+// app/bsky/feed/getPosts.json and defs.json in github.com/bluesky-social/bsky, checked 2026-10-29). Read
+// unauthenticated from the public AppView (https://public.api.bsky.app, override with BLUESKY_APPVIEW_BASE), never the
+// account's `service`: a PDS (bsky.social or self-hosted) only proxies app.bsky.* reads for signed-in users, and posts
+// from self-hosted PDSes reach the Bluesky AppView through the relay anyway. So no session and no app password needed.
 import { getMedia, readMediaBytes } from "../repo.ts";
+import type { ItemMetrics } from "../../shared/types.ts";
 import { PlatformError, type Credentials, type PlatformAdapter } from "./types.ts";
 
 const MAX_BLOB_BYTES = 2_000_000;
@@ -210,6 +217,64 @@ async function uploadImage(s: Session, mediaId: string) {
   return { image: blob, alt: m.alt?.trim() ?? "", ...(size && size.width > 0 && size.height > 0 ? { aspectRatio: size } : {}) };
 }
 
+// ---------- metrics ----------
+
+const appViewUrl = () => (process.env.BLUESKY_APPVIEW_BASE?.trim() || "https://public.api.bsky.app").replace(/\/+$/, "");
+const GET_POSTS_MAX = 25;
+
+interface PostView {
+  uri: string;
+  likeCount?: number;
+  repostCount?: number;
+  replyCount?: number;
+  quoteCount?: number;
+  bookmarkCount?: number;
+}
+
+async function postMetrics(externalIds: string[]): Promise<ItemMetrics[]> {
+  const uris = externalIds.map((id) => id.split("|")[0] ?? id);
+  const found = new Map<string, PostView>();
+  const valid = [...new Set(uris.filter((u) => u.startsWith("at://")))];
+  for (let i = 0; i < valid.length; i += GET_POSTS_MAX) {
+    const query = new URLSearchParams();
+    for (const u of valid.slice(i, i + GET_POSTS_MAX)) query.append("uris", u);
+    const url = `${appViewUrl()}/xrpc/app.bsky.feed.getPosts?${query}`;
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+    } catch (err) {
+      if ((err as Error).name === "TimeoutError") throw new PlatformError(`The Bluesky AppView (${appViewUrl()}) didn't answer within 30s. Try again in a minute.`);
+      const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+      throw new PlatformError(`Couldn't reach the Bluesky AppView at ${appViewUrl()} (${cause?.code ?? cause?.message ?? (err as Error).message}). Check the server's internet connection (or BLUESKY_APPVIEW_BASE).`);
+    }
+    const raw = await res.text();
+    let body: { posts?: PostView[]; error?: string; message?: string } | undefined;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      body = undefined;
+    }
+    if (!res.ok) {
+      const error = body?.error ?? "", message = body?.message ?? raw.trim().slice(0, 200);
+      if (res.status === 429 || res.status >= 500) throw explain("app.bsky.feed.getPosts", res.status, res.headers, error, message);
+      throw new PlatformError(`The Bluesky AppView refused getPosts (${res.status}: ${[error, message].filter(Boolean).join(": ") || "no detail"}). If BLUESKY_APPVIEW_BASE is set, check it points at an AppView (default https://public.api.bsky.app).`, res.status);
+    }
+    if (!Array.isArray(body?.posts)) throw new PlatformError(`The Bluesky AppView answered getPosts with ${res.status} but no posts list: ${raw.slice(0, 200)}`, res.status);
+    for (const p of body.posts) found.set(p.uri, p);
+  }
+  return uris.map((uri) => {
+    const p = found.get(uri);
+    if (!p) return { id: uri }; // deleted, taken down or not indexed yet
+    const m: ItemMetrics = { id: uri };
+    if (typeof p.likeCount === "number") m.likes = p.likeCount;
+    if (typeof p.repostCount === "number") m.reposts = p.repostCount;
+    if (typeof p.replyCount === "number") m.replies = p.replyCount;
+    if (typeof p.quoteCount === "number") m.quotes = p.quoteCount;
+    if (typeof p.bookmarkCount === "number") m.bookmarks = p.bookmarkCount;
+    return m;
+  });
+}
+
 // ---------- adapter ----------
 
 export const bluesky: PlatformAdapter = {
@@ -264,4 +329,6 @@ export const bluesky: PlatformAdapter = {
     }
     return { ids, url: refs.length ? postUrl(s, refs[0]) : null };
   },
+
+  metrics: (ctx) => postMetrics(ctx.externalIds),
 };

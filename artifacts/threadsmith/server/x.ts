@@ -110,9 +110,12 @@ function untilText(epochSeconds: number): string {
 const REPLY_TARGET_GONE = /deleted|not visible/i;
 
 /** Turn an X error response into a sentence that says what happened and what to do. */
-function explain(status: number, headers: Headers, body: XProblem | undefined, raw: string): string {
+function explain(status: number, headers: Headers, body: XProblem | undefined, raw: string, method = "POST"): string {
   const detail = problemText(body) ?? (raw.trim().slice(0, 200) || `HTTP ${status}`);
   const haystack = `${body?.type ?? ""} ${detail}`;
+  if (method === "GET" && status === 403) {
+    return `X refused the read (403: ${detail}). In the X Developer Console, check the app belongs to a project with API access and credits, then try again.`;
+  }
   if (status === 401) {
     return `X rejected the API credentials (401: ${detail}). Check X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN and X_ACCESS_TOKEN_SECRET in .env (regenerate them in the X Developer Console if revoked) and that this server's clock is correct, then restart and Retry.`;
   }
@@ -146,10 +149,10 @@ function explain(status: number, headers: Headers, body: XProblem | undefined, r
   return `X API error ${status}: ${detail}`;
 }
 
-async function xRequest<T extends { data: unknown }>(
+async function xRequest<T extends { data?: unknown }>(
   method: "GET" | "POST",
   path: string,
-  opts: { query?: Record<string, string>; json?: unknown } = {},
+  opts: { query?: Record<string, string>; json?: unknown; allowNoData?: boolean } = {},
   creds: OAuthCredentials = credentials(),
 ): Promise<T> {
   const query = opts.query ? "?" + Object.entries(opts.query).map(([k, v]) => `${percentEncode(k)}=${percentEncode(v)}`).join("&") : "";
@@ -168,7 +171,8 @@ async function xRequest<T extends { data: unknown }>(
   } catch (err) {
     if (err instanceof XApiError) throw err;
     if ((err as Error).name === "TimeoutError") {
-      throw new XApiError(`X didn't answer ${method} ${path} within 60s; it may or may not have gone through, so check your profile before you Retry.`);
+      const next = method === "GET" ? "Try again in a minute." : "it may or may not have gone through, so check your profile before you Retry.";
+      throw new XApiError(`X didn't answer ${method} ${path} within 60s; ${next}`);
     }
     const cause = (err as { cause?: { code?: string; message?: string } }).cause;
     throw new XApiError(
@@ -183,9 +187,9 @@ async function xRequest<T extends { data: unknown }>(
     body = undefined;
   }
   if (!res.ok) {
-    throw new XApiError(explain(res.status, res.headers, body, raw), res.status, !(res.status === 403 && REPLY_TARGET_GONE.test(raw)));
+    throw new XApiError(explain(res.status, res.headers, body, raw, method), res.status, !(res.status === 403 && REPLY_TARGET_GONE.test(raw)));
   }
-  if (!body?.data) throw new XApiError(`X answered ${res.status} without data: ${problemText(body) ?? raw.slice(0, 200)}`, res.status);
+  if (!body?.data && !opts.allowNoData) throw new XApiError(`X answered ${res.status} without data: ${problemText(body) ?? raw.slice(0, 200)}`, res.status);
   return body as T;
 }
 
@@ -255,6 +259,37 @@ export async function publishToX(post: Post): Promise<{ xPostIds: string[]; url:
 export async function verifyX(creds: OAuthCredentials): Promise<{ handle: string; profileUrl: string }> {
   const { data } = await xRequest<{ data: { username: string } }>("GET", "/2/users/me", {}, creds);
   return { handle: `@${data.username}`, profileUrl: `https://x.com/${data.username}` };
+}
+
+// GET /2/tweets?ids=…&tweet.fields=public_metrics (docs.x.com/x-api/posts/get-posts-by-ids: ids 1–100;
+// docs.x.com/x-api/fundamentals/metrics: public_metrics {retweet_count, reply_count, like_count, quote_count,
+// bookmark_count, impression_count}, any auth). The API reference also spells it repost_count, so both are read.
+// Ids X can't return (deleted, protected) come back in `errors`, not `data`. Billed as Posts: Read ($0.005 per post,
+// deduplicated per post per UTC day; docs.x.com/x-api/getting-started/pricing, checked 2026-10-29).
+export interface XPublicMetrics {
+  like_count?: number;
+  retweet_count?: number;
+  repost_count?: number;
+  reply_count?: number;
+  quote_count?: number;
+  impression_count?: number;
+  bookmark_count?: number;
+}
+
+/** Public metrics of the given post ids, in batches of 100; ids X didn't return are missing from the map. */
+export async function readPostMetrics(creds: OAuthCredentials, ids: string[]): Promise<Map<string, XPublicMetrics>> {
+  const out = new Map<string, XPublicMetrics>();
+  const unique = [...new Set(ids.filter((id) => /^\d{1,19}$/.test(id)))];
+  for (let i = 0; i < unique.length; i += 100) {
+    const { data } = await xRequest<{ data?: { id: string; public_metrics?: XPublicMetrics }[] }>(
+      "GET",
+      "/2/tweets",
+      { query: { ids: unique.slice(i, i + 100).join(","), "tweet.fields": "public_metrics" }, allowNoData: true },
+      creds,
+    );
+    for (const t of data ?? []) out.set(t.id, t.public_metrics ?? {});
+  }
+  return out;
 }
 
 export async function publishThreadToX(opts: {

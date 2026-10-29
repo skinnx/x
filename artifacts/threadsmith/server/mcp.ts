@@ -15,6 +15,7 @@ import { voiceExamples } from "./ai/copilot.ts";
 import { threadGuide } from "./ai/guide.ts";
 import { aiStatus } from "./ai/provider.ts";
 import { buildQueue, getConfig, nextFreeSlots, parseWhen } from "./config.ts";
+import { publishedWithMetrics, refreshMetrics } from "./metrics.ts";
 import { ROOT, xConfigured } from "./env.ts";
 import { previewPost } from "./api.ts";
 import { saveImageFromUrl } from "./media.ts";
@@ -28,6 +29,7 @@ import {
   deletePost,
   listPosts,
   markPublishedManually,
+  appendToPost,
   requirePost,
   schedulePost,
   unschedulePost,
@@ -725,6 +727,74 @@ tool(
         replyToUrl,
       },
     );
+  },
+);
+
+tool(
+  "get_metrics",
+  {
+    title: "Engagement of a published post",
+    description:
+      "Likes, reposts, replies, quotes, views and bookmarks per destination, as each platform reports them (a metric is missing when the platform doesn't expose it). " +
+      "refresh=true fetches current numbers (Bluesky, Mastodon and Threads are free; X bills reads, so it is only fetched with paid=true and the person's OK). " +
+      "Threadsmith doesn't judge the numbers: compare posts yourself (list_metrics) to learn what works, when to post, and whether to continue a thread (append_to_post).",
+    input: {
+      id,
+      refresh: z.boolean().optional().describe("Fetch fresh numbers first (default false: stored numbers)"),
+      paid: z.boolean().optional().describe("Allow billed reads (X, about $0.005 per post read). Ask the person first."),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  async ({ id, refresh, paid }) => {
+    const { post, skipped } = refresh ? await refreshMetrics(id, { paid }) : { post: requirePost(id), skipped: [] };
+    const lines = post.targets.map((t) => {
+      const m = t.metrics;
+      const totals = m ? Object.entries(m.totals).map(([k, v]) => `${v} ${k}`).join(", ") : "no numbers yet";
+      return `${t.platform}: ${totals}${m ? ` (as of ${m.fetchedAt})` : ""}`;
+    });
+    const why = skipped.map((s) => `${s.platform}: ${s.reason}`);
+    return result([...lines, ...why].join("\n") || "No destinations.", {
+      destinations: post.targets.map((t) => ({ platform: t.platform, accountId: t.accountId, url: t.url, metrics: t.metrics })),
+      skipped,
+    });
+  },
+);
+
+tool(
+  "list_metrics",
+  {
+    title: "Recent posts with engagement",
+    description:
+      "The newest published posts with their text, publish time and stored per-destination totals: the dataset for spotting what performs, best times, " +
+      "or posts worth continuing or re-running (duplicate them with create_post). Numbers are as of each destination's fetchedAt; refresh a post with get_metrics.",
+    input: { limit: z.number().int().min(1).max(200).optional().describe("Default 50") },
+    annotations: READ,
+  },
+  ({ limit }) => {
+    const posts = publishedWithMetrics(limit ?? 50).map((p) => ({
+      id: p.id,
+      publishedAt: p.publishedAt,
+      posts: p.thread.map((s) => s.text),
+      destinations: p.targets.map((t) => ({ platform: t.platform, url: t.url, fetchedAt: t.metrics?.fetchedAt ?? null, totals: t.metrics?.totals ?? null })),
+    }));
+    return result(`${posts.length} published post(s).`, { posts });
+  },
+);
+
+tool(
+  "append_to_post",
+  {
+    title: "Continue a published thread",
+    description:
+      "Add posts to the end of a published thread: each destination that threads replies to its last live post (LinkedIn single posts are left alone). " +
+      "Use it for follow-ups or a plug (a link, an offer) once a thread has taken off — you decide when, e.g. from get_metrics. Show the person the text first; " +
+      "it is queued at `at` (default now) and goes out like any scheduled post.",
+    input: { id, ...threadArgs, at: when.optional() },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  ({ id, text, posts, at }) => {
+    const p = appendToPost(id, posts ? { thread: posts.map((t) => ({ text: t })) } : { text }, at ? toInstant(at) : null);
+    return result(`Queued ${p.thread.length} post(s) in total; the new ones go out ${at ? `at ${p.scheduledAt}` : "now"}.`, { post: p });
   },
 );
 

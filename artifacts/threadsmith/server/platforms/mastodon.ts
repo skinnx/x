@@ -4,8 +4,14 @@
 // processing, 200 when url is set, 422 if processing failed), methods/statuses (POST /api/v1/statuses status,
 // media_ids[], in_reply_to_id, visibility; Idempotency-Key header remembered for 1 hour; 422 {error} on validation),
 // api/rate-limits (X-RateLimit-Reset; 300 calls / 5 min, media 30 / 30 min).
+// Metrics: GET /api/v1/statuses/:id (methods/statuses#get: public statuses need no token since 2.7.0; 401 "This API
+// requires an authenticated user" when the instance is in authorized-fetch mode; 404 when deleted or private) →
+// Status favourites_count, reblogs_count, replies_count, quotes_count (4.5.0+) (entities/Status). Mastodon checks
+// the scope of any token sent (authorize_if_got_token! :read, :'read:statuses' in statuses_controller.rb), so a
+// publishing-only token gets 403 there: we then read anonymously, and only ask for read:statuses if that fails too.
 import { createHash } from "node:crypto";
 import { getMedia, readMediaBytes } from "../repo.ts";
+import type { ItemMetrics } from "../../shared/types.ts";
 import { PlatformError, type Credentials, type PlatformAdapter, type PublishItem } from "./types.ts";
 
 const TOKEN_HELP = "Create a token under your instance → Preferences → Development (scopes profile, write:statuses, write:media) and update the account";
@@ -23,9 +29,13 @@ function untilText(h: Headers): string {
   return `after ${new Date(reset).toISOString().replace(/\.\d+Z$/, "Z")} (in ~${minutes} min)`;
 }
 
-type Kind = "verify" | "media" | "status";
+type Kind = "verify" | "media" | "status" | "read";
 
 function explain(kind: Kind, status: number, headers: Headers, detail: string, replying: boolean): PlatformError {
+  if (kind === "read" && (status === 401 || status === 403 || status === 404)) {
+    // Read-only metrics: statusMetrics turns these into the right advice (or "deleted").
+    return new PlatformError(`Mastodon refused to show the post (${status}: ${detail}).`, status);
+  }
   if (status === 401) return new PlatformError(`Mastodon rejected the access token (401: ${detail}). ${TOKEN_HELP}, then Retry.`, 401);
   if (status === 403 && /scope/i.test(detail)) {
     const need = kind === "verify" ? "profile (or read:accounts)" : kind === "media" ? "write:media" : "write:statuses";
@@ -60,9 +70,9 @@ async function api<T>(
   try {
     res = await fetch(base + path, {
       method,
-      headers: { authorization: `Bearer ${token}`, ...(opts.json !== undefined ? { "content-type": "application/json" } : {}), ...opts.headers },
+      headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(opts.json !== undefined ? { "content-type": "application/json" } : {}), ...opts.headers },
       body: opts.json !== undefined ? JSON.stringify(opts.json) : opts.form,
-      signal: AbortSignal.timeout(kind === "media" ? 120_000 : 60_000),
+      signal: AbortSignal.timeout(kind === "media" ? 120_000 : kind === "read" ? 30_000 : 60_000),
     });
   } catch (err) {
     if ((err as Error).name === "TimeoutError") {
@@ -122,6 +132,50 @@ function idempotencyKey(postId: string, accountId: string, items: PublishItem[],
   return `threadsmith-${h.digest("hex").slice(0, 40)}`;
 }
 
+interface StatusCounts {
+  id: string;
+  favourites_count?: number;
+  reblogs_count?: number;
+  replies_count?: number;
+  quotes_count?: number;
+}
+
+const READ_HELP = "create a token with the read:statuses scope too (instance → Preferences → Development → your app) and update the account";
+
+/** One status's counts; deleted or no-longer-visible statuses come back without numbers. */
+async function statusMetrics(base: string, token: string, id: string): Promise<ItemMetrics> {
+  const path = `/api/v1/statuses/${encodeURIComponent(id)}`;
+  const get = (tok: string) => api<StatusCounts>(base, tok, "read", "GET", path).then((r) => r.body);
+  let body: StatusCounts;
+  try {
+    try {
+      body = await get(token);
+    } catch (err) {
+      // A token without read scopes is refused even for public statuses (403); so is a revoked one (401).
+      // Anonymous reads work for public posts unless the instance uses authorized fetch.
+      if (!(err instanceof PlatformError && (err.status === 403 || err.status === 401) && token)) throw err;
+      try {
+        body = await get("");
+      } catch (anon) {
+        if (anon instanceof PlatformError && anon.status === 401) {
+          const why = err.status === 401 ? `the access token was rejected (${err.message})` : `the token can't read posts (${err.message})`;
+          throw new PlatformError(`This Mastodon instance only shows posts to signed-in apps and ${why}. To see engagement, ${READ_HELP}, then try again.`, err.status);
+        }
+        throw anon;
+      }
+    }
+  } catch (err) {
+    if (err instanceof PlatformError && err.status === 404) return { id };
+    throw err;
+  }
+  const m: ItemMetrics = { id };
+  if (typeof body.favourites_count === "number") m.likes = body.favourites_count;
+  if (typeof body.reblogs_count === "number") m.reposts = body.reblogs_count;
+  if (typeof body.replies_count === "number") m.replies = body.replies_count;
+  if (typeof body.quotes_count === "number") m.quotes = body.quotes_count;
+  return m;
+}
+
 export const mastodon: PlatformAdapter = {
   async verify(c) {
     const base = instanceUrl(c);
@@ -159,5 +213,19 @@ export const mastodon: PlatformAdapter = {
       }
     }
     return { ids, url: firstUrl };
+  },
+
+  metricsNote: "Public posts are read without extra scopes; instances that require sign-in for reads need the token to have read:statuses.",
+
+  async metrics(ctx) {
+    const base = instanceUrl(ctx.credentials);
+    const token = ctx.credentials.accessToken ?? "";
+    const out: ItemMetrics[] = new Array(ctx.externalIds.length);
+    // A few at a time: threads are short and the rate limit is 300 calls / 5 min.
+    for (let i = 0; i < ctx.externalIds.length; i += 4) {
+      const chunk = ctx.externalIds.slice(i, i + 4);
+      (await Promise.all(chunk.map((id) => statusMetrics(base, token, id)))).forEach((m, j) => (out[i + j] = m));
+    }
+    return out;
   },
 };

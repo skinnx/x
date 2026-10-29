@@ -35,6 +35,11 @@ Posts
   retry <id>                  Retry a failed post or publish a due one; threads resume where they stopped
   copy <id> [--clipboard]     Print the thread (or copy it) to post by hand; only the posts not yet live
   posted <id> [--url u]       Mark as posted by hand
+  append <id> [text|--file f] [--at next|ISO]
+                              Continue a published thread (replies to the last live post on each destination)
+  metrics [<id>] [-r] [--paid] [--limit n]
+                              Engagement: one post (-r fetches fresh numbers; --paid allows billed X reads),
+                              or the recent published posts with stored totals (for agents to analyse)
   rm <id>                     Delete
   slots [n]                   Next free posting slots
   count [text|--file f] [--platform p] [--max n]
@@ -171,6 +176,9 @@ try {
       to: { type: "string" },
       version: { type: "string", multiple: true },
       platform: { type: "string", short: "p" },
+      refresh: { type: "boolean", short: "r" },
+      paid: { type: "boolean" },
+      limit: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
   }));
@@ -528,6 +536,35 @@ const commands = {
   async posted([ref]) {
     emit(await api("POST", `/api/posts/${await resolveId(ref)}/mark-published`, { url: opt.url }), status);
   },
+  async append([ref, ...rest]) {
+    const id = await resolveId(ref);
+    const text = readText(rest);
+    if (!splitThread(text).length) throw new UsageError("Nothing to append.");
+    const post = await api("POST", `/api/posts/${id}/append`, { text, at: opt.at });
+    emit(post, (p) => console.log(`Continuing ${short(p.id)}: new posts queued for ${whenTz(p.scheduledAt)}`));
+  },
+
+  async metrics([ref]) {
+    if (!ref) {
+      const data = await api("GET", `/api/metrics?limit=${Number(opt.limit) || 20}`);
+      return emit(data, (d) => {
+        for (const p of d.posts) {
+          const dest = p.destinations.map((t) => `${t.platform} ${t.totals ? Object.entries(t.totals).map(([k, v]) => `${v} ${k}`).join(" ") : "–"}`).join(" · ");
+          console.log(`${short(p.id)}  ${when(p.publishedAt)}  ${(p.posts[0] ?? "").slice(0, 50)}\n          ${dest || "no destinations"}`);
+        }
+      });
+    }
+    const q = new URLSearchParams({ refresh: String(Boolean(opt.refresh)), paid: String(Boolean(opt.paid)) });
+    const data = await api("GET", `/api/posts/${await resolveId(ref)}/metrics?${q}`);
+    emit(data, (d) => {
+      for (const t of d.post.targets) {
+        const m = t.metrics;
+        console.log(`${t.platform.padEnd(9)} ${m ? Object.entries(m.totals).map(([k, v]) => `${v} ${k}`).join(", ") + `  (as of ${when(m.fetchedAt)})` : "no numbers yet"}`);
+      }
+      for (const s of d.skipped) console.error(`${s.platform}: ${s.reason}`);
+    });
+  },
+
   async rm([ref]) {
     const id = await resolveId(ref);
     emit(await api("DELETE", `/api/posts/${id}`), () => console.log(`Deleted ${short(id)}`));

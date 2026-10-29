@@ -102,6 +102,24 @@ one topic tag; LinkedIn shows only ~210 characters before "see more", so the ope
 count in full, so prefer short links. With the server's AI on, `threadsmith ai adapt linkedin --file draft.txt`
 (REST `POST /api/ai/adapt`) rewrites a thread for a platform within its limit.
 
+## Things Threadsmith deliberately leaves to you (the agent)
+
+Threadsmith provides data and actions; judgment is yours. There is no analytics dashboard, best-time engine,
+auto-plug rule or evergreen recycler, because you do these better with the data:
+
+- **What works**: `list_metrics` (CLI `threadsmith metrics --json`) → refresh the ones you care about with
+  `get_metrics {refresh: true}` → compare by topic, format, length, time of day, platform. Report patterns with
+  numbers, not vibes; say how many posts the conclusion rests on.
+- **When to post**: derive good hours per platform from the same data, then propose slot changes for
+  `threadsmith.config.json` to the person (you can't edit it through the API; that is intentional).
+- **Plug / follow-up**: when a published thread is clearly outperforming (relative to that account's own history),
+  draft a follow-up and, after the person agrees, `append_to_post` (CLI `threadsmith append <id>`): it replies to the
+  last live post on every destination that threads. Remember a link costs $0.20 per post on X's API.
+- **Evergreen**: find old top performers, rewrite rather than repeat verbatim (platforms penalise duplicates), and
+  queue them as new posts with `create_post` (or `POST /api/posts/{id}/duplicate`, then edit).
+- **Running it on a schedule**: a scheduled agent (e.g. a Claude Code routine or cron + the CLI) that runs the above
+  weekly and asks the person before anything is published. X metric reads are billed: only with their OK (`paid`).
+
 ## Writing threads that work
 
 - **The first post carries the thread.** Most people only see it in their timeline. Lead with the most concrete,

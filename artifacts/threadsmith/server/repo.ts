@@ -5,7 +5,7 @@ import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { splitThread } from "../shared/thread.ts";
 import { PLATFORMS } from "../shared/platforms.ts";
-import type { Media, PlatformId, Post, PostSource, PostStatus, PostTarget, Segment, TargetStatus } from "../shared/types.ts";
+import type { Media, PlatformId, Post, PostSource, PostStatus, PostTarget, Segment, TargetMetrics, TargetStatus } from "../shared/types.ts";
 import { db, tx } from "./db.ts";
 import { env } from "./env.ts";
 import { bus } from "./events.ts";
@@ -39,6 +39,7 @@ interface PostRow {
 
 interface TargetRow {
   account_id: string;
+  metrics: string | null;
   snapshot: number;
   platform: PlatformId;
   thread: string | null;
@@ -52,7 +53,7 @@ interface TargetRow {
 function targetsOf(postId: string): PostTarget[] {
   const rows = db
     .prepare(
-      `SELECT t.account_id, t.snapshot, a.platform, t.thread, t.status, t.external_ids, t.url, t.error, t.published_at
+      `SELECT t.account_id, t.snapshot, t.metrics, a.platform, t.thread, t.status, t.external_ids, t.url, t.error, t.published_at
        FROM post_targets t JOIN accounts a ON a.id = t.account_id WHERE t.post_id = ? ORDER BY t.position`,
     )
     .all(postId) as unknown as TargetRow[];
@@ -66,6 +67,7 @@ function targetsOf(postId: string): PostTarget[] {
     url: r.url,
     error: r.error,
     publishedAt: r.published_at,
+    metrics: r.metrics ? JSON.parse(r.metrics) : null,
   }));
 }
 
@@ -325,6 +327,44 @@ export function markTargetPublished(
   db.prepare(
     "UPDATE post_targets SET status = 'published', external_ids = ?, url = ?, error = NULL, published_at = ? WHERE post_id = ? AND account_id = ?",
   ).run(JSON.stringify(result.externalIds), httpUrl(result.url), now(), postId, accountId);
+}
+
+export function setTargetMetrics(postId: string, accountId: string, metrics: TargetMetrics): void {
+  db.prepare("UPDATE post_targets SET metrics = ? WHERE post_id = ? AND account_id = ?").run(JSON.stringify(metrics), postId, accountId);
+}
+
+/**
+ * Continue a published thread with more posts (e.g. a follow-up or a plug once it took off). Every destination
+ * that threads (replies/messages) re-opens and, when published, resumes after what is already live, so the new
+ * posts reply to the last one. LinkedIn-style single posts can't be continued and stay as they are.
+ */
+export function appendToPost(id: string, add: { text?: string; thread?: SegmentInput[] }, at: string | null): Post {
+  const post = requirePost(id);
+  if (post.status !== "published") throw new ConflictError(`Only published posts can be continued; this one is ${post.status}.`);
+  const extra = normalizeThread(add).filter((s) => s.text.trim() || s.mediaIds.length);
+  if (!extra.length) throw new BadInputError("Nothing to append: give text (posts separated by ---) or thread.");
+  const continuable = post.targets.filter((t) => PLATFORMS[t.platform].threadMode !== "single");
+  if (post.targets.length && !continuable.length) {
+    throw new ConflictError("None of this post's destinations can be continued (LinkedIn posts aren't threads).");
+  }
+  tx(() => {
+    db.prepare("UPDATE posts SET thread = ?, status = 'scheduled', scheduled_at = ?, error = NULL, updated_at = ? WHERE id = ?").run(
+      JSON.stringify([...post.thread, ...extra]),
+      at ?? now(),
+      now(),
+      id,
+    );
+    for (const t of continuable) {
+      db.prepare("UPDATE post_targets SET thread = ?, snapshot = 0, status = 'pending', error = NULL WHERE post_id = ? AND account_id = ?").run(
+        JSON.stringify([...(t.thread ?? post.thread), ...extra]),
+        id,
+        t.accountId,
+      );
+    }
+  });
+  const updated = requirePost(id);
+  bus.emit({ type: "post.scheduled", post: updated });
+  return updated;
 }
 
 export function markTargetFailed(postId: string, accountId: string, error: string): void {

@@ -175,6 +175,15 @@ Threadsmith ký request bằng OAuth 1.0a tự viết bằng `node:crypto`, khô
 
 ---
 
+## Nguyên tắc: dữ liệu và thao tác cho agent, quyết định để AI
+
+Threadsmith **không** xây những tính năng mà một agent AI làm được và làm tốt hơn khi có dữ liệu: dashboard thống kê, gợi ý giờ đăng, luật auto-plug, bộ tự đăng lại bài cũ (evergreen). Thay vào đó Threadsmith cung cấp đúng hai thứ AI không tự làm được:
+
+- **Số liệu tương tác** của từng bài trên từng kênh: `GET /api/metrics`, `GET /api/posts/{id}/metrics?refresh=true`, MCP `list_metrics` / `get_metrics`, CLI `threadsmith metrics`. Bluesky, Mastodon và Threads miễn phí. Threads cần thêm quyền `threads_manage_insights`. Riêng X tính phí đọc (khoảng $0,005/bài), nên chỉ đọc khi được cho phép (`paid=true`). Telegram, Discord và LinkedIn không có API số liệu phù hợp.
+- **Nối thêm bài vào thread đã đăng**: `POST /api/posts/{id}/append`, MCP `append_to_post`, CLI `threadsmith append`. Bài mới trả lời bài cuối đang có trên mọi kênh dạng thread; LinkedIn (dạng một bài) giữ nguyên. Đây là nền cho auto-plug và bài nối tiếp.
+
+Agent (Claude Code, một routine chạy theo lịch, hoặc cron gọi CLI) đọc số liệu, tự rút ra bài nào hiệu quả và giờ nào tốt, quyết định khi nào nối thêm bài hay viết lại bài cũ, và **hỏi bạn trước khi đăng**. Công thức mẫu nằm trong `skill/threadsmith/SKILL.md` và `/llms-full.txt`.
+
 ## Kết nối AI
 
 Điểm khác biệt chính của Threadsmith: agent có nhiều cách điều khiển công cụ, không chỉ MCP.

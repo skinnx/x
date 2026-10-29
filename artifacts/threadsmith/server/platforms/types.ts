@@ -1,6 +1,6 @@
 // The contract every platform adapter implements. Adapters only talk to their platform; validation, progress
 // tracking and status bookkeeping live in server/publisher.ts.
-import type { Account } from "../../shared/types.ts";
+import type { Account, ItemMetrics } from "../../shared/types.ts";
 
 export type Credentials = Record<string, string>;
 
@@ -42,9 +42,23 @@ export class PlatformError extends Error {
   }
 }
 
+export interface MetricsContext {
+  account: Account;
+  credentials: Credentials;
+  /** Ids of the posted items, as publish() returned them. */
+  externalIds: string[];
+}
+
 export interface PlatformAdapter {
   /** Check the credentials with a cheap authenticated call; return who they belong to. Throw PlatformError if not. */
   verify(credentials: Credentials): Promise<{ handle: string; profileUrl: string | null }>;
   /** Post `items` in order (threading per the platform's threadMode), resuming after `posted`. */
   publish(ctx: PublishContext): Promise<PublishResult>;
+  /**
+   * Public engagement of posted items, one entry per id (omit metrics the platform doesn't expose). Optional: absent
+   * when the platform has no read API for it. Must be read-only and cheap; say in `costNote` if reads are billed.
+   */
+  metrics?(ctx: MetricsContext): Promise<ItemMetrics[]>;
+  /** One line for agents/UI when metrics cost money or need an extra permission (e.g. X reads are billed). */
+  metricsNote?: string;
 }

@@ -12,9 +12,11 @@ import { buildQueue, configError, getConfig, nextFreeSlots, parseInstant, parseW
 import { db } from "./db.ts";
 import { env, VERSION, xConfigured } from "./env.ts";
 import { createRouter } from "./http.ts";
+import { publishedWithMetrics, refreshMetrics } from "./metrics.ts";
 import { saveImage, saveImageFromUrl } from "./media.ts";
 import { limitFor, preflight } from "./publisher.ts";
 import {
+  appendToPost,
   attemptsFor,
   BadInputError,
   createPost,
@@ -73,6 +75,22 @@ const SegmentSchema = z
 
 const PlatformIdSchema = z.enum(PLATFORM_IDS).openapi("PlatformId", { description: "A supported platform; GET /platforms lists their limits." });
 
+const MetricFields = {
+  likes: z.number().int().optional(),
+  reposts: z.number().int().optional(),
+  replies: z.number().int().optional(),
+  quotes: z.number().int().optional(),
+  views: z.number().int().optional(),
+  bookmarks: z.number().int().optional(),
+};
+const TargetMetricsSchema = z
+  .object({
+    fetchedAt: z.iso.datetime(),
+    items: z.array(z.object({ id: z.string(), ...MetricFields })),
+    totals: z.object(MetricFields),
+  })
+  .openapi("TargetMetrics", { description: "Public engagement as the platform reports it; a metric is absent when the platform doesn't expose it." });
+
 const PostTargetSchema = z
   .object({
     accountId: z.string().openapi({ description: "Connected account (GET /accounts)." }),
@@ -85,6 +103,8 @@ const PostTargetSchema = z
     url: z.string().nullable().openapi({ description: "Public link to the first item once published there." }),
     error: z.string().nullable(),
     publishedAt: z.iso.datetime().nullable(),
+    snapshot: z.boolean().openapi({ description: "true: `thread` is a record of what this destination published from the shared thread, not a separate version." }),
+    metrics: TargetMetricsSchema.nullable().openapi({ description: "Last stored engagement (refresh with GET /posts/{id}/metrics?refresh=true); null until fetched." }),
   })
   .openapi("PostTarget", { description: "One destination of a post: a connected account, with its own publish status and progress." });
 
@@ -778,6 +798,117 @@ apiRoutes.openapi(
     });
     return c.json(post, 201);
   },
+);
+
+apiRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/posts/{id}/append",
+    tags: ["Posts"],
+    operationId: "appendToPost",
+    summary: "Continue a published thread",
+    description:
+      "Adds posts to the end of a published thread and queues them (at `at`, default now): each destination that threads replies to its last live post; " +
+      "LinkedIn-style single posts are left as they are. The building block for follow-ups and plugs: an agent decides when (e.g. from GET /metrics) and what to add.",
+    request: {
+      params: IdParam,
+      headers: IdemHeader,
+      body: body(
+        z.object({
+          text: z.string().optional().openapi({ description: "Posts separated by lines of ---." }),
+          thread: z.array(SegmentInputSchema).optional(),
+          at: When.optional(),
+        }),
+      ),
+    },
+    responses: { 200: json(PostSchema, "The post, queued again with the new posts."), 400: E400, 404: E404, 409: E409 },
+  }),
+  (c) => {
+    const { text, thread, at } = c.req.valid("json");
+    checkMedia(thread);
+    return c.json(appendToPost(c.req.valid("param").id, { text, thread }, at ? when(at) : null), 200);
+  },
+);
+
+apiRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/posts/{id}/metrics",
+    tags: ["Metrics"],
+    operationId: "getPostMetrics",
+    summary: "Engagement of a published post, per destination",
+    description:
+      "Returns the post with each destination's stored `metrics`. With refresh=true, fetches current numbers first (Bluesky, Mastodon, Threads; X only with paid=true " +
+      "because X bills reads). `skipped` says why a destination has no fresh numbers. Threadsmith doesn't interpret them: compare, rank and decide as you see fit.",
+    request: {
+      params: IdParam,
+      query: z.object({
+        refresh: z.enum(["true", "false"]).optional(),
+        paid: z.enum(["true", "false"]).optional().openapi({ description: "Allow billed reads (X, about $0.005 per post read)." }),
+      }),
+    },
+    responses: {
+      200: json(
+        z.object({ post: PostSchema, skipped: z.array(z.object({ accountId: z.string(), platform: z.string(), reason: z.string() })) }),
+        "The post with metrics.",
+      ),
+      404: E404,
+    },
+  }),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const q = c.req.valid("query");
+    if (q.refresh !== "true") return c.json({ post: requirePost(id), skipped: [] }, 200);
+    return c.json(await refreshMetrics(id, { paid: q.paid === "true" }), 200);
+  },
+);
+
+apiRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/metrics",
+    tags: ["Metrics"],
+    operationId: "listMetrics",
+    summary: "Recent published posts with their engagement",
+    description:
+      "Compact dataset for analysis: newest published posts, their text, time and per-destination stored totals. Refresh individual posts with GET /posts/{id}/metrics?refresh=true.",
+    request: { query: z.object({ limit: z.coerce.number().int().min(1).max(500).optional() }) },
+    responses: {
+      200: json(
+        z.object({
+          posts: z.array(
+            z.object({
+              id: z.string(),
+              publishedAt: z.string().nullable(),
+              posts: z.array(z.string()),
+              destinations: z.array(
+                z.object({ platform: z.string(), accountId: z.string(), url: z.string().nullable(), fetchedAt: z.string().nullable(), totals: z.object(MetricFields).nullable() }),
+              ),
+            }),
+          ),
+        }),
+        "Published posts with stored engagement.",
+      ),
+    },
+  }),
+  (c) =>
+    c.json(
+      {
+        posts: publishedWithMetrics(c.req.valid("query").limit ?? 50).map((p) => ({
+          id: p.id,
+          publishedAt: p.publishedAt,
+          posts: p.thread.map((s) => s.text),
+          destinations: p.targets.map((t) => ({
+            platform: t.platform,
+            accountId: t.accountId,
+            url: t.url,
+            fetchedAt: t.metrics?.fetchedAt ?? null,
+            totals: t.metrics?.totals ?? null,
+          })),
+        })),
+      },
+      200,
+    ),
 );
 
 apiRoutes.openapi(

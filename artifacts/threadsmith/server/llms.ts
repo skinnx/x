@@ -122,6 +122,10 @@ llmsRoutes.get("/llms-full.txt", async (c) => {
 7. Images: \`POST /api/media\` (multipart \`file\`, \`alt\`) or \`POST /api/media/from-url {url, alt}\`, then put the media id in a segment's \`mediaIds\`
    (per-platform maximum and accepted types in the table below).
 Publishing now and deleting are irreversible; only do them when the person asks.
+8. Data, not dashboards: \`GET /api/metrics\` (recent published posts with per-destination totals) and \`GET /api/posts/{id}/metrics?refresh=true\`
+   (Bluesky, Mastodon, Threads free; X billed, only with \`paid=true\`). Threadsmith has no analytics views, best-time engine, auto-plug rules or
+   evergreen recycler on purpose: analyse the numbers yourself, and act with \`POST /api/posts/{id}/append\` (continue a published thread: a follow-up
+   or plug, replying to the last live post on each destination) or a new post. Ask the person before publishing.
 
 ## REST routes (from ${base}/openapi.json)
 ${routes.join("\n") || "- (no routes registered)"}

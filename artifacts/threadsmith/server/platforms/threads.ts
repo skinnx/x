@@ -5,9 +5,14 @@
 // until FINISHED, POST /{user-id}/threads_publish {creation_id}, then the next item replies with reply_to_id.
 // Meta fetches images itself from image_url, so they are served via signedMediaUrl on a public HTTPS PUBLIC_URL.
 // Images: JPEG/PNG only, alt_text on each image container. Limits: 250 posts + 1,000 replies per 24h per profile.
+// Metrics: GET /{threads-media-id}/insights?metric=views,likes,replies,reposts,quotes (insights.md, checked
+// 2026-10-29 at developers.facebook.com/docs/threads/insights) needs threads_basic + threads_manage_insights; returns
+// {data: [{name, period: "lifetime", values: [{value}], id}]}; replies of a root post count all its replies, and nested
+// replies' metrics are not included. `views` is marked "in development" by Meta.
 import { env } from "../env.ts";
 import { signedMediaUrl } from "../media.ts";
 import { getMedia } from "../repo.ts";
+import type { ItemMetrics } from "../../shared/types.ts";
 import { PlatformError, type Credentials, type PlatformAdapter, type PublishItem } from "./types.ts";
 
 const apiBase = () => (process.env.THREADS_API_BASE ?? "https://graph.threads.com/v1.0").replace(/\/+$/, "");
@@ -27,7 +32,21 @@ interface GraphError {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** PlatformError that keeps the Graph error code, so callers can tell "no such post" from other failures. */
+class GraphPlatformError extends PlatformError {
+  constructor(
+    base: PlatformError,
+    readonly graph: GraphError | undefined,
+  ) {
+    super(base.message, base.status, base.resumable);
+  }
+}
+
 function explain(status: number, e: GraphError | undefined, raw: string): PlatformError {
+  return new GraphPlatformError(explainBase(status, e, raw), e);
+}
+
+function explainBase(status: number, e: GraphError | undefined, raw: string): PlatformError {
   const detail = e?.error_user_msg || e?.message || raw.trim().slice(0, 200) || `HTTP ${status}`;
   const code = e?.code;
   if (code === 190 || status === 401) return new PlatformError(`Threads rejected the access token (${detail}). ${TOKEN_FIX}`, 401);
@@ -55,7 +74,8 @@ async function call<T>(method: "GET" | "POST", path: string, token: string, para
     res = await fetch(url, { method, body: method === "POST" ? body : undefined, signal: AbortSignal.timeout(TIMEOUT_MS) });
   } catch (err) {
     if ((err as Error).name === "TimeoutError") {
-      throw new PlatformError(`Threads didn't answer ${method} ${path} within ${TIMEOUT_MS / 1000}s; it may have gone through, so check your profile before you Retry.`);
+      const next = method === "GET" ? "Try again in a minute." : "it may have gone through, so check your profile before you Retry.";
+      throw new PlatformError(`Threads didn't answer ${method} ${path} within ${TIMEOUT_MS / 1000}s; ${next}`);
     }
     const cause = (err as { cause?: { code?: string; message?: string } }).cause;
     throw new PlatformError(`Couldn't reach the Threads API at ${apiBase()} (${cause?.code ?? cause?.message ?? (err as Error).message}). Check the server's internet connection, then Retry.`);
@@ -153,6 +173,38 @@ async function publishItem(item: PublishItem, userId: string, tok: string, reply
   return (await call<{ id: string }>("POST", `/${userId}/threads_publish`, tok, { creation_id: container })).id;
 }
 
+const INSIGHT_METRICS = { views: "views", likes: "likes", replies: "replies", reposts: "reposts", quotes: "quotes" } as const;
+const INSIGHTS_FIX =
+  "Add the threads_manage_insights permission to your Meta app (developers.facebook.com → your app → Threads use case → Permissions), generate a new access token that includes it, update the account's credentials, then try again.";
+
+interface Insight {
+  name?: string;
+  values?: { value?: number }[];
+  total_value?: { value?: number };
+}
+
+async function mediaInsights(id: string, tok: string): Promise<ItemMetrics> {
+  let res: { data?: Insight[] };
+  try {
+    res = await call<{ data?: Insight[] }>("GET", `/${encodeURIComponent(id)}/insights`, tok, { metric: Object.keys(INSIGHT_METRICS).join(",") });
+  } catch (err) {
+    const g = err instanceof GraphPlatformError ? err.graph : undefined;
+    if (err instanceof PlatformError && err.status === 403) {
+      throw new PlatformError(`Threads won't show insights to this token (${g?.message ?? err.message}). ${INSIGHTS_FIX}`, 403);
+    }
+    // Code 100 subcode 33: the object doesn't exist (post deleted) or the token can't see it.
+    if (g?.code === 100 && g.error_subcode === 33) return { id };
+    throw err;
+  }
+  const m: ItemMetrics = { id };
+  for (const d of res.data ?? []) {
+    const key = INSIGHT_METRICS[d.name as keyof typeof INSIGHT_METRICS];
+    const value = d.total_value?.value ?? d.values?.at(-1)?.value;
+    if (key && typeof value === "number") m[key] = value;
+  }
+  return m;
+}
+
 export const threads: PlatformAdapter = {
   async verify(c) {
     const me = await call<{ id: string; username?: string }>("GET", "/me", token(c), { fields: "id,username" });
@@ -176,5 +228,17 @@ export const threads: PlatformAdapter = {
       url = me.username ? `https://www.threads.com/@${me.username}` : null; // posted fine; the link is a nicety
     }
     return { ids, url };
+  },
+
+  metricsNote: "Needs the threads_manage_insights permission on the Meta app and access token (in addition to threads_basic).",
+
+  async metrics(ctx) {
+    const tok = token(ctx.credentials);
+    const out: ItemMetrics[] = new Array(ctx.externalIds.length);
+    for (let i = 0; i < ctx.externalIds.length; i += 4) {
+      const chunk = ctx.externalIds.slice(i, i + 4);
+      (await Promise.all(chunk.map((id) => mediaInsights(id, tok)))).forEach((m, j) => (out[i + j] = m));
+    }
+    return out;
   },
 };

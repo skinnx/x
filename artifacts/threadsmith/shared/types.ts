@@ -36,6 +36,24 @@ export interface Account {
 
 export type TargetStatus = "pending" | "published" | "failed";
 
+/** Public engagement of one posted item, as the platform reports it (absent = the platform doesn't expose it). */
+export interface ItemMetrics {
+  id: string;
+  likes?: number;
+  reposts?: number;
+  replies?: number;
+  quotes?: number;
+  views?: number;
+  bookmarks?: number;
+}
+
+export interface TargetMetrics {
+  fetchedAt: string;
+  items: ItemMetrics[];
+  /** Sums over items for each metric the platform reports. */
+  totals: Omit<ItemMetrics, "id">;
+}
+
 /** One destination of a post. With `thread` null it publishes the post's own thread; otherwise its own version. */
 export interface PostTarget {
   accountId: string;
@@ -48,6 +66,8 @@ export interface PostTarget {
   url: string | null;
   error: string | null;
   publishedAt: string | null;
+  /** Last engagement snapshot (GET /api/posts/{id}/metrics?refresh=true updates it); null until fetched. */
+  metrics: TargetMetrics | null;
 }
 
 export interface Post {
