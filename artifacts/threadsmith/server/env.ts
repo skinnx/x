@@ -34,12 +34,8 @@ export const env = {
   },
 
   ai: {
-    /** "anthropic" (default when ANTHROPIC_API_KEY is set) or "openai-compatible" (Ollama, LM Studio, OpenRouter, vLLM…) */
-    provider: str("AI_PROVIDER"),
     model: str("AI_MODEL"),
     anthropicKey: str("ANTHROPIC_API_KEY"),
-    baseUrl: str("AI_BASE_URL"),
-    apiKey: str("AI_API_KEY"),
   },
 
   vapidSubject: str("VAPID_SUBJECT") ?? "mailto:threadsmith@localhost",

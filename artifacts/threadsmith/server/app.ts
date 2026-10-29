@@ -52,7 +52,7 @@ app.doc31("/openapi.json", (c) => ({
     { name: "Accounts", description: "Connected accounts per platform. Credentials are verified on connect, stored encrypted and never returned." },
     { name: "Metrics", description: "Engagement data per destination, for agents to analyse. No built-in dashboards or rules: the agent decides." },
     { name: "Media", description: "Images attached to posts (PNG, JPEG, WebP, GIF; ≤5 MB; ≤4 per post)." },
-    { name: "AI", description: "Writing copilot (Claude or any OpenAI-compatible model)." },
+    { name: "AI", description: "Writing copilot (Claude)." },
     { name: "Events", description: "Server-Sent Events stream of every state change." },
     { name: "Webhooks", description: "HMAC-signed outbound webhooks for the same events." },
     { name: "Notifications", description: "Web Push reminders for the browser." },

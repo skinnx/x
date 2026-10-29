@@ -137,7 +137,7 @@ function StatusGrid({ health }: { health: Health }) {
       value: health.ai.configured ? `${health.ai.provider ?? "AI"}${health.ai.model ? ` · ${health.ai.model}` : ""}` : "Not connected",
       note: health.ai.configured
         ? "Threadify, hooks, rewrite, fit and alt text are on."
-        : "Set ANTHROPIC_API_KEY in .env, or AI_PROVIDER=openai-compatible with AI_BASE_URL for Ollama and friends, then restart.",
+        : "Set ANTHROPIC_API_KEY in .env, then restart.",
     },
     {
       label: "Access",

@@ -1,38 +1,15 @@
-// LLM providers for the copilot: Claude through the official Anthropic SDK (default when a key is set),
-// or any OpenAI-compatible /chat/completions endpoint for local or non-Claude models (Ollama, LM Studio, vLLM…).
+// LLM provider for the copilot: Claude through the official Anthropic SDK.
 import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
 import { env } from "../env.ts";
 
-type Provider =
-  | { kind: "anthropic"; model: string }
-  | { kind: "openai-compatible"; model: string; baseUrl: string; apiKey?: string }
-  | { kind: "none"; reason: string };
+type Provider = { kind: "anthropic"; model: string } | { kind: "none"; reason: string };
 
 function resolveProvider(): Provider {
-  const name = env.ai.provider?.toLowerCase();
   const claudeKey = env.ai.anthropicKey ?? process.env.ANTHROPIC_AUTH_TOKEN?.trim();
-  if (name === "openai-compatible" || name === "openai" || (!name && !claudeKey && env.ai.baseUrl)) {
-    const { baseUrl, model } = env.ai;
-    if (!baseUrl || !model) {
-      return { kind: "none", reason: "AI_PROVIDER=openai-compatible needs AI_BASE_URL and AI_MODEL (Ollama: http://localhost:11434/v1 and e.g. llama3.3)." };
-    }
-    // Claude is only ever called through the official SDK.
-    if (/claude/i.test(model) || /anthropic\.com/i.test(baseUrl)) {
-      return { kind: "none", reason: "For Claude models set ANTHROPIC_API_KEY (and optionally AI_MODEL) instead of AI_PROVIDER=openai-compatible." };
-    }
-    return { kind: "openai-compatible", model, baseUrl: baseUrl.replace(/\/+$/, ""), apiKey: env.ai.apiKey };
-  }
-  if (name && name !== "anthropic" && name !== "claude") {
-    return { kind: "none", reason: `Unknown AI_PROVIDER "${env.ai.provider}". Use "anthropic" or "openai-compatible".` };
-  }
   if (!claudeKey) {
-    return {
-      kind: "none",
-      reason:
-        "The AI copilot is off. Set ANTHROPIC_API_KEY for Claude, or AI_PROVIDER=openai-compatible with AI_BASE_URL and AI_MODEL for a local model such as Ollama, then restart.",
-    };
+    return { kind: "none", reason: "The AI copilot is off. Set ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN) in .env, then restart." };
   }
   return { kind: "anthropic", model: env.ai.model ?? "claude-opus-5-5" };
 }
@@ -70,7 +47,7 @@ export interface GenerateRequest<T> {
 /** One structured completion: system + prompt (+ optional image) → JSON validated against `schema`. */
 export async function generate<T>(req: GenerateRequest<T>): Promise<T> {
   if (provider.kind === "none") throw new AiError("ai_not_configured", provider.reason);
-  return provider.kind === "anthropic" ? viaAnthropic(provider.model, req) : viaOpenAICompatible(provider, req);
+  return viaAnthropic(provider.model, req);
 }
 
 // ---------- Claude (Anthropic SDK) ----------
@@ -134,54 +111,4 @@ async function viaAnthropic<T>(model: string, req: GenerateRequest<T>): Promise<
   } catch {
     throw new AiError("ai_error", "Claude returned output that doesn't match the expected format.");
   }
-}
-
-// ---------- OpenAI-compatible endpoints (never used for Claude) ----------
-
-async function viaOpenAICompatible<T>(p: Extract<Provider, { kind: "openai-compatible" }>, req: GenerateRequest<T>): Promise<T> {
-  const schema = z.toJSONSchema(req.schema);
-  const user = req.image
-    ? [
-        { type: "text", text: req.prompt },
-        { type: "image_url", image_url: { url: `data:${req.image.mime};base64,${req.image.data.toString("base64")}` } },
-      ]
-    : req.prompt;
-  const body = {
-    model: p.model,
-    messages: [
-      { role: "system", content: `${req.system}\n\nReply with only a JSON object matching this JSON schema:\n${JSON.stringify(schema)}` },
-      { role: "user", content: user },
-    ],
-    response_format: { type: "json_schema", json_schema: { name: "result", schema, strict: true } },
-  };
-  const post = (payload: object) =>
-    fetch(`${p.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...(p.apiKey ? { authorization: `Bearer ${p.apiKey}` } : {}) },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(180_000),
-    });
-
-  let res: Response;
-  try {
-    res = await post(body);
-    // Some servers don't support json_schema response formats; the prompt alone usually suffices.
-    if (res.status === 400) res = await post({ ...body, response_format: undefined });
-  } catch (err) {
-    throw new AiError("ai_error", `Could not reach ${p.baseUrl}: ${(err as Error).message}`);
-  }
-  if (!res.ok) throw new AiError("ai_error", `${p.baseUrl} answered ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const data = (await res.json().catch(() => {
-    throw new AiError("ai_error", `${p.baseUrl}/chat/completions didn't answer with JSON; check AI_BASE_URL (it usually ends in /v1).`);
-  })) as { choices?: { message?: { content?: string | null } }[] };
-  const raw = (data.choices?.[0]?.message?.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "");
-  const parsed = (() => {
-    try {
-      return req.schema.safeParse(JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)));
-    } catch {
-      return undefined;
-    }
-  })();
-  if (!parsed?.success) throw new AiError("ai_error", `${p.model} returned output that doesn't match the expected format.`);
-  return parsed.data;
 }

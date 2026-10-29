@@ -2,7 +2,7 @@
 
 Công cụ soạn và lên lịch thread tự host cho **X, Bluesky, Mastodon, Threads, LinkedIn, Telegram và Discord**, thay thế Typefully và Postiz. Toàn bộ chạy trong **một tiến trình**, dữ liệu lưu trong **một file SQLite**, không cần tài khoản và chạy được trên localhost hoặc VPS.
 
-Thay vì làm một ứng dụng lịch có gắn thêm AI, Threadsmith coi AI agent là người dùng ngang hàng với bạn. Mọi thao tác trên giao diện đều làm được qua REST và OpenAPI, MCP, CLI, webhooks, luồng sự kiện SSE và `llms.txt`. Claude Code còn dùng được Threadsmith qua một Agent Skill có sẵn. Ngoài ra có một copilot viết bài chạy bằng Claude hoặc bất kỳ model tương thích OpenAI nào, kể cả Ollama chạy local miễn phí.
+Thay vì làm một ứng dụng lịch có gắn thêm AI, Threadsmith coi AI agent là người dùng ngang hàng với bạn. Mọi thao tác trên giao diện đều làm được qua REST và OpenAPI, MCP, CLI, webhooks, luồng sự kiện SSE và `llms.txt`. Claude Code còn dùng được Threadsmith qua một Agent Skill có sẵn. Ngoài ra có một copilot viết bài chạy bằng Claude.
 
 > **Trạng thái.** Bản 0.2. Phần đăng lên cả 7 nền tảng đã được kiểm tra với máy chủ giả lập mô phỏng theo tài liệu API chính thức (đăng thread nối tiếp, upload ảnh, lỗi giữa chừng rồi đăng tiếp phần còn lại). Phần này **chưa** được chạy với tài khoản thật trên bất kỳ nền tảng nào vì lúc xây dựng chưa có thông tin đăng nhập. Xem thêm [Giới hạn](#giới-hạn-đã-biết).
 
@@ -246,7 +246,6 @@ CLI hiển thị giờ theo múi giờ trong config của server (lấy từ `GE
 ### Copilot
 
 - **Claude**: đặt `ANTHROPIC_API_KEY`. Model mặc định là `claude-opus-5-5` (đổi bằng `AI_MODEL`).
-- **Model local hoặc khác**: đặt `AI_PROVIDER=openai-compatible`, `AI_BASE_URL` (ví dụ `http://localhost:11434/v1` cho Ollama) và `AI_MODEL`.
 
 Copilot đếm lại kết quả bằng đúng quy tắc đếm của X và sửa thêm một vòng nếu còn vượt giới hạn.
 
@@ -400,7 +399,7 @@ server/
   scheduler.ts   vòng lặp đăng bài trong tiến trình
   x.ts           X API v2: OAuth 1.0a, upload ảnh, thread nối tiếp, đăng tiếp sau lỗi
   push.ts        Web Push (VAPID)
-  ai/            copilot: Claude SDK hoặc endpoint tương thích OpenAI
+  ai/            copilot: Claude qua Anthropic SDK
   mcp.ts         MCP server (Streamable HTTP, stateless)
   llms.ts        /llms.txt, /llms-full.txt
 shared/          kiểu dữ liệu và bộ đếm ký tự dùng chung cho server, web, MCP
@@ -421,7 +420,7 @@ Stack: Node 22+/24, TypeScript chạy bằng `tsx` (không cần bước build c
 - Một người dùng, một tài khoản X cho mỗi instance.
 - Bộ đếm ký tự bám theo quy tắc twitter-text v3. Phần nhận diện URL không có scheme (như `example.com`) chỉ là gần đúng, nên X có thể đếm lệch vài ký tự với tên miền lạ. Vì trước khi đăng, server dùng chính bộ đếm này để chặn bài vượt giới hạn (tránh thread bị đăng dở), một bài sát giới hạn có tên miền lạ hiếm khi có thể bị chặn dù X vẫn nhận.
 - **Web Push** đã được kiểm tra với một dịch vụ push giả lập (ký VAPID, mã hóa payload, xóa đăng ký hết hạn), chưa thử nhận thông báo trên trình duyệt thật.
-- **Copilot với Claude** đã được kiểm tra với một Messages API giả lập (header, body, xử lý từ chối và lỗi), chưa gọi Claude thật. Đường tương thích OpenAI cũng chỉ thử với máy chủ giả lập.
+- **Copilot với Claude** đã được kiểm tra với một Messages API giả lập (header, body, xử lý từ chối và lỗi), chưa gọi Claude thật.
 
 ## Nguồn giá
 

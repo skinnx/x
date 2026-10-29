@@ -52,8 +52,8 @@ function ConnectAi() {
     <div className="rounded-xl border border-dashed border-line-strong p-4 text-sm text-ink-2">
       <p className="font-medium text-ink">Connect an AI provider</p>
       <p className="mt-1.5 leading-relaxed">
-        Add <code className="rounded bg-subtle px-1 font-mono text-xs">ANTHROPIC_API_KEY</code> to <code className="font-mono text-xs">.env</code>, or
-        point <code className="rounded bg-subtle px-1 font-mono text-xs">AI_BASE_URL</code> at a local Ollama, then restart. The copilot turns notes
+        Add <code className="rounded bg-subtle px-1 font-mono text-xs">ANTHROPIC_API_KEY</code> to <code className="font-mono text-xs">.env</code>,
+        then restart. The copilot turns notes
         into threads, writes hooks, fits long posts and describes images.
       </p>
       <button onClick={() => navigate("/connect")} className="mt-3 flex items-center gap-1 font-medium text-ai hover:underline">
