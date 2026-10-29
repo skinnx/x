@@ -11,7 +11,7 @@ import { aiStatus } from "./ai/provider.ts";
 import { buildQueue, configError, getConfig, nextFreeSlots, parseInstant, parseWhen } from "./config.ts";
 import { requireOwner } from "./actor.ts";
 import type { ThreadMode } from "./plugin-api.ts";
-import { hasPlatform, itemsFor, listPlatforms, listPlugins, platform, platformInfo, threadModeOf } from "./plugins.ts";
+import { hasPlatform, itemsFor, listPlatforms, platform, platformInfo, threadModeOf } from "./plugins.ts";
 import { pauseState } from "./control.ts";
 import { db } from "./db.ts";
 import { env, VERSION, xConfigured } from "./env.ts";
@@ -369,18 +369,6 @@ const PlatformInfoSchema = z
   })
   .openapi("PlatformInfo", { description: "A platform, as its plugin declares it." });
 
-const PluginSchema = z
-  .object({
-    name: z.string(),
-    version: z.string(),
-    description: z.string().nullable(),
-    source: z.enum(["built-in", "data", "config"]),
-    platforms: z.array(z.string()),
-    channels: z.array(z.string()),
-    error: z.string().nullable().openapi({ description: "Why it isn't loaded; null when it is." }),
-    disabled: z.boolean(),
-  })
-  .openapi("Plugin");
 
 const PreviewSchema = z
   .object({
@@ -998,20 +986,6 @@ apiRoutes.openapi(
   (c) => c.json({ platforms: listPlatforms().map(platformInfo) }, 200),
 );
 
-apiRoutes.openapi(
-  createRoute({
-    method: "get",
-    path: "/plugins",
-    tags: ["Platforms"],
-    operationId: "listPlugins",
-    summary: "Loaded plugins",
-    description:
-      "Every platform and approval channel comes from a plugin (built-in ones in plugins/, more from <DATA_DIR>/plugins/ or threadsmith.config.json → plugins.load). " +
-      "Lists each with what it provides, or why it didn't load.",
-    responses: { 200: json(z.object({ plugins: z.array(PluginSchema) }), "Plugins in load order.") },
-  }),
-  (c) => c.json({ plugins: listPlugins().map(({ dir: _dir, ...p }) => p) }, 200),
-);
 
 apiRoutes.openapi(
   createRoute({

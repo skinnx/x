@@ -11,7 +11,7 @@ import { requestRun } from "../operator.ts";
 import { decide, getPost, listAwaiting } from "../repo.ts";
 import { approvalCard, clip, digestText, outcomeLine, pendingText, postLink, postName } from "./card.ts";
 import type { ChannelButton as Button, ChannelCommand as Command, ChannelHandlers } from "../plugin-api.ts";
-import { listChannels } from "../plugins.ts";
+import { listChannels, onChannelsChange } from "../plugins.ts";
 
 // Channels come from plugins (plugins/telegram-approvals, plugins/discord-approvals, or any other).
 const active = () => listChannels().filter((c) => c.configured());
@@ -169,16 +169,26 @@ async function resendUndelivered(): Promise<void> {
 }
 
 export function startNotify(): () => void {
-  const channels = active();
+  const channels = new Set(active());
   for (const c of channels) c.start(handlers);
+  // Plugins switched on or off (or installed) while running bring their chats with them.
+  const offChannels = onChannelsChange(({ added, removed }) => {
+    for (const c of removed) if (channels.delete(c)) c.stop();
+    for (const c of added) {
+      if (!c.configured() || channels.has(c)) continue;
+      channels.add(c);
+      c.start(handlers);
+    }
+  });
   const off = bus.on((e) => void safe(e.type, onEvent(e)));
-  if (channels.length) void safe("resend", resendUndelivered());
+  if (channels.size) void safe("resend", resendUndelivered());
   const timer = setInterval(() => {
     if (active().length && digestDue()) void safe("digest", sendDigest());
   }, 60_000);
   timer.unref();
   return () => {
     off();
+    offChannels();
     clearInterval(timer);
     for (const c of channels) c.stop();
   };

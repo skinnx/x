@@ -51,14 +51,28 @@ Rules:
 - **Trust.** Plugins run with the server's full permissions and can read every post and credential they're handed.
   Load only code you have read or trust.
 
+## Installing from the UI
+
+The **Plugins** page (or the API under `/api/plugins`, owner only; agents get 403) works like `pi install`:
+
+- **Discover** searches npm for packages with the `threadsmith-plugin` keyword.
+- **Install** takes an npm name (optionally `@version`), `github:user/repo`, a `git+https://` URL, an `https://….tgz` link, or an uploaded `.tgz` (from `npm pack`).
+- **How it installs:** packages go into `<DATA_DIR>/plugin-packages` (a private npm project pinned to exact versions) with **install scripts disabled**. Threadsmith checks that the package is a plugin for its `apiVersion`, rolls back if not, and loads it at once without a restart.
+- **On/off** takes effect immediately and is remembered.
+- **Update** installs the newest version; a restart is needed to run the new code, and the page offers it.
+- **Uninstall** removes the package.
+- **Restart** exits with code 75 so a supervisor brings the server back: Docker `restart: unless-stopped`, systemd `Restart=on-failure`, pm2. Without one, the server stays stopped.
+- Every change is written to the audit log.
+
 ## Where plugins come from
 
-Loaded once at startup, in this order:
+Loaded at startup, in this order:
 
 1. `plugins/*` inside Threadsmith (built-in).
 2. `<DATA_DIR>/plugins/*`: drop a plugin folder there (it survives upgrades and lives next to your data).
 3. `threadsmith.config.json` → `plugins.load`: paths relative to the config file, or names of packages installed in
    Threadsmith's `node_modules` (`pnpm add threadsmith-plugin-foo`).
+4. Packages installed from the Plugins page.
 
 ```json
 "plugins": {
@@ -73,8 +87,8 @@ Loaded once at startup, in this order:
 - Ids must be unique: the first plugin to register an id keeps it, and a later one fails to load with a message
   saying so. To replace a built-in, disable it first.
 
-`GET /api/plugins` (and the Agents page) lists every plugin with its version, its source, what it provides, and why
-it failed if it did. Restart the server after adding or changing a plugin.
+`GET /api/plugins` (and the Plugins page) lists every plugin with its version, its source, what it provides, and why
+it failed if it did. Plugins added to folders or to the config are picked up on restart.
 
 ## A platform
 
@@ -136,8 +150,13 @@ See `plugins/telegram-approvals` and `plugins/discord-approvals`.
 an endpoint (n8n, Zapier, your own service). Try it with `"plugins": { "load": ["./examples/plugin-webhook"] }`, then
 connect a "Webhook" account in the Agents page.
 
+## Publishing your plugin
+
+Add the `threadsmith-plugin` keyword and publish it to npm (`npm publish`). It then shows up in every Threadsmith's
+Discover tab. Keep `threadsmith` as a peer dependency.
+
 ## Not (yet) provided
 
-- **Package manager.** pi installs packages from npm or git itself. Here you install a plugin's dependencies yourself, and list it in `plugins.load` or copy it into `<DATA_DIR>/plugins/`.
-- **Hot reload.** Restart after changes.
-- **Sandboxing.** Plugins are trusted code.
+- **No hot reload of changed code.** Updates need a restart (switching plugins on and off, installing and uninstalling don't).
+- **No sandboxing.** Plugins are trusted code.
+- **No settings form.** A plugin's settings live in `threadsmith.config.json` and its secrets in `.env`.

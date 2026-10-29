@@ -243,7 +243,13 @@ plugins/bluesky/
   - nền tảng khai báo giới hạn, ảnh, cách tạo thread, thông tin đăng nhập cần nhập, và **cách đếm ký tự dưới dạng dữ liệu** (giao diện, CLI, agent và bước kiểm tra trước khi đăng đều đếm giống nhau mà không chạy code plugin);
   - nền tảng cung cấp `verify`, `publish` (đăng tiếp sau lỗi qua `ctx.posted` / `ctx.record`) và tùy chọn `metrics`.
 - **Lõi lo phần chung cho mọi plugin:** kiểm tra trước khi đăng, đăng tiếp không trùng, chốt duyệt, dừng khẩn cấp, nhật ký, mã hóa thông tin đăng nhập, idempotency.
-- **Nạp thêm plugin:** thả thư mục vào `<DATA_DIR>/plugins/`, hoặc khai báo trong `threadsmith.config.json` → `"plugins": { "load": [...], "disable": [...], "settings": {...} }`. Plugin lỗi bị bỏ qua và báo ở `GET /api/plugins` cùng trang Agents; server không bị sập.
+- **Cài từ giao diện:** trang **Plugins** cho phép:
+  - tìm plugin trên npm (từ khóa `threadsmith-plugin`);
+  - cài theo tên npm, `github:user/repo` hoặc file `.tgz`;
+  - bật/tắt (có hiệu lực ngay), cập nhật, gỡ, và khởi động lại khi cần.
+
+  Gói được cài vào `<DATA_DIR>/plugin-packages`, **không chạy install script**, và bị kiểm tra đúng là plugin trước khi nạp. Chỉ chủ nhân được cài; agent nhận lỗi 403. Mọi thao tác ghi vào nhật ký.
+- **Cách khác:** thả thư mục vào `<DATA_DIR>/plugins/`, hoặc khai báo trong `threadsmith.config.json` → `"plugins": { "load": [...], "disable": [...], "settings": {...} }`. Plugin lỗi bị bỏ qua và báo trên trang Plugins; server không bị sập.
 - Ví dụ plugin bên thứ ba: `examples/plugin-webhook` (khoảng 70 dòng, đăng qua webhook tới n8n, Zapier hoặc dịch vụ riêng). Hướng dẫn đầy đủ ở [docs/PLUGINS.md](docs/PLUGINS.md).
 - Plugin chạy với toàn quyền của server: chỉ nạp code bạn tin.
 

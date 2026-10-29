@@ -44,12 +44,15 @@ const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (
   }
 });
 
-function shutdown() {
+/** Stop taking work, let a publish in progress finish (up to 30 s), then exit (75 when a restart was asked for). */
+async function shutdown() {
   stopOperator();
   stopNotify();
-  stopScheduler();
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 3000).unref();
+  const code = typeof process.exitCode === "number" ? process.exitCode : 0;
+  setTimeout(() => process.exit(code), 30_000).unref();
+  await stopScheduler();
+  server.close(() => process.exit(code));
+  setTimeout(() => process.exit(code), 3000).unref();
 }
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());
