@@ -138,7 +138,8 @@ export async function detectFacets(text: string, resolve?: (handle: string) => P
   for (const m of text.matchAll(/(^|[\s(])(https?:\/\/[^\s]+)/gi)) {
     let url = m[2];
     url = url.replace(/[.,;:!?'"]+$/, "");
-    if (url.endsWith(")") && !url.includes("(")) url = url.slice(0, -1).replace(/[.,;:!?'"]+$/, "");
+    const unbalanced = (u: string) => u.endsWith(")") && u.split(")").length > u.split("(").length;
+    while (unbalanced(url)) url = url.slice(0, -1).replace(/[.,;:!?'"]+$/, "");
     const start = m.index + m[1].length;
     facets.push({ index: slice(text, start, start + url.length), features: [{ $type: "app.bsky.richtext.facet#link", uri: url }] });
   }

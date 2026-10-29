@@ -26,6 +26,10 @@ export function preflight(account: Account, items: PublishItem[]): string | null
       return `${n} is ${length}/${captionLimit} characters on ${info.name}${captionLimit !== limit ? " (photo captions are limited)" : ""}; shorten it or give ${info.name} its own version.`;
     }
     if (item.mediaIds.length > info.maxImages) return `${n} has ${item.mediaIds.length} images; ${info.name} allows at most ${info.maxImages}.`;
+    if (info.maxImageBytes) {
+      const big = item.mediaIds.map(getMedia).find((m) => m && m.size > info.maxImageBytes!);
+      if (big) return `${n}: ${big.filename} is ${(big.size / 1e6).toFixed(1)} MB; ${info.name} accepts images up to ${info.maxImageBytes / 1e6} MB.`;
+    }
     if (info.imageTypes) {
       const bad = item.mediaIds.map(getMedia).find((m) => m && !info.imageTypes!.includes(m.mime));
       if (bad) return `${n}: ${info.name} doesn't accept ${bad.mime.replace("image/", "").toUpperCase()} images (${bad.filename}); use ${info.imageTypes.map((t) => t.replace("image/", "").toUpperCase()).join(" or ")}.`;
@@ -50,6 +54,7 @@ async function publishTarget(post: Post, target: PostTarget): Promise<string | n
   }
   try {
     const result = await ADAPTERS[account.platform].publish({
+      postId: post.id,
       account,
       credentials: accountCredentials(account.id),
       items,

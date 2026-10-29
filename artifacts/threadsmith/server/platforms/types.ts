@@ -10,6 +10,8 @@ export interface PublishItem {
 }
 
 export interface PublishContext {
+  /** The Threadsmith post being published (stable across retries; useful for idempotency keys). */
+  postId: string;
   account: Account;
   credentials: Credentials;
   /** What to post, already shaped for the platform (e.g. LinkedIn: one joined item). */

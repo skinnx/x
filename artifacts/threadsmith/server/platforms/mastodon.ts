@@ -115,8 +115,8 @@ async function uploadImage(base: string, token: string, mediaId: string): Promis
 }
 
 /** Same post, same item, same parent → same key, so Mastodon returns the earlier status instead of posting twice. */
-function idempotencyKey(accountId: string, items: PublishItem[], index: number, inReplyTo: string | null): string {
-  const h = createHash("sha256").update(JSON.stringify([accountId, index, inReplyTo, items.map((i) => [i.text, i.mediaIds])]));
+function idempotencyKey(postId: string, accountId: string, items: PublishItem[], index: number, inReplyTo: string | null): string {
+  const h = createHash("sha256").update(JSON.stringify([postId, accountId, index, inReplyTo, items.map((i) => [i.text, i.mediaIds])]));
   return `threadsmith-${h.digest("hex").slice(0, 40)}`;
 }
 
@@ -140,7 +140,7 @@ export const mastodon: PlatformAdapter = {
       const inReplyTo = ids.length ? ids[ids.length - 1] : null;
       const { body } = await api<Status>(base, token, "status", "POST", "/api/v1/statuses", {
         json: { status: item.text, visibility: "public", ...(mediaIds.length ? { media_ids: mediaIds } : {}), ...(inReplyTo ? { in_reply_to_id: inReplyTo } : {}) },
-        headers: { "idempotency-key": idempotencyKey(ctx.account.id, ctx.items, i, inReplyTo) },
+        headers: { "idempotency-key": idempotencyKey(ctx.postId, ctx.account.id, ctx.items, i, inReplyTo) },
         replying: Boolean(inReplyTo),
       });
       if (i === 0) firstUrl = body.url ?? body.uri;

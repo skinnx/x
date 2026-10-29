@@ -27,6 +27,8 @@ export interface PlatformInfo {
   maxImages: number;
   /** Image types the platform accepts (all of PNG, JPEG, WebP, GIF when absent). */
   imageTypes?: string[];
+  /** Largest image the platform accepts, in bytes (X's own 5 MB upload limit applies otherwise). */
+  maxImageBytes?: number;
   threadMode: ThreadMode;
   /** Cost or access note shown wherever the account is connected. */
   costNote: string;
@@ -81,6 +83,7 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     name: "Bluesky",
     maxChars: 300,
     maxImages: 4,
+    maxImageBytes: 2_000_000,
     threadMode: "replies",
     costNote: "Free.",
     setup: "bsky.app → Settings → Privacy and security → App passwords → Add. Never use your main password.",
@@ -97,7 +100,7 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     maxImages: 4,
     threadMode: "replies",
     costNote: "Free.",
-    setup: "Your instance → Preferences → Development → New application with scopes write:statuses and write:media → copy the access token.",
+    setup: "Your instance → Preferences → Development → New application with scopes profile, write:statuses and write:media → copy the access token.",
     credentials: [
       { key: "instanceUrl", label: "Instance URL", secret: false, placeholder: "https://mastodon.social" },
       { key: "accessToken", label: "Access token", secret: true },
