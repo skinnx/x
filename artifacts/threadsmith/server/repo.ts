@@ -4,12 +4,12 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { splitThread } from "../shared/thread.ts";
-import { PLATFORMS } from "../shared/platforms.ts";
 import type { ApprovalState, Media, PlatformId, Post, PostSource, PostStatus, PostTarget, Segment, TargetMetrics, TargetStatus } from "../shared/types.ts";
 import { actorLabel, currentActor } from "./actor.ts";
 import { getConfig } from "./config.ts";
 import { db, tx } from "./db.ts";
 import { env } from "./env.ts";
+import { platformName, threadModeOf } from "./plugins.ts";
 import { bus } from "./events.ts";
 
 export class NotFoundError extends Error {}
@@ -223,10 +223,10 @@ function sharedLive(post: Post): { live: number; where: string } {
   let live = post.xPostIds.length;
   let where = "X";
   for (const t of post.targets) {
-    if (t.thread || t.status === "published" || PLATFORMS[t.platform].threadMode === "single") continue;
+    if (t.thread || t.status === "published" || threadModeOf(t.platform) === "single") continue;
     if (t.externalIds.length > live) {
       live = t.externalIds.length;
-      where = PLATFORMS[t.platform].name;
+      where = platformName(t.platform);
     }
   }
   return { live, where };
@@ -399,7 +399,7 @@ function writeTargets(postId: string, targets: TargetInput[], existing: PostTarg
   }
   for (const old of existing) {
     if (!seen.has(old.accountId) && old.externalIds.length && old.status !== "published") {
-      throw new ConflictError(`${PLATFORMS[old.platform].name} already has part of this thread live; it can't be removed until it's finished.`);
+      throw new ConflictError(`${platformName(old.platform)} already has part of this thread live; it can't be removed until it's finished.`);
     }
   }
   // Published destinations are history: they stay, whatever the new list says.
@@ -415,8 +415,8 @@ function writeTargets(postId: string, targets: TargetInput[], existing: PostTarg
           : null;
     // What is live on this destination came from its own version or the shared thread; whichever it publishes
     // next (switching either way included) must start with exactly those posts.
-    if (old && old.status !== "published" && old.externalIds.length && PLATFORMS[old.platform].threadMode !== "single") {
-      const name = PLATFORMS[old.platform].name;
+    if (old && old.status !== "published" && old.externalIds.length && threadModeOf(old.platform) !== "single") {
+      const name = platformName(old.platform);
       // A shared-thread destination's live prefix is already locked on `shared` by updatePost (sharedLive).
       const before = old.thread ?? shared;
       if (thread) thread = lockLivePrefix(before, thread, old.externalIds.length, name);
@@ -481,7 +481,7 @@ export function appendToPost(id: string, add: { text?: string; thread?: SegmentI
   if (post.status !== "published") throw new ConflictError(`Only published posts can be continued; this one is ${post.status}.`);
   const extra = normalizeThread(add).filter((s) => s.text.trim() || s.mediaIds.length);
   if (!extra.length) throw new BadInputError("Nothing to append: give text (posts separated by ---) or thread.");
-  const continuable = post.targets.filter((t) => PLATFORMS[t.platform].threadMode !== "single");
+  const continuable = post.targets.filter((t) => threadModeOf(t.platform) !== "single");
   if (post.targets.length && !continuable.length) {
     throw new ConflictError("None of this post's destinations can be continued (LinkedIn posts aren't threads).");
   }
@@ -644,7 +644,7 @@ export function recoverInterrupted(): number {
       const notes = p.targets
         .filter((t) => t.status !== "published")
         .map((t) => {
-          const name = PLATFORMS[t.platform].name;
+          const name = platformName(t.platform);
           markTargetFailed(p.id, t.accountId, `Interrupted while publishing (process restarted); ${t.externalIds.length} item(s) confirmed live.`);
           return `${name}: ${t.externalIds.length} confirmed live; check ${name} for item ${t.externalIds.length + 1} before you Retry (it may have gone out unrecorded).`;
         });

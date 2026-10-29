@@ -1,7 +1,6 @@
 // REST for the person's side: approvals, the kill switch, the audit log, the digest and the approval chats.
 // Mounted at /api. Deciding and resuming need the owner (see server/actor.ts); agents can read and pause.
 import { createRoute, z } from "@hono/zod-openapi";
-import { PLATFORM_IDS } from "../shared/types.ts";
 import type { ControlState } from "../shared/types.ts";
 import { currentActor, requireOwner } from "./actor.ts";
 import { PostSchema } from "./api.ts";
@@ -24,7 +23,7 @@ const tags = ["Approvals"];
 
 const PauseSchema = z.object({ at: z.iso.datetime(), by: z.string(), reason: z.string().nullable() }).openapi("PauseState");
 const ChannelSchema = z
-  .object({ id: z.enum(["telegram", "discord"]), configured: z.boolean(), connected: z.boolean(), error: z.string().nullable() })
+  .object({ id: z.string(), name: z.string(), configured: z.boolean(), connected: z.boolean(), error: z.string().nullable() })
   .openapi("ChannelStatus");
 const RunSchema = z
   .object({
@@ -42,7 +41,7 @@ const RunSchema = z
 const ControlSchema = z
   .object({
     paused: PauseSchema.nullable(),
-    approval: z.object({ require: z.enum(["agents", "never"]), except: z.array(z.enum(PLATFORM_IDS)) }),
+    approval: z.object({ require: z.enum(["agents", "never"]), except: z.array(z.string()) }),
     role: z.enum(["owner", "agent"]),
     channels: z.array(ChannelSchema),
     operator: z.object({

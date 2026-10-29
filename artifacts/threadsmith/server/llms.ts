@@ -1,13 +1,13 @@
 // /llms.txt (llmstxt.org index) and /llms-full.txt (the whole agent guide, with a route list generated
 // from the live OpenAPI document) so any agent can learn to drive Threadsmith from one URL.
 import { Hono } from "hono";
-import { PLATFORMS } from "../shared/platforms.ts";
 import { listAccounts } from "./accounts.ts";
 import { threadGuide } from "./ai/guide.ts";
 import { getConfig } from "./config.ts";
 import { env, xConfigured } from "./env.ts";
 import { mcpCatalog } from "./mcp.ts";
 import { operatorStatus } from "./operator.ts";
+import { listPlugins, platformName } from "./plugins.ts";
 
 export const llmsRoutes = new Hono();
 
@@ -82,7 +82,7 @@ llmsRoutes.get("/llms-full.txt", async (c) => {
 - URL: ${base} (version ${VERSION})
 - Connected accounts: ${
     accounts.length
-      ? accounts.map((a) => `${a.label} (${PLATFORMS[a.platform].name}${a.handle ? ` ${a.handle}` : ""}, id ${a.id}${a.lastError ? `, ERROR: ${a.lastError}` : ""})`).join("; ")
+      ? accounts.map((a) => `${a.label} (${platformName(a.platform)}${a.handle ? ` ${a.handle}` : ""}, id ${a.id}${a.lastError ? `, ERROR: ${a.lastError}` : ""})`).join("; ")
       : "none yet (posts use the legacy single-X mode until the person connects accounts in the UI)"
   }
 - X mode for posts without destinations: ${xConfigured ? "api — scheduled posts publish automatically through the X API" : "manual — no X API keys; at the scheduled time the person is notified and copies the thread into X, then marks it published"}

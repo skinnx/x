@@ -1,9 +1,8 @@
 // Engagement data for agents. Threadsmith only fetches and stores the numbers; deciding what they mean (what
 // worked, when to post, what to plug or repost) is left to the AI reading them.
-import { PLATFORMS } from "../shared/platforms.ts";
 import type { ItemMetrics, Post, TargetMetrics } from "../shared/types.ts";
 import { accountCredentials, getAccount } from "./accounts.ts";
-import { ADAPTERS } from "./platforms/index.ts";
+import { hasPlatform, platform, platformName } from "./plugins.ts";
 import { listPosts, requirePost, setTargetMetrics } from "./repo.ts";
 
 const KEYS = ["likes", "reposts", "replies", "quotes", "views", "bookmarks"] as const;
@@ -31,19 +30,23 @@ export async function refreshMetrics(postId: string, opts: { paid?: boolean } = 
   const post = requirePost(postId);
   const skipped: MetricsRefresh["skipped"] = [];
   for (const t of post.targets) {
-    const adapter = ADAPTERS[t.platform];
-    const name = PLATFORMS[t.platform].name;
+    const name = platformName(t.platform);
     const skip = (reason: string) => skipped.push({ accountId: t.accountId, platform: t.platform, reason });
     if (t.status !== "published" || !t.externalIds.length) {
       skip("not published yet");
       continue;
     }
+    if (!hasPlatform(t.platform)) {
+      skip(`no loaded plugin provides ${name}`);
+      continue;
+    }
+    const adapter = platform(t.platform);
     if (!adapter.metrics) {
       skip(`${name} has no engagement API for this kind of account`);
       continue;
     }
-    if (t.platform === "x" && !opts.paid) {
-      skip(adapter.metricsNote ?? "X bills reads; pass paid=true to fetch");
+    if (adapter.metricsPaid && !opts.paid) {
+      skip(adapter.metricsNote ?? `${name} bills these reads; pass paid=true to fetch`);
       continue;
     }
     try {

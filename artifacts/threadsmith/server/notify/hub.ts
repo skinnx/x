@@ -10,14 +10,15 @@ import { bus } from "../events.ts";
 import { requestRun } from "../operator.ts";
 import { decide, getPost, listAwaiting } from "../repo.ts";
 import { approvalCard, clip, digestText, outcomeLine, pendingText, postLink, postName } from "./card.ts";
-import { discordChannel } from "./discord.ts";
-import { telegramChannel } from "./telegram.ts";
-import type { Action, ApprovalChannel, Button, ChannelHandlers, Command } from "./types.ts";
+import type { ChannelButton as Button, ChannelCommand as Command, ChannelHandlers } from "../plugin-api.ts";
+import { listChannels } from "../plugins.ts";
 
-const ALL: ApprovalChannel[] = [telegramChannel, discordChannel];
-const active = () => ALL.filter((c) => c.status().configured);
+// Channels come from plugins (plugins/telegram-approvals, plugins/discord-approvals, or any other).
+const active = () => listChannels().filter((c) => c.configured());
+const channelById = (id: string) => listChannels().find((c) => c.id === id);
 
-export const channelStatuses = (): ChannelStatus[] => ALL.map((c) => c.status());
+export const channelStatuses = (): ChannelStatus[] =>
+  listChannels().map((c) => ({ ...c.status(), id: c.id, name: c.name, configured: c.configured() }));
 
 async function broadcast(text: string, buttons?: Button[]): Promise<void> {
   await Promise.all(active().map((c) => c.send({ text: clip(text, c.maxLength), buttons })));
@@ -35,7 +36,7 @@ async function finalizeAll(postId: string, outcome: string): Promise<void> {
   db.prepare("DELETE FROM approval_messages WHERE post_id = ?").run(postId);
   await Promise.all(
     refs.map(({ channel, ref, text }) => {
-      const c = ALL.find((x) => x.id === channel);
+      const c = channelById(channel);
       return c?.finalize(ref, `${clip(text, c.maxLength - outcome.length - 2)}\n\n${outcome}`);
     }),
   );
@@ -185,6 +186,7 @@ export function startNotify(): () => void {
 
 /** A test message to every configured chat (setup check). */
 export async function testChannels(): Promise<ChannelStatus[]> {
-  await broadcast(`👋 Threadsmith is connected. Approval requests, alerts and the daily digest will arrive here.\nOn Telegram, commands: /pending /status /pause /resume /run`);
+  const hello = "👋 Threadsmith is connected. Approval requests, alerts and the daily digest will arrive here.";
+  await Promise.all(active().map((c) => c.send({ text: [hello, c.commandsHint].filter(Boolean).join("\n") })));
   return channelStatuses();
 }

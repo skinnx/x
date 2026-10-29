@@ -229,6 +229,24 @@ const ok = timingSafeEqual(Buffer.from(expected), Buffer.from(req.headers["x-thr
 
 ---
 
+## Mọi nền tảng là plugin
+
+7 nền tảng đăng bài (X, Bluesky, Mastodon, Threads, LinkedIn, Telegram, Discord) và 2 kênh duyệt (Telegram, Discord) đều là **plugin cùng một chuẩn**, học theo cách [pi](https://pi.dev) xây extension: bản có sẵn nằm trong `plugins/`, dùng đúng định dạng và API như plugin của bên thứ ba. Lõi Threadsmith không biết tên nền tảng nào.
+
+```
+plugins/bluesky/
+  package.json   { "threadsmith": { "apiVersion": 1, "entry": "index.ts" }, "keywords": ["threadsmith-plugin"], … }
+  index.ts       export default function (ts) { ts.registerPlatform({ id: "bluesky", counting: { method: "graphemes" }, verify, publish, metrics, … }) }
+```
+
+- **Một hợp đồng** (`server/plugin-api.ts`, import kiểu qua `threadsmith/plugin`):
+  - nền tảng khai báo giới hạn, ảnh, cách tạo thread, thông tin đăng nhập cần nhập, và **cách đếm ký tự dưới dạng dữ liệu** (giao diện, CLI, agent và bước kiểm tra trước khi đăng đều đếm giống nhau mà không chạy code plugin);
+  - nền tảng cung cấp `verify`, `publish` (đăng tiếp sau lỗi qua `ctx.posted` / `ctx.record`) và tùy chọn `metrics`.
+- **Lõi lo phần chung cho mọi plugin:** kiểm tra trước khi đăng, đăng tiếp không trùng, chốt duyệt, dừng khẩn cấp, nhật ký, mã hóa thông tin đăng nhập, idempotency.
+- **Nạp thêm plugin:** thả thư mục vào `<DATA_DIR>/plugins/`, hoặc khai báo trong `threadsmith.config.json` → `"plugins": { "load": [...], "disable": [...], "settings": {...} }`. Plugin lỗi bị bỏ qua và báo ở `GET /api/plugins` cùng trang Agents; server không bị sập.
+- Ví dụ plugin bên thứ ba: `examples/plugin-webhook` (khoảng 70 dòng, đăng qua webhook tới n8n, Zapier hoặc dịch vụ riêng). Hướng dẫn đầy đủ ở [docs/PLUGINS.md](docs/PLUGINS.md).
+- Plugin chạy với toàn quyền của server: chỉ nạp code bạn tin.
+
 ## Nguyên tắc: dữ liệu và thao tác cho agent, quyết định để AI
 
 Threadsmith **không** xây những tính năng mà một agent AI làm được và làm tốt hơn khi có dữ liệu: dashboard thống kê, gợi ý giờ đăng, luật auto-plug, bộ tự đăng lại bài cũ (evergreen). Thay vào đó Threadsmith cung cấp đúng hai thứ AI không tự làm được:
@@ -512,7 +530,9 @@ server/
   control.ts     dừng khẩn cấp
   audit.ts       nhật ký ai làm gì
   control-api.ts REST cho phía người: duyệt, dừng, nhật ký, bản tin, kiểm tra chat
-  notify/        chat duyệt: hub (thẻ duyệt, cảnh báo, bản tin), telegram.ts, discord.ts
+  plugin-api.ts  hợp đồng plugin (import type "threadsmith/plugin")
+  plugins.ts     nạp plugin, registry nền tảng và kênh duyệt
+  notify/        hub chat duyệt: thẻ duyệt, cảnh báo, bản tin (kênh là plugin)
   operator.ts    operator: Claude chạy theo lịch với các tool MCP, theo operator.md
   app.ts         ghép mọi thứ vào một cổng: /api, /mcp, /openapi.json, /docs, /llms.txt, /media, giao diện web
   repo.ts        lớp nghiệp vụ và chốt duyệt; mọi thay đổi trạng thái đi qua đây và phát sự kiện
@@ -521,12 +541,14 @@ server/
   api.ts         REST (OpenAPI), SSE, upload media
   webhooks.ts    webhook ký HMAC, thử lại khi lỗi
   scheduler.ts   vòng lặp đăng bài trong tiến trình
-  x.ts           X API v2: OAuth 1.0a, upload ảnh, thread nối tiếp, đăng tiếp sau lỗi
   push.ts        Web Push (VAPID)
   ai/            Claude client cho operator, hướng dẫn viết thread
   mcp.ts         MCP server (Streamable HTTP, stateless)
   llms.ts        /llms.txt, /llms-full.txt
-shared/          kiểu dữ liệu và bộ đếm ký tự dùng chung cho server, web, MCP
+plugins/         7 nền tảng + 2 kênh duyệt, mỗi cái là một plugin (package.json + index.ts)
+examples/        plugin mẫu của bên thứ ba
+docs/PLUGINS.md  cách viết plugin
+shared/          kiểu dữ liệu và bộ đếm ký tự (theo luật dạng dữ liệu) dùng chung cho server, web, CLI
 web/             React 19 + Vite + Tailwind 4 + TanStack Query + dnd-kit
 cli/             CLI không phụ thuộc thư viện ngoài
 skill/           Agent Skill cho Claude

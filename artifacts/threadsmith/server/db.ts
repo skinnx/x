@@ -143,6 +143,11 @@ const MIGRATIONS = [
     tool_calls INTEGER NOT NULL DEFAULT 0
   );
   `,
+  // Approval chats became plugins: their state moved under the plugin's own store keys.
+  `
+  INSERT OR IGNORE INTO kv (key, value) SELECT 'plugin:telegram-approvals:offset', value FROM kv WHERE key = 'telegram.approval.offset';
+  DELETE FROM kv WHERE key = 'telegram.approval.offset';
+  `,
 ];
 
 const current = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;

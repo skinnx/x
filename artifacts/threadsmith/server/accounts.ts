@@ -1,11 +1,10 @@
 // Connected accounts: credentials are verified with the platform before they are stored, and stored encrypted.
 import { randomUUID } from "node:crypto";
-import { PLATFORMS } from "../shared/platforms.ts";
 import type { Account, PlatformId } from "../shared/types.ts";
 import { requireOwner } from "./actor.ts";
 import { db } from "./db.ts";
-import { ADAPTERS } from "./platforms/index.ts";
-import type { Credentials } from "./platforms/types.ts";
+import type { Credentials } from "./plugin-api.ts";
+import { hasPlatform, platform, platformName } from "./plugins.ts";
 import { BadInputError, ConflictError, httpUrl, NotFoundError } from "./repo.ts";
 import { open, seal } from "./secrets.ts";
 
@@ -53,22 +52,22 @@ export function accountCredentials(id: string): Credentials {
 }
 
 /** Keep only the platform's fields, trimmed; require the non-optional ones. */
-function cleanCredentials(platform: PlatformId, input: Record<string, unknown>): Credentials {
+function cleanCredentials(platformId: PlatformId, input: Record<string, unknown>): Credentials {
   const out: Credentials = {};
-  for (const f of PLATFORMS[platform].credentials) {
+  for (const f of platform(platformId).credentials) {
     const v = typeof input[f.key] === "string" ? (input[f.key] as string).trim() : "";
     if (v) out[f.key] = v;
-    else if (!f.optional) throw new BadInputError(`${PLATFORMS[platform].name}: "${f.label}" (${f.key}) is required`);
+    else if (!f.optional) throw new BadInputError(`${platformName(platformId)}: "${f.label}" (${f.key}) is required`);
   }
   return out;
 }
 
-async function verify(platform: PlatformId, credentials: Credentials) {
+async function verify(platformId: PlatformId, credentials: Credentials) {
   try {
-    return await ADAPTERS[platform].verify(credentials);
+    return await platform(platformId).verify(credentials);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new BadInputError(`${PLATFORMS[platform].name} rejected these credentials: ${msg}`);
+    throw new BadInputError(`${platformName(platformId)} rejected these credentials: ${msg}`);
   }
 }
 
@@ -79,7 +78,7 @@ export async function connectAccount(input: {
   maxChars?: number | null;
 }): Promise<Account> {
   requireOwner("connect accounts");
-  if (!PLATFORMS[input.platform]) throw new BadInputError(`Unknown platform ${input.platform}`);
+  if (!hasPlatform(input.platform)) throw new BadInputError(`Unknown platform ${input.platform}; GET /api/platforms lists the loaded ones.`);
   const credentials = cleanCredentials(input.platform, input.credentials);
   const who = await verify(input.platform, credentials);
   const id = randomUUID();
@@ -90,7 +89,7 @@ export async function connectAccount(input: {
   ).run(
     id,
     input.platform,
-    input.label?.trim() || `${PLATFORMS[input.platform].name} ${who.handle}`,
+    input.label?.trim() || `${platformName(input.platform)} ${who.handle}`,
     who.handle,
     httpUrl(who.profileUrl),
     input.maxChars ?? null,
@@ -127,7 +126,7 @@ export async function updateAccount(
 export async function recheckAccount(id: string): Promise<Account> {
   const account = getAccount(id);
   try {
-    const who = await ADAPTERS[account.platform].verify(accountCredentials(id));
+    const who = await platform(account.platform).verify(accountCredentials(id));
     db.prepare("UPDATE accounts SET handle = ?, profile_url = ?, last_error = NULL, verified_at = ? WHERE id = ?").run(
       who.handle,
       httpUrl(who.profileUrl),

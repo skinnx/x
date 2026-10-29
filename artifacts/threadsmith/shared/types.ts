@@ -34,8 +34,8 @@ export interface Segment {
   mediaIds: string[];
 }
 
-export const PLATFORM_IDS = ["x", "bluesky", "mastodon", "threads", "linkedin", "telegram", "discord"] as const;
-export type PlatformId = (typeof PLATFORM_IDS)[number];
+/** A platform's id, as its plugin registers it ("x", "bluesky", …). GET /api/platforms lists the loaded ones. */
+export type PlatformId = string;
 
 /** A connected social account. Credentials never leave the server; `handle` is what the platform calls the account. */
 export interface Account {
@@ -194,7 +194,9 @@ export interface AuditEntry {
 }
 
 export interface ChannelStatus {
-  id: "telegram" | "discord";
+  /** The approval channel's id, as its plugin registers it ("telegram", "discord", …). */
+  id: string;
+  name: string;
   configured: boolean;
   connected: boolean;
   error: string | null;

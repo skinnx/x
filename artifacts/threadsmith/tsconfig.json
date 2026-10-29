@@ -12,7 +12,8 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "resolveJsonModule": true,
-    "types": ["node", "vite/client"]
+    "types": ["node", "vite/client"],
+    "paths": { "threadsmith/plugin": ["./server/plugin-api.ts"] }
   },
-  "include": ["server", "shared", "web/src", "cli", "vite.config.ts"]
+  "include": ["server", "shared", "web/src", "cli", "plugins", "examples", "vite.config.ts"]
 }

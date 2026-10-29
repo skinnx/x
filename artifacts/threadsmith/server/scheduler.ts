@@ -7,8 +7,7 @@ import { formatLocal, getConfig } from "./config.ts";
 import { xConfigured } from "./env.ts";
 import { assertNotPaused, pauseState } from "./control.ts";
 import { claimNextDuePost, claimPost, ConflictError, holdForApproval, markDue, markFailed, markPublished, requirePost } from "./repo.ts";
-import { publishTargets } from "./publisher.ts";
-import { publishToX } from "./x.ts";
+import { publishLegacyX, publishTargets } from "./publisher.ts";
 
 const manualModeMessage = (id: string) =>
   `Auto-posting is off because no X API keys are configured (manual mode). Copy the thread (Copy button, or GET /api/posts/${id}/export), ` +
@@ -36,9 +35,9 @@ function lateNote(post: Post): string | null {
 /** Publish a post already claimed as `publishing`; failures end up on the post, never thrown. */
 async function publish(post: Post): Promise<Post> {
   if (post.targets.length) return publishTargets(post);
-  let result: Awaited<ReturnType<typeof publishToX>>;
+  let result: Awaited<ReturnType<typeof publishLegacyX>>;
   try {
-    result = await publishToX(post);
+    result = await publishLegacyX(post);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[publish] ${post.id} failed: ${message}`);

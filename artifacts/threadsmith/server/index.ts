@@ -8,11 +8,14 @@ import { startAccountChecks } from "./accounts.ts";
 import { startAudit } from "./audit.ts";
 import { alert, channelStatuses, startNotify } from "./notify/hub.ts";
 import { startOperator } from "./operator.ts";
+import { listPlatforms, listPlugins, loadPlugins } from "./plugins.ts";
 import { recoverInterrupted } from "./repo.ts";
 import { startScheduler } from "./scheduler.ts";
 import { startWebhooks } from "./webhooks.ts";
 
 const config = getConfig();
+// Platforms and approval chats are plugins: load them before anything publishes or takes requests.
+await loadPlugins();
 const recovered = recoverInterrupted();
 if (recovered) console.warn(`⚠ ${recovered} post(s) were mid-publish when the process stopped; marked failed for review.`);
 
@@ -32,6 +35,8 @@ const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (
   console.log(`Threadsmith ${VERSION} → ${publicUrl()}`);
   console.log(`  timezone ${config.timezone} · publishing: ${xConfigured ? "X API v2" : "manual (notify + copy) — add X keys to .env to auto-post"}`);
   const chats = channelStatuses().filter((c) => c.configured).map((c) => c.id);
+  const broken = listPlugins().filter((p) => p.error).length;
+  console.log(`  plugins: ${listPlugins().filter((p) => !p.error && !p.disabled).length} loaded${broken ? `, ${broken} failed (GET /api/plugins)` : ""} · platforms: ${listPlatforms().map((p) => p.id).join(", ") || "none"}`);
   console.log(`  approvals: ${getConfig().approval.require === "never" ? "off (agents publish directly)" : "agents need your OK"} · chats: ${chats.join(", ") || "none (approve in the web UI)"}`);
   console.log(`  API docs ${publicUrl()}/docs · MCP ${publicUrl()}/mcp · agents ${publicUrl()}/llms.txt`);
   if (!env.authToken && env.host !== "127.0.0.1" && env.host !== "localhost") {

@@ -1,0 +1,9 @@
+{
+  "name": "discord-approvals",
+  "version": "1.0.0",
+  "description": "Approval channel on Discord: a bot posts approval requests with buttons and receives presses over the Gateway (no public URL, no privileged intents).",
+  "private": true,
+  "keywords": ["threadsmith-plugin"],
+  "threadsmith": { "apiVersion": 1, "entry": "index.ts" },
+  "peerDependencies": { "threadsmith": "*" }
+}

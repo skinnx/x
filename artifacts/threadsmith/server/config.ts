@@ -2,7 +2,7 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { TZDate } from "@date-fns/tz";
 import { z } from "zod";
-import { PLATFORM_IDS, type Post, type Queue, type QueueDay, type QueueItem } from "../shared/types.ts";
+import { type Post, type Queue, type QueueDay, type QueueItem } from "../shared/types.ts";
 import { env } from "./env.ts";
 import { BadInputError, ConflictError, listPosts } from "./repo.ts";
 
@@ -37,8 +37,20 @@ const ConfigSchema = z.object({
    * where agents may post without approval (e.g. a private Telegram log channel).
    */
   approval: z
-    .object({ require: z.enum(["agents", "never"]).default("agents"), except: z.array(z.enum(PLATFORM_IDS)).default([]) })
+    .object({ require: z.enum(["agents", "never"]).default("agents"), except: z.array(z.string()).default([]) })
     .default({ require: "agents", except: [] }),
+  /**
+   * Plugins (platforms, approval channels). Built-in ones in plugins/ and any in <DATA_DIR>/plugins/ load by
+   * themselves; `load` adds others (a path relative to this file, or an installed package name); `disable` turns off
+   * plugins by name or single platforms/channels by id; `settings` holds each plugin's own settings by plugin name.
+   */
+  plugins: z
+    .object({
+      load: z.array(z.string()).default([]),
+      disable: z.array(z.string()).default([]),
+      settings: z.record(z.string(), z.record(z.string(), z.unknown())).default({}),
+    })
+    .default({ load: [], disable: [], settings: {} }),
   /** Daily summary to the approval chats (Telegram/Discord) at this local time; null = off. Urgent things are sent at once. */
   digest: z.object({ time: hhmm.nullable().default("08:30") }).default({ time: "08:30" }),
   /**

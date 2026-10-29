@@ -1,25 +1,29 @@
 // Writing guide for agents, served as the MCP resource threadsmith://guide and inside /llms-full.txt.
-import { PLATFORMS } from "../../shared/platforms.ts";
+import type { PlatformDefinition } from "../plugin-api.ts";
+import { listPlatforms } from "../plugins.ts";
 import { getConfig } from "../config.ts";
 import { xConfigured } from "../env.ts";
 
-const COUNTING: Record<string, string> = {
-  x: "weighted: CJK, emoji and Vietnamese letters like ạ ệ ố 2; URLs 23",
-  bluesky: "graphemes (an emoji or ệ is 1); URLs count in full",
-  mastodon: "code points; every URL 23",
-  threads: "code points; each emoji its UTF-8 bytes (usually 4)",
-  linkedin: "code points; the thread is joined into ONE post",
-  telegram: "code points; 1024 for a caption on a photo",
-  discord: "code points",
-};
+/** The platform's counting rule in words. */
+function counting(p: PlatformDefinition): string {
+  const r = p.counting;
+  const base =
+    r.method === "x-weighted"
+      ? "weighted: CJK, emoji and Vietnamese letters like ạ ệ ố 2; URLs 23"
+      : r.method === "graphemes"
+        ? "graphemes (an emoji or ệ is 1); URLs count in full"
+        : ["code points", r.urlLength ? `every URL ${r.urlLength}` : "", r.emoji === "utf8-bytes" ? "each emoji its UTF-8 bytes (usually 4)" : ""].filter(Boolean).join("; ");
+  const extra = [p.threadMode === "single" ? "the thread is joined into ONE post" : "", p.maxCharsWithMedia ? `${p.maxCharsWithMedia} for an item with images` : ""];
+  return [base, ...extra].filter(Boolean).join("; ");
+}
 const MODE = { replies: "reply chain", single: "joined into one post", messages: "consecutive messages" };
 
 /** Markdown table of every platform's limits, counting, thread mode and cost (shared by the guide and llms.txt). */
 export function platformTable(): string {
-  const rows = Object.values(PLATFORMS).map((p) => {
-    const limit = p.id === "x" ? `${getConfig().maxChars} (config maxChars)` : String(p.maxChars);
+  const rows = listPlatforms().map((p) => {
+    const limit = p.id === "x" ? `${p.maxChars} (config maxChars)` : String(p.maxChars);
     const images = `${p.maxImages}${p.imageTypes ? ` (${p.imageTypes.map((t) => t.replace("image/", "")).join("/")})` : ""}`;
-    return `| ${p.name} | ${limit} | ${COUNTING[p.id]} | ${images} | ${MODE[p.threadMode]} | ${p.costNote} |`;
+    return `| ${p.name} | ${limit} | ${counting(p)} | ${images} | ${MODE[p.threadMode]} | ${p.costNote} |`;
   });
   return ["| Platform | Limit per post | Counting | Images per post | A thread becomes | Cost |", "|---|---|---|---|---|---|", ...rows].join("\n");
 }

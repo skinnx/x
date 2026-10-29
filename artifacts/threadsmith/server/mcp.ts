@@ -7,10 +7,11 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { Hono } from "hono";
 import { z } from "zod";
-import { countFor, itemsFor, PLATFORMS, TELEGRAM_CAPTION_LIMIT } from "../shared/platforms.ts";
+import { countWith } from "../shared/counting.ts";
 import { hasUrl, splitThread, threadToText, weightedLength } from "../shared/thread.ts";
-import { PLATFORM_IDS, POST_STATUSES, type Account, type PlatformId, type Post, type Segment } from "../shared/types.ts";
+import { POST_STATUSES, type Account, type PlatformId, type Post, type Segment } from "../shared/types.ts";
 import { getAccount, listAccounts } from "./accounts.ts";
+import { itemsFor, listPlatforms, platform as platformDef, platformInfo, platformName, threadModeOf } from "./plugins.ts";
 import { pausePublishing, pauseState } from "./control.ts";
 import { currentActor } from "./actor.ts";
 import { threadGuide } from "./ai/guide.ts";
@@ -83,14 +84,14 @@ function local(iso: string | null): string | null {
 
 function counts(texts: string[], platform: PlatformId = "x", limit = getConfig().maxChars) {
   return texts.map((text, index) => {
-    const chars = countFor(platform, text);
+    const chars = countWith(platformDef(platform).counting, text);
     return { index, chars, remaining: limit - chars, fits: chars <= limit && text.trim().length > 0, hasLink: hasUrl(text) };
   });
 }
 
 // ---------- destinations ----------
 
-const describeAccount = (a: Account) => `${a.label} (${PLATFORMS[a.platform].name}${a.handle ? ` ${a.handle}` : ""}, id ${a.id})`;
+const describeAccount = (a: Account) => `${a.label} (${platformName(a.platform)}${a.handle ? ` ${a.handle}` : ""}, id ${a.id})`;
 
 /**
  * An account by id, id prefix, label, handle (with or without @) or platform name. Ambiguous or unknown references
@@ -104,7 +105,7 @@ function resolveAccount(ref: string, accounts: Account[]): Account {
     (a) => a.label.toLowerCase() === r || (a.handle && a.handle.toLowerCase().replace(/^@/, "") === r.replace(/^@/, "")) || (r.length >= 4 && a.id.startsWith(r)),
   );
   if (strong.length === 1) return strong[0]!;
-  const platform = PLATFORM_IDS.find((p) => p === r || PLATFORMS[p].name.toLowerCase() === r);
+  const platform = listPlatforms().find((p) => p.id === r || p.name.toLowerCase() === r)?.id;
   const matches = strong.length ? strong : platform ? accounts.filter((a) => a.platform === platform) : [];
   if (matches.length === 1) return matches[0]!;
   if (matches.length > 1) {
@@ -117,7 +118,7 @@ function resolveAccount(ref: string, accounts: Account[]): Account {
     );
   }
   throw new BadInputError(
-    `No connected account matches "${ref}"${platform ? ` (no ${PLATFORMS[platform].name} account is connected)` : ""}. Connected: ${accounts.map(describeAccount).join("; ")}.`,
+    `No connected account matches "${ref}"${platform ? ` (no ${platformName(platform)} account is connected)` : ""}. Connected: ${accounts.map(describeAccount).join("; ")}.`,
   );
 }
 
@@ -171,7 +172,7 @@ function destinationsView(p: Post) {
       status: t.status,
       ownVersion: Boolean(t.thread),
       limit: pv.limit,
-      items: pv.items.map((it, k) => ({ index: k, text: t.thread || PLATFORMS[t.platform].threadMode === "single" ? it.text : undefined, chars: it.count, fits: it.fits })),
+      items: pv.items.map((it, k) => ({ index: k, text: t.thread || threadModeOf(t.platform) === "single" ? it.text : undefined, chars: it.count, fits: it.fits })),
       live: t.externalIds.length,
       url: t.url,
       error: t.error,
@@ -213,7 +214,7 @@ function brief(p: Post) {
     destinations: p.targets.length
       ? p.targets.map((t) => {
           const label = accountLabel(t.accountId);
-          const name = PLATFORMS[t.platform].name;
+          const name = platformName(t.platform);
           return `${label.toLowerCase().includes(name.toLowerCase()) ? label : `${label} (${name})`}: ${t.status}`;
         })
       : [`X (legacy ${xConfigured ? "API" : "manual"} mode)`],
@@ -289,7 +290,7 @@ function imageTarget(postId: string, postIndex: number): Post {
   const seg = p.thread[postIndex];
   if (!seg) throw new BadInputError(`postIndex ${postIndex} is out of range; the thread has ${p.thread.length} post(s) (0-based).`);
   if (postIndex < p.xPostIds.length) throw new ConflictError(`Post [${postIndex}] is already live on X and can't be changed.`);
-  const max = p.targets.length ? Math.max(...p.targets.map((t) => PLATFORMS[t.platform].maxImages)) : MAX_IMAGES_PER_POST;
+  const max = p.targets.length ? Math.max(...p.targets.map((t) => platformDef(t.platform).maxImages)) : MAX_IMAGES_PER_POST;
   if (seg.mediaIds.length >= max) throw new ConflictError(`Post [${postIndex}] already has ${max} images, the most any of its destinations allows.`);
   return p;
 }
@@ -398,7 +399,7 @@ tool(
     const accounts = listAccounts().map((a) => ({ id: a.id, platform: a.platform, label: a.label, handle: a.handle, limit: limitFor(a), lastError: a.lastError }));
     return result(
       `Timezone ${c.timezone}, X limit ${c.maxChars} characters per post, X mode ${xConfigured ? "api" : "manual"} (posts without destinations), ` +
-        `${accounts.length} connected account(s)${accounts.length ? `: ${accounts.map((a) => `${a.label} (${PLATFORMS[a.platform].name})`).join(", ")}` : ""}.`,
+        `${accounts.length} connected account(s)${accounts.length ? `: ${accounts.map((a) => `${a.label} (${platformName(a.platform)})`).join(", ")}` : ""}.`,
       {
       timezone: c.timezone,
       now,
@@ -429,7 +430,10 @@ tool(
   },
   () => {
     const accounts = listAccounts();
-    const platforms = Object.values(PLATFORMS).map(({ credentials: _c, ...p }) => ({ ...p, connected: accounts.filter((a) => a.platform === p.id).length }));
+    const platforms = listPlatforms().map((d) => {
+      const { credentials: _c, ...p } = platformInfo(d);
+      return { ...p, connected: accounts.filter((a) => a.platform === p.id).length };
+    });
     return result(platforms.map((p) => `${p.name}: ${p.maxChars} chars, ${p.threadMode}${p.connected ? `, ${p.connected} connected` : ""}`).join("; "), { platforms });
   },
 );
@@ -446,7 +450,7 @@ tool(
     annotations: READ,
   },
   () => {
-    const accounts = listAccounts().map((a) => ({ ...a, limit: limitFor(a), threadMode: PLATFORMS[a.platform].threadMode }));
+    const accounts = listAccounts().map((a) => ({ ...a, limit: limitFor(a), threadMode: threadModeOf(a.platform) }));
     return result(
       accounts.length
         ? accounts.map((a) => `${describeAccount(a)}${a.lastError ? ` — ERROR: ${a.lastError}` : ""}`).join("; ")
@@ -463,14 +467,14 @@ tool(
     description:
       "Count each post of a draft the way a platform does, against its limit. Default X (weighted: CJK characters and emoji count 2; Vietnamese letters from Unicode's " +
       "Latin Extended Additional block such as ạ ấ ệ ố ữ count 2, while á à é ó ơ ư đ count 1; every link counts 23; limit = this instance's maxChars). " +
-      "`platform` bluesky counts graphemes (300; links count in full), mastodon code points with links as 23 (500), threads 500 (each emoji counts its UTF-8 bytes, usually 4), linkedin 3000 (the thread is " +
-      "joined into ONE post, so the joined count is what matters), telegram 4096 (1024 for a photo caption), discord 2000. `account` uses that connected account's " +
+      "`platform` counts as that platform does (list_platforms gives each one's counting rule and limit: e.g. bluesky graphemes, mastodon links as 23, threads emoji as UTF-8 bytes, " +
+      "linkedin joins the thread into ONE post, telegram photo captions 1024). `account` uses that connected account's " +
       "own limit (e.g. X Premium). Pass `text` (posts separated by a line containing only ---) or `posts`. " +
       "Use it on every draft and every per-destination version before create_post or update_post, and shorten any post where fits is false. " +
       "hasLink marks posts containing a URL: on X those cost more through the API and usually get less reach.",
     input: {
       ...threadArgs,
-      platform: z.enum(PLATFORM_IDS).optional().describe("Count as this platform does (default x)"),
+      platform: z.string().optional().describe("Count as this platform does (default x); list_platforms shows the ids"),
       account: z.string().optional().describe("A connected account (id, label, handle or platform name): its platform and its own limit"),
     },
     annotations: { ...READ, idempotentHint: true },
@@ -480,20 +484,21 @@ tool(
     if (!parts) throw new Error("Give `text` or `posts`.");
     const account = args.account ? resolveAccount(args.account, listAccounts()) : undefined;
     if (account && args.platform && account.platform !== args.platform) {
-      throw new BadInputError(`${describeAccount(account)} is not a ${PLATFORMS[args.platform].name} account.`);
+      throw new BadInputError(`${describeAccount(account)} is not a ${platformName(args.platform)} account.`);
     }
-    const platform = account?.platform ?? args.platform ?? "x";
-    const limit = account ? limitFor(account) : platform === "x" ? getConfig().maxChars : PLATFORMS[platform].maxChars;
-    const single = PLATFORMS[platform].threadMode === "single" && parts.length > 1;
-    const items = single ? itemsFor(platform, parts.map((text) => ({ text, mediaIds: [] }))).map((i) => i.text) : parts;
-    const posts = counts(items, platform, limit);
+    const platformId = account?.platform ?? args.platform ?? "x";
+    const def = platformDef(platformId);
+    const limit = account ? limitFor(account) : def.maxChars;
+    const single = def.threadMode === "single" && parts.length > 1;
+    const items = single ? itemsFor(def, parts.map((text) => ({ text, mediaIds: [] }))).map((i) => i.text) : parts;
+    const posts = counts(items, platformId, limit);
     const allFit = posts.length > 0 && posts.every((p) => p.fits);
-    const name = PLATFORMS[platform].name;
+    const name = def.name;
     return result(
       `${single ? `${name} joins the ${parts.length} posts into one: ` : ""}${posts.length} item(s) on ${name}, limit ${limit}: ` +
         `${posts.map((p) => `[${p.index}] ${p.chars}${p.fits ? "" : " OVER"}`).join(", ")}${allFit ? " — all fit." : ""}` +
-        (platform === "telegram" ? ` Items with a photo are limited to ${TELEGRAM_CAPTION_LIMIT}.` : ""),
-      { platform, limit, joined: single, allFit, posts },
+        (def.maxCharsWithMedia ? ` Items with images are limited to ${def.maxCharsWithMedia}.` : ""),
+      { platform: platformId, limit, joined: single, allFit, posts },
     );
   },
 );
@@ -635,7 +640,7 @@ tool(
   ({ id }) => {
     const { targets } = previewPost(requirePost(id));
     const summary = targets
-      .map((t) => `${t.label} (${PLATFORMS[t.platform].name}, limit ${t.limit}): ${t.items.map((i) => `${i.count}${i.fits ? "" : " OVER"}`).join(", ")}${t.problem ? ` — ${t.problem}` : " — ready"}`)
+      .map((t) => `${t.label} (${platformName(t.platform)}, limit ${t.limit}): ${t.items.map((i) => `${i.count}${i.fits ? "" : " OVER"}`).join(", ")}${t.problem ? ` — ${t.problem}` : " — ready"}`)
       .join("\n");
     return result(summary, { targets, ready: targets.every((t) => !t.problem) });
   },

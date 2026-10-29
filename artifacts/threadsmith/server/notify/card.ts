@@ -1,5 +1,4 @@
 // The texts the approval chats get: approval cards, alerts, the daily digest. Plain text, cut to each channel's limit.
-import { PLATFORMS } from "../../shared/platforms.ts";
 import type { Post } from "../../shared/types.ts";
 import { listAccounts } from "../accounts.ts";
 import { previewPost } from "../api.ts";
@@ -8,6 +7,7 @@ import { pauseState } from "../control.ts";
 import { publicUrl } from "../env.ts";
 import { refreshMetrics } from "../metrics.ts";
 import { operatorStatus, listRuns } from "../operator.ts";
+import { platformName } from "../plugins.ts";
 import { listAwaiting, listPosts } from "../repo.ts";
 
 export const postLink = (id: string) => `${publicUrl()}/?post=${id}`;
@@ -40,7 +40,7 @@ export function approvalCard(post: Post, max: number): string {
   const link = `Open / edit: ${postLink(post.id)}`;
   const blocks = previewPost(post).targets.map((t) => {
     const n = t.items.length;
-    const lines = [`→ ${t.label}${t.label.toLowerCase().includes(PLATFORMS[t.platform].name.toLowerCase()) ? "" : ` (${PLATFORMS[t.platform].name})`}${n > 1 ? ` · ${n} posts` : ""}`];
+    const lines = [`→ ${t.label}${t.label.toLowerCase().includes(platformName(t.platform).toLowerCase()) ? "" : ` (${platformName(t.platform)})`}${n > 1 ? ` · ${n} posts` : ""}`];
     t.items.forEach((it, i) => {
       const done = i < t.live ? " (already live)" : "";
       lines.push(`${n > 1 ? `[${i + 1}] ` : ""}${it.text.trim() || "(no text)"}${it.images ? ` [+${it.images} image${it.images > 1 ? "s" : ""}]` : ""}`);

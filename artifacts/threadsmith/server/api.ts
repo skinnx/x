@@ -3,13 +3,15 @@ import { readFile } from "node:fs/promises";
 import { createRoute, z } from "@hono/zod-openapi";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { countFor, itemsFor, PLATFORMS, TELEGRAM_CAPTION_LIMIT, type ThreadMode } from "../shared/platforms.ts";
+import { countWith } from "../shared/counting.ts";
 import { threadToText, weightedLength } from "../shared/thread.ts";
-import { APP_EVENT_TYPES, APPROVAL_STATES, PLATFORM_IDS, POST_STATUSES, type Health, type PlatformId, type Post, type PostSource, type PostStatus } from "../shared/types.ts";
+import { APP_EVENT_TYPES, APPROVAL_STATES, POST_STATUSES, type Health, type PlatformId, type Post, type PostSource, type PostStatus } from "../shared/types.ts";
 import { connectAccount, deleteAccount, getAccount, listAccounts, recheckAccount, updateAccount } from "./accounts.ts";
 import { aiStatus } from "./ai/provider.ts";
 import { buildQueue, configError, getConfig, nextFreeSlots, parseInstant, parseWhen } from "./config.ts";
 import { requireOwner } from "./actor.ts";
+import type { ThreadMode } from "./plugin-api.ts";
+import { hasPlatform, itemsFor, listPlatforms, listPlugins, platform, platformInfo, threadModeOf } from "./plugins.ts";
 import { pauseState } from "./control.ts";
 import { db } from "./db.ts";
 import { env, VERSION, xConfigured } from "./env.ts";
@@ -75,7 +77,10 @@ const SegmentSchema = z
   })
   .openapi("Segment", { description: "One post of a thread." });
 
-const PlatformIdSchema = z.enum(PLATFORM_IDS).openapi("PlatformId", { description: "A supported platform; GET /platforms lists their limits." });
+const PlatformIdSchema = z
+  .string()
+  .refine((id) => hasPlatform(id), { message: "unknown platform; GET /api/platforms lists the loaded ones" })
+  .openapi("PlatformId", { description: "A platform provided by a loaded plugin; GET /platforms lists them with their limits." });
 
 const MetricFields = {
   likes: z.number().int().optional(),
@@ -327,8 +332,21 @@ const PlatformInfoSchema = z
     id: PlatformIdSchema,
     name: z.string(),
     maxChars: z.number().int().openapi({ description: "Default per-post limit (an account's maxChars overrides it; X uses the config's maxChars)." }),
+    maxCharsWithMedia: z.number().int().optional().openapi({ description: "Lower limit for an item with images (Telegram photo captions)." }),
     maxImages: z.number().int(),
     imageTypes: z.array(z.string()).optional().openapi({ description: "Accepted image MIME types when the platform is pickier than PNG/JPEG/WebP/GIF." }),
+    maxImageBytes: z.number().int().optional(),
+    counting: z
+      .union([
+        z.object({ method: z.literal("x-weighted") }),
+        z.object({ method: z.literal("graphemes") }),
+        z.object({ method: z.literal("codepoints"), urlLength: z.number().int().optional(), emoji: z.literal("utf8-bytes").optional() }),
+      ])
+      .openapi("CountingRule", {
+        description:
+          "How the platform counts characters, as data. x-weighted: X's twitter-text rules (CJK, emoji and Vietnamese ạ ệ ố… count 2, URLs 23); " +
+          "graphemes: user-perceived characters; codepoints: Unicode code points, with every URL counted as urlLength and/or each emoji as its UTF-8 bytes.",
+      }),
     threadMode: z.enum(["replies", "single", "messages"]).openapi({
       description: "How a thread lands: replies = each post replies to the previous one; single = joined into one post with blank lines (LinkedIn); messages = consecutive messages (Telegram, Discord).",
     }),
@@ -344,8 +362,25 @@ const PlatformInfoSchema = z
       }),
     ),
     setup: z.string().openapi({ description: "Where to get the credentials." }),
+    metricsNote: z.string().optional(),
+    metricsPaid: z.boolean().optional().openapi({ description: "Metric reads are billed; fetched only with paid=true." }),
+    hasMetrics: z.boolean().openapi({ description: "Whether engagement numbers can be read (GET /posts/{id}/metrics)." }),
+    brand: z.object({ color: z.string(), iconPath: z.string().optional() }).optional(),
   })
-  .openapi("PlatformInfo");
+  .openapi("PlatformInfo", { description: "A platform, as its plugin declares it." });
+
+const PluginSchema = z
+  .object({
+    name: z.string(),
+    version: z.string(),
+    description: z.string().nullable(),
+    source: z.enum(["built-in", "data", "config"]),
+    platforms: z.array(z.string()),
+    channels: z.array(z.string()),
+    error: z.string().nullable().openapi({ description: "Why it isn't loaded; null when it is." }),
+    disabled: z.boolean(),
+  })
+  .openapi("Plugin");
 
 const PreviewSchema = z
   .object({
@@ -498,21 +533,21 @@ export function previewPost(post: Post): { targets: PreviewTarget[] } {
     targets: post.targets.map((t) => {
       const account = getAccount(t.accountId);
       const limit = limitFor(account);
-      const items = itemsFor(t.platform, t.thread ?? post.thread).map((s) => {
-        const count = countFor(t.platform, s.text);
-        const max = t.platform === "telegram" && s.mediaIds.length ? Math.min(limit, TELEGRAM_CAPTION_LIMIT) : limit;
-        const { maxImages, imageTypes } = PLATFORMS[t.platform];
+      const items = itemsFor({ threadMode: threadModeOf(t.platform) }, t.thread ?? post.thread).map((s) => {
+        const count = countWith(platform(t.platform).counting, s.text);
+        const { maxImages, imageTypes, maxCharsWithMedia } = platform(t.platform);
+        const max = s.mediaIds.length && maxCharsWithMedia ? Math.min(limit, maxCharsWithMedia) : limit;
         const typesOk = !imageTypes || s.mediaIds.every((id) => imageTypes.includes(getMedia(id)?.mime ?? imageTypes[0]!));
         const fits = count <= max && s.mediaIds.length <= maxImages && typesOk && Boolean(s.text.trim() || s.mediaIds.length);
         return { text: s.text, count, fits, images: s.mediaIds.length };
       });
-      const pending = itemsFor(t.platform, t.thread ?? post.thread).slice(t.externalIds.length);
+      const pending = itemsFor({ threadMode: threadModeOf(t.platform) }, t.thread ?? post.thread).slice(t.externalIds.length);
       return {
         accountId: account.id,
         platform: t.platform,
         label: account.label,
         limit,
-        threadMode: PLATFORMS[t.platform].threadMode,
+        threadMode: threadModeOf(t.platform),
         status: t.status,
         live: t.externalIds.length,
         items,
@@ -958,9 +993,24 @@ apiRoutes.openapi(
     description:
       "Per platform: default character limit, images per post, how a thread lands (threadMode), cost note (X's API is paid per post; the others are free), " +
       "the credential fields POST /accounts expects, and where to get them.",
-    responses: { 200: json(z.object({ platforms: z.array(PlatformInfoSchema) }), "Every supported platform.") },
+    responses: { 200: json(z.object({ platforms: z.array(PlatformInfoSchema) }), "Every platform the loaded plugins provide.") },
   }),
-  (c) => c.json({ platforms: Object.values(PLATFORMS) }, 200),
+  (c) => c.json({ platforms: listPlatforms().map(platformInfo) }, 200),
+);
+
+apiRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/plugins",
+    tags: ["Platforms"],
+    operationId: "listPlugins",
+    summary: "Loaded plugins",
+    description:
+      "Every platform and approval channel comes from a plugin (built-in ones in plugins/, more from <DATA_DIR>/plugins/ or threadsmith.config.json → plugins.load). " +
+      "Lists each with what it provides, or why it didn't load.",
+    responses: { 200: json(z.object({ plugins: z.array(PluginSchema) }), "Plugins in load order.") },
+  }),
+  (c) => c.json({ plugins: listPlugins().map(({ dir: _dir, ...p }) => p) }, 200),
 );
 
 apiRoutes.openapi(
