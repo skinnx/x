@@ -1,0 +1,17 @@
+# docker compose -f artifacts/threadsmith/docker-compose.yml up -d   (run from the repository root)
+services:
+  threadsmith:
+    build:
+      context: ../..
+      dockerfile: artifacts/threadsmith/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000" # put HTTPS (e.g. Caddy) in front before exposing it publicly
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - threadsmith-data:/data
+
+volumes:
+  threadsmith-data:
