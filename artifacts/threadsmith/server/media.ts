@@ -1,7 +1,9 @@
 // Image intake shared by REST and MCP: byte-sniffed type check, size cap, streaming download with a timeout.
 import path from "node:path";
 import type { Media } from "../shared/types.ts";
+import { publicUrl } from "./env.ts";
 import { BadInputError, createMedia, IMAGE_MIMES, MAX_IMAGE_BYTES } from "./repo.ts";
+import { sign, verifySignature } from "./secrets.ts";
 
 const FETCH_TIMEOUT_MS = 15_000;
 
@@ -60,4 +62,17 @@ export async function downloadImage(url: string): Promise<{ data: Uint8Array; ty
 export async function saveImageFromUrl(url: string, alt?: string | null): Promise<Media> {
   const img = await downloadImage(url);
   return saveImage({ data: img.data, declared: img.type, filename: img.filename, alt });
+}
+
+/**
+ * A link a platform's servers can fetch an image from (Threads takes images by URL), valid for `ttlSeconds` without
+ * AUTH_TOKEN. It is built on PUBLIC_URL, which must be reachable from the internet for this to work.
+ */
+export function signedMediaUrl(id: string, ttlSeconds = 3600): string {
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+  return `${publicUrl()}/media/${id}?exp=${exp}&sig=${sign(`${id}.${exp}`)}`;
+}
+
+export function validMediaSignature(id: string, exp: string | undefined, sig: string | undefined): boolean {
+  return Boolean(exp && sig && Number(exp) * 1000 > Date.now() && verifySignature(`${id}.${exp}`, sig));
 }

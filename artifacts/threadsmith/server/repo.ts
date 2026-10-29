@@ -4,7 +4,8 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { splitThread } from "../shared/thread.ts";
-import type { Media, Post, PostSource, PostStatus, Segment } from "../shared/types.ts";
+import { PLATFORMS } from "../shared/platforms.ts";
+import type { Media, PlatformId, Post, PostSource, PostStatus, PostTarget, Segment, TargetStatus } from "../shared/types.ts";
 import { db, tx } from "./db.ts";
 import { env } from "./env.ts";
 import { bus } from "./events.ts";
@@ -36,6 +37,36 @@ interface PostRow {
   updated_at: string;
 }
 
+interface TargetRow {
+  account_id: string;
+  platform: PlatformId;
+  thread: string | null;
+  status: TargetStatus;
+  external_ids: string;
+  url: string | null;
+  error: string | null;
+  published_at: string | null;
+}
+
+function targetsOf(postId: string): PostTarget[] {
+  const rows = db
+    .prepare(
+      `SELECT t.account_id, a.platform, t.thread, t.status, t.external_ids, t.url, t.error, t.published_at
+       FROM post_targets t JOIN accounts a ON a.id = t.account_id WHERE t.post_id = ? ORDER BY t.position`,
+    )
+    .all(postId) as unknown as TargetRow[];
+  return rows.map((r) => ({
+    accountId: r.account_id,
+    platform: r.platform,
+    thread: r.thread ? JSON.parse(r.thread) : null,
+    status: r.status,
+    externalIds: JSON.parse(r.external_ids),
+    url: r.url,
+    error: r.error,
+    publishedAt: r.published_at,
+  }));
+}
+
 function toPost(r: PostRow): Post {
   return {
     id: r.id,
@@ -47,6 +78,7 @@ function toPost(r: PostRow): Post {
     error: r.error,
     xPostIds: JSON.parse(r.x_post_ids),
     url: r.url,
+    targets: targetsOf(r.id),
     source: r.source,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -119,21 +151,31 @@ export function listPosts(filter: ListFilter = {}): Post[] {
   return (db.prepare(sql).all(...params) as unknown as PostRow[]).map(toPost);
 }
 
+export interface TargetInput {
+  accountId: string;
+  /** A version of the thread just for this account; null/absent = the post's own thread. */
+  thread?: SegmentInput[] | null;
+}
+
 export function createPost(input: {
   thread?: SegmentInput[];
   text?: string;
   title?: string | null;
   scheduledAt?: string | null;
+  targets?: TargetInput[];
   source: PostSource;
 }): Post {
   const id = newId();
   const ts = now();
   const scheduledAt = input.scheduledAt ? assertTime(input.scheduledAt) : null;
   const thread = normalizeThread(input);
-  db.prepare(
-    `INSERT INTO posts (id, title, status, thread, scheduled_at, source, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, input.title ?? null, scheduledAt ? "scheduled" : "draft", JSON.stringify(thread), scheduledAt, input.source, ts, ts);
+  tx(() => {
+    db.prepare(
+      `INSERT INTO posts (id, title, status, thread, scheduled_at, source, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, input.title ?? null, scheduledAt ? "scheduled" : "draft", JSON.stringify(thread), scheduledAt, input.source, ts, ts);
+    if (input.targets) writeTargets(id, input.targets, []);
+  });
   const post = requirePost(id);
   bus.emit({ type: "post.created", post });
   if (scheduledAt) bus.emit({ type: "post.scheduled", post });
@@ -143,30 +185,119 @@ export function createPost(input: {
 const EDITABLE: PostStatus[] = ["draft", "scheduled", "due", "failed"];
 
 /**
- * Autosave target. Editing a published or in-flight post is refused, and so is changing the posts of a
- * partly published thread that are already live on X (Retry resumes after them by position).
+ * Items of `before` that are already live somewhere can't change (Retry resumes after them by position): keep their
+ * ids and refuse edits, removals or reordering of that prefix.
  */
-export function updatePost(id: string, patch: { thread?: SegmentInput[]; text?: string; title?: string | null }): Post {
-  const post = requirePost(id);
-  if (!EDITABLE.includes(post.status)) throw new ConflictError(`Post is ${post.status} and can no longer be edited`);
-  const thread = patch.thread !== undefined || patch.text !== undefined ? normalizeThread(patch, post.thread) : post.thread;
-  const live = post.xPostIds.length;
-  for (let i = 0; i < live; i++) {
-    const before = post.thread[i]!;
-    const after = thread[i];
-    if (!after || after.text.trim() !== before.text.trim() || after.mediaIds.join() !== before.mediaIds.join()) {
+function lockLivePrefix(before: Segment[], after: Segment[], live: number, where: string): Segment[] {
+  for (let i = 0; i < live && i < before.length; i++) {
+    const b = before[i]!;
+    const a = after[i];
+    if (!a || a.text.trim() !== b.text.trim() || a.mediaIds.join() !== b.mediaIds.join()) {
       throw new ConflictError(
-        `The first ${live} post${live > 1 ? "s are" : " is"} already live on X and can't be changed, removed or reordered. ` +
+        `The first ${live} post${live > 1 ? "s are" : " is"} already live on ${where} and can't be changed, removed or reordered. ` +
           `Edit only the posts after ${live > 1 ? "them" : "it"}, then Retry.`,
       );
     }
-    thread[i] = { ...after, id: before.id };
+    after[i] = { ...a, id: b.id };
+  }
+  return after;
+}
+
+/** How many leading posts of the shared thread are live on some unfinished destination (legacy X or a target). */
+function sharedLive(post: Post): { live: number; where: string } {
+  let live = post.xPostIds.length;
+  let where = "X";
+  for (const t of post.targets) {
+    if (t.thread || t.status === "published" || PLATFORMS[t.platform].threadMode === "single") continue;
+    if (t.externalIds.length > live) {
+      live = t.externalIds.length;
+      where = PLATFORMS[t.platform].name;
+    }
+  }
+  return { live, where };
+}
+
+/**
+ * Autosave target. Editing a published or in-flight post is refused, and so is changing the posts of a
+ * partly published thread that are already live (Retry resumes after them by position).
+ */
+export function updatePost(
+  id: string,
+  patch: { thread?: SegmentInput[]; text?: string; title?: string | null; targets?: TargetInput[] },
+): Post {
+  const post = requirePost(id);
+  if (!EDITABLE.includes(post.status)) throw new ConflictError(`Post is ${post.status} and can no longer be edited`);
+  let thread = post.thread;
+  if (patch.thread !== undefined || patch.text !== undefined) {
+    const { live, where } = sharedLive(post);
+    thread = lockLivePrefix(post.thread, normalizeThread(patch, post.thread), live, where);
   }
   const title = patch.title !== undefined ? patch.title : post.title;
-  db.prepare("UPDATE posts SET thread = ?, title = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(thread), title, now(), id);
+  tx(() => {
+    db.prepare("UPDATE posts SET thread = ?, title = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(thread), title, now(), id);
+    if (patch.targets) writeTargets(id, patch.targets, post.targets);
+  });
   const updated = requirePost(id);
   bus.emit({ type: "post.updated", post: updated });
   return updated;
+}
+
+/**
+ * Replace a post's destinations. Existing targets keep their progress; a target with posts already live can't be
+ * dropped until it is published, and its own thread keeps its live prefix.
+ */
+function writeTargets(postId: string, targets: TargetInput[], existing: PostTarget[]): void {
+  const seen = new Set<string>();
+  for (const t of targets) {
+    if (seen.has(t.accountId)) throw new BadInputError(`Account ${t.accountId} is listed twice`);
+    seen.add(t.accountId);
+    if (!db.prepare("SELECT 1 FROM accounts WHERE id = ?").get(t.accountId)) {
+      throw new BadInputError(`Unknown account ${t.accountId}. List accounts with GET /api/accounts.`);
+    }
+  }
+  for (const old of existing) {
+    if (!seen.has(old.accountId) && old.externalIds.length && old.status !== "published") {
+      throw new ConflictError(`${PLATFORMS[old.platform].name} already has part of this thread live; it can't be removed until it's finished.`);
+    }
+  }
+  db.prepare("DELETE FROM post_targets WHERE post_id = ?").run(postId);
+  targets.forEach((t, position) => {
+    const old = existing.find((e) => e.accountId === t.accountId);
+    let thread: Segment[] | null = t.thread ? normalizeThread({ thread: t.thread }, old?.thread ?? []) : null;
+    if (old && old.status !== "published" && old.externalIds.length && PLATFORMS[old.platform].threadMode !== "single") {
+      const base = old.thread ?? null;
+      if (base) thread = lockLivePrefix(base, thread ?? [], old.externalIds.length, PLATFORMS[old.platform].name);
+    }
+    db.prepare(
+      `INSERT INTO post_targets (post_id, account_id, position, thread, status, external_ids, url, error, published_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      postId,
+      t.accountId,
+      position,
+      thread ? JSON.stringify(thread) : null,
+      old?.status ?? "pending",
+      JSON.stringify(old?.externalIds ?? []),
+      old?.url ?? null,
+      old?.error ?? null,
+      old?.publishedAt ?? null,
+    );
+  });
+}
+
+/** Progress of one destination, saved after every item so a failure or crash never re-posts it. */
+export function recordTargetProgress(postId: string, accountId: string, externalIds: string[]): void {
+  db.prepare("UPDATE post_targets SET external_ids = ? WHERE post_id = ? AND account_id = ?").run(JSON.stringify(externalIds), postId, accountId);
+}
+
+export function markTargetPublished(postId: string, accountId: string, result: { externalIds: string[]; url: string | null }): void {
+  db.prepare(
+    "UPDATE post_targets SET status = 'published', external_ids = ?, url = ?, error = NULL, published_at = ? WHERE post_id = ? AND account_id = ?",
+  ).run(JSON.stringify(result.externalIds), result.url, now(), postId, accountId);
+}
+
+export function markTargetFailed(postId: string, accountId: string, error: string): void {
+  db.prepare("UPDATE post_targets SET status = 'failed', error = ? WHERE post_id = ? AND account_id = ?").run(error, postId, accountId);
 }
 
 export function deletePost(id: string): void {

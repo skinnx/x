@@ -17,6 +17,37 @@ export interface Segment {
   mediaIds: string[];
 }
 
+export const PLATFORM_IDS = ["x", "bluesky", "mastodon", "threads", "linkedin", "telegram", "discord"] as const;
+export type PlatformId = (typeof PLATFORM_IDS)[number];
+
+/** A connected social account. Credentials never leave the server; `handle` is what the platform calls the account. */
+export interface Account {
+  id: string;
+  platform: PlatformId;
+  label: string;
+  handle: string | null;
+  profileUrl: string | null;
+  /** Per-account character limit override (e.g. X Premium 25000, a Mastodon instance's own limit). */
+  maxChars: number | null;
+  lastError: string | null;
+  verifiedAt: string | null;
+  createdAt: string;
+}
+
+export type TargetStatus = "pending" | "published" | "failed";
+
+/** One destination of a post. With `thread` null it publishes the post's own thread; otherwise its own version. */
+export interface PostTarget {
+  accountId: string;
+  platform: PlatformId;
+  thread: Segment[] | null;
+  status: TargetStatus;
+  externalIds: string[]; // items already posted on that platform, in order (resume after a partial failure)
+  url: string | null;
+  error: string | null;
+  publishedAt: string | null;
+}
+
 export interface Post {
   id: string;
   title: string | null;
@@ -27,6 +58,11 @@ export interface Post {
   error: string | null;
   xPostIds: string[]; // tweets already posted, in thread order (lets a failed thread resume)
   url: string | null; // link to the first tweet once published
+  /**
+   * Accounts this post goes to. Empty = the original single-X mode: X API keys from .env, or manual copy & post.
+   * With targets, each one publishes and resumes independently; the post's status summarises them.
+   */
+  targets: PostTarget[];
   source: PostSource;
   createdAt: string;
   updatedAt: string;

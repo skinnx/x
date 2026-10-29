@@ -1,0 +1,48 @@
+// The contract every platform adapter implements. Adapters only talk to their platform; validation, progress
+// tracking and status bookkeeping live in server/publisher.ts.
+import type { Account } from "../../shared/types.ts";
+
+export type Credentials = Record<string, string>;
+
+export interface PublishItem {
+  text: string;
+  mediaIds: string[];
+}
+
+export interface PublishContext {
+  account: Account;
+  credentials: Credentials;
+  /** What to post, already shaped for the platform (e.g. LinkedIn: one joined item). */
+  items: PublishItem[];
+  /** Platform ids of items already posted by an earlier attempt, in order: skip them and continue after the last. */
+  posted: string[];
+  /** Call after every successful item with all ids so far; it is saved at once so a crash never re-posts. */
+  record(ids: string[]): void;
+}
+
+export interface PublishResult {
+  ids: string[];
+  /** Public link to the first item. */
+  url: string | null;
+}
+
+/**
+ * Error with a message the user can act on. `resumable` = Retry can continue after the items already posted
+ * (false when, say, the post being replied to was deleted).
+ */
+export class PlatformError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+    readonly resumable = true,
+  ) {
+    super(message);
+  }
+}
+
+export interface PlatformAdapter {
+  /** Check the credentials with a cheap authenticated call; return who they belong to. Throw PlatformError if not. */
+  verify(credentials: Credentials): Promise<{ handle: string; profileUrl: string | null }>;
+  /** Post `items` in order (threading per the platform's threadMode), resuming after `posted`. */
+  publish(ctx: PublishContext): Promise<PublishResult>;
+}

@@ -69,6 +69,34 @@ const MIGRATIONS = [
     created_at TEXT NOT NULL
   );
   `,
+  `
+  CREATE TABLE accounts (
+    id TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,
+    label TEXT NOT NULL,
+    handle TEXT,
+    profile_url TEXT,
+    max_chars INTEGER,
+    credentials TEXT NOT NULL,
+    last_error TEXT,
+    verified_at TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE post_targets (
+    post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    thread TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    external_ids TEXT NOT NULL DEFAULT '[]',
+    url TEXT,
+    error TEXT,
+    published_at TEXT,
+    PRIMARY KEY (post_id, account_id)
+  );
+  CREATE INDEX post_targets_account ON post_targets(account_id);
+  `,
 ];
 
 const current = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;

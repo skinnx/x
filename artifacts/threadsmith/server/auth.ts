@@ -3,6 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
 import { env } from "./env.ts";
+import { validMediaSignature } from "./media.ts";
 
 export const AUTH_COOKIE = "threadsmith_token";
 
@@ -52,6 +53,9 @@ export const guardRequest: MiddlewareHandler = async (c, next) => {
 /** Accepts `Authorization: Bearer <token>`, the `threadsmith_token` cookie (img/EventSource), or `?token=`. */
 export const requireAuth: MiddlewareHandler = async (c, next) => {
   if (!env.authToken) return next();
+  // Signed, expiring image links (for platforms that fetch images by URL) work without the token.
+  const media = /^\/media\/([^/]+)$/.exec(c.req.path);
+  if (media && validMediaSignature(media[1]!, c.req.query("exp"), c.req.query("sig"))) return next();
   const header = c.req.header("authorization")?.replace(/^Bearer\s+/i, "");
   const supplied = header ?? getCookie(c, AUTH_COOKIE) ?? c.req.query("token");
   if (supplied && same(supplied, env.authToken)) return next();

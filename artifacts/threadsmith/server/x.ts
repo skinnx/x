@@ -150,6 +150,7 @@ async function xRequest<T extends { data: unknown }>(
   method: "GET" | "POST",
   path: string,
   opts: { query?: Record<string, string>; json?: unknown } = {},
+  creds: OAuthCredentials = credentials(),
 ): Promise<T> {
   const query = opts.query ? "?" + Object.entries(opts.query).map(([k, v]) => `${percentEncode(k)}=${percentEncode(v)}`).join("&") : "";
   const url = apiBase() + path + query;
@@ -158,7 +159,7 @@ async function xRequest<T extends { data: unknown }>(
     res = await fetch(url, {
       method,
       headers: {
-        authorization: oauthHeader(method, url, credentials()),
+        authorization: oauthHeader(method, url, creds),
         ...(opts.json === undefined ? {} : { "content-type": "application/json" }),
       },
       body: opts.json === undefined ? undefined : JSON.stringify(opts.json),
@@ -198,19 +199,25 @@ interface UploadData {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Upload one stored image (or reuse X's media id from an earlier attempt) and return the X media id. */
-async function uploadMedia(mediaId: string): Promise<string> {
+/**
+ * Upload one stored image (or reuse X's media id from an earlier attempt) and return the X media id. The cached id
+ * belongs to the .env account, so connected X accounts (`cache` false) always upload.
+ */
+async function uploadMedia(mediaId: string, creds: OAuthCredentials, cache: boolean): Promise<string> {
   const m = getMedia(mediaId);
   if (!m) throw new XApiError(`Image ${mediaId} no longer exists; remove it from the post and Retry.`);
-  if (m.xMediaId && m.xMediaExpiresAt && Date.parse(m.xMediaExpiresAt) > Date.now() + 10 * 60_000) return m.xMediaId;
+  if (cache && m.xMediaId && m.xMediaExpiresAt && Date.parse(m.xMediaExpiresAt) > Date.now() + 10 * 60_000) return m.xMediaId;
 
-  let { data } = await xRequest<{ data: UploadData }>("POST", "/2/media/upload", {
-    json: { media: readMediaBytes(mediaId).toString("base64"), media_category: "tweet_image" },
-  });
+  let { data } = await xRequest<{ data: UploadData }>(
+    "POST",
+    "/2/media/upload",
+    { json: { media: readMediaBytes(mediaId).toString("base64"), media_category: "tweet_image" } },
+    creds,
+  );
   for (let polls = 0; data.processing_info && ["pending", "in_progress"].includes(data.processing_info.state); polls++) {
     if (polls >= 30) throw new XApiError(`X is still processing ${m.filename}; Retry in a minute.`);
     await sleep((data.processing_info.check_after_secs ?? 2) * 1000);
-    ({ data } = await xRequest<{ data: UploadData }>("GET", "/2/media/upload", { query: { command: "STATUS", media_id: data.id } }));
+    ({ data } = await xRequest<{ data: UploadData }>("GET", "/2/media/upload", { query: { command: "STATUS", media_id: data.id } }, creds));
   }
   if (data.processing_info?.state === "failed") {
     throw new XApiError(`X couldn't process ${m.filename}: ${data.processing_info.error?.message ?? "unknown error"}. Try another image.`);
@@ -219,13 +226,13 @@ async function uploadMedia(mediaId: string): Promise<string> {
   let altSet = true;
   if (m.alt?.trim()) {
     try {
-      await xRequest("POST", "/2/media/metadata", { json: { id: data.id, metadata: { alt_text: { text: m.alt.slice(0, 1000) } } } });
+      await xRequest("POST", "/2/media/metadata", { json: { id: data.id, metadata: { alt_text: { text: m.alt.slice(0, 1000) } } } }, creds);
     } catch (err) {
       altSet = false;
       console.warn(`[x] alt text for ${m.filename} not set (posting without it): ${(err as Error).message}`);
     }
   }
-  if (altSet) setXMediaId(mediaId, data.id, new Date(Date.now() + (data.expires_after_secs ?? 86_400) * 1000).toISOString());
+  if (altSet && cache) setXMediaId(mediaId, data.id, new Date(Date.now() + (data.expires_after_secs ?? 86_400) * 1000).toISOString());
   return data.id;
 }
 
@@ -233,11 +240,37 @@ async function uploadMedia(mediaId: string): Promise<string> {
 
 /** Post the thread in order, each tweet replying to the previous one. Resumes after `post.xPostIds`. */
 export async function publishToX(post: Post): Promise<{ xPostIds: string[]; url: string }> {
-  const ids = [...post.xPostIds];
-  const total = post.thread.length;
+  const { ids, url } = await publishThreadToX({
+    creds: credentials(),
+    items: post.thread,
+    posted: post.xPostIds,
+    record: (ids) => recordPostedTweets(post.id, ids),
+    maxChars: getConfig().maxChars,
+    cacheMedia: true,
+  });
+  return { xPostIds: ids, url };
+}
+
+/** Who the credentials belong to (GET /2/users/me; billed as one owned read, about $0.001). */
+export async function verifyX(creds: OAuthCredentials): Promise<{ handle: string; profileUrl: string }> {
+  const { data } = await xRequest<{ data: { username: string } }>("GET", "/2/users/me", {}, creds);
+  return { handle: `@${data.username}`, profileUrl: `https://x.com/${data.username}` };
+}
+
+export async function publishThreadToX(opts: {
+  creds: OAuthCredentials;
+  items: { text: string; mediaIds: string[] }[];
+  posted: string[];
+  record: (ids: string[]) => void;
+  maxChars: number;
+  cacheMedia: boolean;
+}): Promise<{ ids: string[]; url: string }> {
+  const { creds } = opts;
+  const ids = [...opts.posted];
+  const total = opts.items.length;
   try {
-    const pending = post.thread.slice(ids.length);
-    const { maxChars } = getConfig();
+    const pending = opts.items.slice(ids.length);
+    const { maxChars } = opts;
     pending.forEach((s, i) => {
       const n = ids.length + i + 1;
       const length = weightedLength(s.text);
@@ -249,20 +282,25 @@ export async function publishToX(post: Post): Promise<{ xPostIds: string[]; url:
     const media: string[][] = [];
     for (const s of pending) {
       const xIds: string[] = [];
-      for (const id of s.mediaIds) xIds.push(await uploadMedia(id));
+      for (const id of s.mediaIds) xIds.push(await uploadMedia(id, creds, opts.cacheMedia));
       media.push(xIds);
     }
     for (const [i, s] of pending.entries()) {
       const replyTo = ids.at(-1);
-      const { data } = await xRequest<{ data: { id: string } }>("POST", "/2/tweets", {
-        json: {
-          ...(s.text.trim() ? { text: s.text } : {}),
-          ...(replyTo ? { reply: { in_reply_to_tweet_id: replyTo } } : {}),
-          ...(media[i]!.length ? { media: { media_ids: media[i] } } : {}),
+      const { data } = await xRequest<{ data: { id: string } }>(
+        "POST",
+        "/2/tweets",
+        {
+          json: {
+            ...(s.text.trim() ? { text: s.text } : {}),
+            ...(replyTo ? { reply: { in_reply_to_tweet_id: replyTo } } : {}),
+            ...(media[i]!.length ? { media: { media_ids: media[i] } } : {}),
+          },
         },
-      });
+        creds,
+      );
       ids.push(data.id);
-      recordPostedTweets(post.id, ids);
+      opts.record(ids);
     }
   } catch (err) {
     const resumable = !(err instanceof XApiError) || err.resumable;
@@ -273,5 +311,5 @@ export async function publishToX(post: Post): Promise<{ xPostIds: string[]; url:
         : `${ids.length} of ${total} posts are live on X.`;
     throw new XApiError(`${(err as Error).message} ${progress}`, err instanceof XApiError ? err.status : undefined, resumable);
   }
-  return { xPostIds: ids, url: `https://x.com/i/status/${ids[0]}` };
+  return { ids, url: `https://x.com/i/status/${ids[0]}` };
 }
