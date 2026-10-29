@@ -1,6 +1,6 @@
 // Left rail: navigation (Inbox first, with waiting approvals), drafts list (title = first line), live status of publishing / operator.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarClock, Command, Inbox, PenLine, Plug, Plus, Trash2 } from "lucide-react";
+import { CalendarClock, Command, Inbox, PenLine, Plug, Plus, Puzzle, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { Health, Post } from "../../../shared/types.ts";
 import { api } from "../api.ts";
@@ -63,6 +63,7 @@ export function Sidebar(p: Props) {
     { view: "compose", label: "Write", icon: PenLine, to: "/write" },
     { view: "queue", label: "Queue", icon: CalendarClock, to: "/queue", badge: attention?.length, badgeTitle: "Due or failed posts" },
     { view: "connect", label: "Agents", icon: Plug, to: "/connect" },
+    { view: "plugins", label: "Plugins", icon: Puzzle, to: "/plugins" },
   ];
 
   return (

@@ -1,5 +1,5 @@
 // Typed client for the Threadsmith REST API (same origin). Auth token lives in localStorage + a cookie for <img>/SSE.
-import type { PlatformInfo, ThreadMode } from "../../server/plugin-api.ts";
+import type { PlatformInfo, SettingField, ThreadMode } from "../../server/plugin-api.ts";
 import type {
   Account,
   AppEventType,
@@ -17,7 +17,7 @@ import type {
   Segment,
 } from "../../shared/types.ts";
 
-export type { CredentialField, ThreadMode } from "../../server/plugin-api.ts";
+export type { CredentialField, SettingField, ThreadMode } from "../../server/plugin-api.ts";
 /** A platform as GET /api/platforms serves it (declared by its plugin). */
 export type Platform = PlatformInfo & { hasMetrics: boolean };
 /** A plugin as GET /api/plugins lists it. */
@@ -25,12 +25,50 @@ export interface PluginInfo {
   name: string;
   version: string;
   description: string | null;
-  source: "built-in" | "data" | "config";
+  /** built-in: plugins/ · data: <DATA_DIR>/plugins/ · config: plugins.load · installed: from the UI or API. */
+  source: "built-in" | "data" | "config" | "installed";
   platforms: string[];
   channels: string[];
   /** Why it isn't loaded; null when it is. */
   error: string | null;
   disabled: boolean;
+  /** Switched off in threadsmith.config.json (plugins.disable); the UI can't switch it on. */
+  disabledByConfig: boolean;
+  /** A newer version is installed; it runs after a restart. */
+  restartRequired: boolean;
+  /** What it was installed from (installed plugins only). */
+  spec: string | null;
+  /** It declares settings (GET /plugins/settings). */
+  hasSettings: boolean;
+  /** Required settings with no value yet. */
+  settingsMissing: string[];
+}
+export type SettingValue = string | number | boolean | null;
+export type SettingSource = "saved" | "config" | "env" | "default" | "unset";
+export interface PluginSettings {
+  name: string;
+  fields: SettingField[];
+  /** Non-secret values only. */
+  values: Record<string, SettingValue>;
+  sources: Record<string, SettingSource>;
+  missing: string[];
+}
+export interface PluginsState {
+  plugins: PluginInfo[];
+  apiVersion: number;
+  /** npm is available, so plugins can be installed from here. */
+  canInstall: boolean;
+  restartRequired: boolean;
+}
+export interface CatalogPackage {
+  name: string;
+  version: string;
+  description: string | null;
+  date: string | null;
+  publisher: string | null;
+  npmUrl: string;
+  repositoryUrl: string | null;
+  installed: boolean;
 }
 
 const TOKEN_KEY = "threadsmith_token";
@@ -194,7 +232,20 @@ export const api = {
   preview: (id: string) => call<{ targets: PreviewTarget[] }>("GET", `/api/posts/${id}/preview`).then((r) => r.targets),
 
   platforms: () => call<{ platforms: Platform[] }>("GET", "/api/platforms").then((r) => r.platforms),
-  plugins: () => call<{ plugins: PluginInfo[] }>("GET", "/api/plugins").then((r) => r.plugins),
+  plugins: () => call<PluginsState>("GET", "/api/plugins"),
+  pluginCatalog: (query = "") => call<{ keyword: string; packages: CatalogPackage[] }>("GET", `/api/plugins/catalog${q({ q: query.trim() })}`),
+  installPlugin: (spec: string) => call<PluginsState & { plugin: PluginInfo }>("POST", "/api/plugins/install", { body: { spec } }),
+  installPluginFile: (file: File) => {
+    const form = new FormData();
+    form.set("file", file);
+    return call<PluginsState & { plugin: PluginInfo }>("POST", "/api/plugins/install-file", { body: form });
+  },
+  pluginAction: (action: "enable" | "disable" | "update" | "uninstall", name: string) =>
+    call<PluginsState>("POST", `/api/plugins/${action}`, { body: { name } }),
+  pluginSettings: (name: string) => call<PluginSettings>("GET", `/api/plugins/settings${q({ name })}`),
+  savePluginSettings: (name: string, values: Record<string, SettingValue>) =>
+    call<PluginSettings & { plugin: PluginInfo }>("POST", "/api/plugins/settings", { body: { name, values } }),
+  restart: () => call<{ restarting: true }>("POST", "/api/system/restart"),
   accounts: () => call<{ accounts: Account[] }>("GET", "/api/accounts").then((r) => r.accounts),
   connectAccount: (body: { platform: PlatformId; credentials: Record<string, string>; label?: string; maxChars?: number }) =>
     call<Account>("POST", "/api/accounts", { body }),

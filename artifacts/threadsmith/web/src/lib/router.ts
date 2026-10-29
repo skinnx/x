@@ -1,9 +1,9 @@
 // Tiny history-based router plus query params (?post, ?slot, ?copy, ?tab):
-//   /  (or /inbox) the Inbox · /write the composer · /queue · /connect.
+//   /  (or /inbox) the Inbox · /write the composer · /queue · /connect · /plugins.
 // Links from chats, push and older versions open posts as /?post=<id>: "/" with ?post or ?slot is the composer.
 import { useMemo, useSyncExternalStore } from "react";
 
-export type View = "inbox" | "compose" | "queue" | "connect";
+export type View = "inbox" | "compose" | "queue" | "connect" | "plugins";
 
 const EVENT = "threadsmith:navigate";
 
@@ -35,6 +35,8 @@ export function useRoute(): { view: View; params: URLSearchParams } {
       ? "queue"
       : p.startsWith("/connect")
         ? "connect"
+        : p.startsWith("/plugins")
+          ? "plugins"
         : p.startsWith("/write") || url.searchParams.has("post") || url.searchParams.has("slot")
           ? "compose"
           : "inbox";

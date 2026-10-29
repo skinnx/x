@@ -1,12 +1,13 @@
 // App shell: auth gate, sidebar + view routing, command palette, live events, global shortcuts.
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Bell, CalendarClock, CircleCheck, CirclePause, FileText, Inbox, Menu, PenLine, Plug, Plus, Search, Settings2 } from "lucide-react";
+import { BookOpen, Bell, CalendarClock, CircleCheck, CirclePause, FileText, Inbox, Menu, PenLine, Plug, Plus, Puzzle, Search, Settings2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Health } from "../../shared/types.ts";
 import { api, ApiError, auth } from "./api.ts";
 import { Composer } from "./composer/Composer.tsx";
 import { ConnectView } from "./connect/ConnectView.tsx";
 import { InboxView } from "./inbox/InboxView.tsx";
+import { PluginsView } from "./plugins/PluginsView.tsx";
 import { useReminders } from "./connect/Reminders.tsx";
 import { Palette } from "./components/Palette.tsx";
 import { Logo, Sidebar } from "./components/Sidebar.tsx";
@@ -77,7 +78,7 @@ export function App() {
   );
 }
 
-const TITLES = { inbox: "Inbox", compose: "Write", queue: "Queue", connect: "Agents" } as const;
+const TITLES = { inbox: "Inbox", compose: "Write", queue: "Queue", connect: "Agents", plugins: "Plugins" } as const;
 
 /** A broken edit of threadsmith.config.json: the server keeps the last good config, so this is a notice, not an outage. */
 function ConfigProblem() {
@@ -138,6 +139,7 @@ function Shell({ health }: { health: Health }) {
       },
       { id: "go-published", group: "Go", title: "Published posts", icon: CircleCheck, run: () => navigate("/queue?tab=published") },
       { id: "connect", group: "Agents", title: "Connect agents (MCP, API, CLI)", icon: Plug, keywords: "mcp claude settings webhooks", run: () => navigate("/connect") },
+      { id: "plugins", group: "Agents", title: "Plugins (platforms & approval chats)", icon: Puzzle, keywords: "install extensions npm", run: () => navigate("/plugins") },
       { id: "docs", group: "Agents", title: "Open API reference", icon: BookOpen, keywords: "openapi rest docs", run: () => open("/docs", "_blank") },
       { id: "pause", group: "Control", title: "Pause or resume publishing", icon: CirclePause, keywords: "kill switch stop", run: () => navigate("/") },
       { id: "reminders", group: "Settings", title: "Enable reminders", icon: Bell, keywords: "notifications push", run: () => enable.mutate() },
@@ -196,6 +198,7 @@ function Shell({ health }: { health: Health }) {
         )}
         {view === "queue" && <QueueView health={health} tab={params.get("tab") === "published" ? "published" : "upcoming"} reminders={reminders} />}
         {view === "connect" && <ConnectView health={health} />}
+        {view === "plugins" && <PluginsView />}
       </main>
 
       <Palette open={paletteOpen} onClose={closePalette} />
