@@ -345,9 +345,10 @@ export async function addInstalled(dir: string): Promise<PluginRecord> {
     if (existing.record.source !== "installed") throw new ConflictError(`A ${existing.record.source} plugin named ${name} already exists.`);
     // Same plugin, new version: the running process keeps the old module until it restarts.
     const manifest = readManifest(dir);
+    const changed = manifest.version !== existing.record.version;
     existing.record.version = manifest.version;
     existing.record.settingsFields = manifest.threadsmith.settings;
-    existing.record.restartRequired = Boolean(existing.factory);
+    existing.record.restartRequired ||= changed && Boolean(existing.factory);
     return { ...existing.record };
   }
   return { ...(await add(dir, "installed")).record };

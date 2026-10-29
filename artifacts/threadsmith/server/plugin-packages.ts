@@ -66,7 +66,13 @@ function npm(args: string[]): Promise<void> {
               .filter((l) => l && !/complete log of this run|^A complete log/.test(l))
               .slice(0, 3)
               .join(" ");
-            reject(new ConflictError(`npm ${args[0]} failed: ${/\b404\b/.test(tail) ? "no such package on the registry. " : ""}${tail || err.message}`));
+            reject(
+              new ConflictError(
+                /\bE404\b|404 Not Found/.test(tail)
+                  ? `There is no package "${args.at(-1)}" on the npm registry. Check the name (and version).`
+                  : `npm ${args[0]} failed: ${tail || err.message}`,
+              ),
+            );
           },
         );
       }),
