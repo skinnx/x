@@ -1,16 +1,15 @@
 // Connected accounts: list (handle, problems, re-check, character limit, remove) and the connect flow, whose form
-// is generated from the platform's credential fields in shared/platforms.ts.
+// is generated from the credential fields each platform plugin declares (GET /api/platforms).
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CircleAlert, ExternalLink, LoaderCircle, Plus, RefreshCw, Trash2, Users } from "lucide-react";
 import { useState } from "react";
-import { PLATFORMS } from "../../../shared/platforms.ts";
-import { PLATFORM_IDS, type Account, type Health, type PlatformId, type Post } from "../../../shared/types.ts";
-import { api, ApiError } from "../api.ts";
+import type { Account, Health, Post } from "../../../shared/types.ts";
+import { api, ApiError, type Platform } from "../api.ts";
 import { Card } from "../components/Card.tsx";
 import { Dialog } from "../components/Dialog.tsx";
 import { Popover } from "../components/Popover.tsx";
 import { toast, toastError } from "../components/Toasts.tsx";
-import { limitFor, PlatformIcon, useAccounts } from "../lib/platforms.tsx";
+import { limitFor, PlatformIcon, useAccounts, usePlatformList, usePlatforms } from "../lib/platforms.tsx";
 import { navigate, openPost } from "../lib/router.ts";
 import { timeAgo } from "../lib/time.ts";
 import { cx } from "../lib/util.ts";
@@ -20,6 +19,7 @@ const smallBtn = "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-m
 
 export function Accounts({ health }: { health: Health }) {
   const { data: accounts, isPending } = useAccounts();
+  const platforms = usePlatforms();
   const [connecting, setConnecting] = useState(false);
   return (
     <Card
@@ -45,7 +45,9 @@ export function Accounts({ health }: { health: Health }) {
           ))}
         </ul>
       ) : (
-        <p className="text-ink-3">No accounts yet. Connect X, Bluesky, Mastodon, Threads, LinkedIn, Telegram or Discord.</p>
+        <p className="text-ink-3">
+          No accounts yet.{platforms.list.length > 0 && ` Connect ${platforms.list.map((p) => p.name).join(", ").replace(/, ([^,]*)$/, " or $1")}.`}
+        </p>
       )}
       {connecting && <ConnectDialog health={health} onClose={() => setConnecting(false)} />}
     </Card>
@@ -100,7 +102,7 @@ function AccountRow({ account: a, health }: { account: Account; health: Health }
       });
     },
   });
-  const info = PLATFORMS[a.platform];
+  const platforms = usePlatforms();
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5">
       <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-subtle text-ink">
@@ -119,7 +121,7 @@ function AccountRow({ account: a, health }: { account: Account; health: Health }
             ))}
         </p>
         <p className="text-xs text-ink-3">
-          {info.name} · <LimitEditor account={a} health={health} />
+          {platforms.name(a.platform)} · <LimitEditor account={a} health={health} />
           {a.verifiedAt && ` · checked ${timeAgo(a.verifiedAt)}`}
         </p>
         {a.lastError && (
@@ -151,7 +153,8 @@ function LimitEditor({ account: a, health }: { account: Account; health: Health 
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState(a.maxChars ? String(a.maxChars) : "");
-  const fallback = a.platform === "x" ? health.maxChars : PLATFORMS[a.platform].maxChars;
+  const platforms = usePlatforms();
+  const fallback = a.platform === "x" ? health.maxChars : (platforms.get(a.platform)?.maxChars ?? health.maxChars);
   const save = useMutation({
     mutationFn: (maxChars: number | null) => api.updateAccount(a.id, { maxChars }),
     onSuccess: () => {
@@ -163,7 +166,7 @@ function LimitEditor({ account: a, health }: { account: Account; health: Health 
   return (
     <span className="relative">
       <button onClick={() => setOpen(!open)} className="underline decoration-dotted underline-offset-2 hover:text-ink" title="Change the character limit">
-        {limitFor(a, health)} characters{a.maxChars ? " (custom)" : ""}
+        {limitFor(a, health, platforms)} characters{a.maxChars ? " (custom)" : ""}
       </button>
       <Popover open={open} onClose={() => setOpen(false)} className="top-full left-0 mt-1 w-64">
         <form
@@ -177,7 +180,7 @@ function LimitEditor({ account: a, health }: { account: Account; health: Health 
             Character limit
             <input autoFocus type="number" min={1} value={value} onChange={(e) => setValue(e.target.value)} placeholder={String(fallback)} className={cx(field, "mt-1")} />
           </label>
-          <p className="text-xs text-ink-3">Leave empty for {PLATFORMS[a.platform].name}'s default ({fallback}).{a.platform === "x" && " X Premium allows 25000."}</p>
+          <p className="text-xs text-ink-3">Leave empty for {platforms.name(a.platform)}'s default ({fallback}).{a.platform === "x" && " X Premium allows 25000."}</p>
           <button type="submit" disabled={save.isPending} className="flex h-8 w-full items-center justify-center gap-1.5 rounded-lg bg-ink text-sm font-medium text-canvas">
             {save.isPending && <LoaderCircle size={13} className="animate-spin" />} Save
           </button>
@@ -188,23 +191,34 @@ function LimitEditor({ account: a, health }: { account: Account; health: Health 
 }
 
 function ConnectDialog({ health, onClose }: { health: Health; onClose: () => void }) {
-  const [platform, setPlatform] = useState<PlatformId | null>(null);
+  const { data: list, isPending, error } = usePlatformList();
+  const [platform, setPlatform] = useState<Platform | null>(null);
   return (
-    <Dialog title={platform ? `Connect ${PLATFORMS[platform].name}` : "Connect an account"} onClose={onClose}>
+    <Dialog title={platform ? `Connect ${platform.name}` : "Connect an account"} onClose={onClose}>
       {platform ? (
-        <ConnectForm key={platform} platform={platform} health={health} onBack={() => setPlatform(null)} onDone={onClose} />
+        <ConnectForm key={platform.id} info={platform} health={health} onBack={() => setPlatform(null)} onDone={onClose} />
+      ) : isPending ? (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i} className="h-[86px] animate-pulse rounded-xl bg-subtle" />
+          ))}
+        </div>
+      ) : error ? (
+        <p className="text-sm text-red-600">{error.message}</p>
+      ) : !list.length ? (
+        <p className="text-sm text-ink-3">No platform plugins are loaded. See the Plugins card.</p>
       ) : (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {PLATFORM_IDS.map((id) => (
+          {list.map((p) => (
             <button
-              key={id}
-              onClick={() => setPlatform(id)}
+              key={p.id}
+              onClick={() => setPlatform(p)}
               className="flex flex-col items-start gap-2 rounded-xl border border-line bg-canvas p-3 text-left hover:border-line-strong"
             >
-              <PlatformIcon platform={id} size={18} />
+              <PlatformIcon platform={p.id} size={18} />
               <span>
-                <span className="block text-sm font-medium">{PLATFORMS[id].name}</span>
-                <span className="block text-xs text-ink-3">{PLATFORMS[id].costNote.startsWith("Free") ? "Free" : "Paid API"}</span>
+                <span className="block text-sm font-medium">{p.name}</span>
+                <span className="block text-xs text-ink-3">{p.costNote.startsWith("Free") ? "Free" : "Paid API"}</span>
               </span>
             </button>
           ))}
@@ -214,9 +228,9 @@ function ConnectDialog({ health, onClose }: { health: Health; onClose: () => voi
   );
 }
 
-function ConnectForm({ platform, health, onBack, onDone }: { platform: PlatformId; health: Health; onBack: () => void; onDone: () => void }) {
+function ConnectForm({ info, health, onBack, onDone }: { info: Platform; health: Health; onBack: () => void; onDone: () => void }) {
   const qc = useQueryClient();
-  const info = PLATFORMS[platform];
+  const platform = info.id;
   const [values, setValues] = useState<Record<string, string>>({});
   const [label, setLabel] = useState("");
   const [maxChars, setMaxChars] = useState("");

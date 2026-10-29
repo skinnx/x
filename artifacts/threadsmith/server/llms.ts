@@ -45,7 +45,8 @@ Destinations: a post's \`targets\` are connected accounts (\`GET /api/accounts\`
 - [CLI](${base}/llms-full.txt): zero-dependency Node script \`cli/threadsmith.mjs\` (\`threadsmith new "text" --at next\`, \`threadsmith queue\`, \`--json\` everywhere); set THREADSMITH_URL and THREADSMITH_TOKEN
 - [Health](${base}/api/health): version, X mode (api or manual), whether publishing is paused, timezone and limit
 - [Approvals](${base}/api/approvals): what waits for the person or was sent back with changes; [control](${base}/api/control): approval policy, pause, chats, operator
-- [Accounts](${base}/api/accounts) and [platforms](${base}/api/platforms): where posts can go, each platform's limits, counting and cost
+- [Accounts](${base}/api/accounts) and [platforms](${base}/api/platforms): where posts can go, each platform's limits, counting rule (as data) and cost
+- [Plugins](${base}/api/plugins): every platform and approval chat is a plugin; this lists what is loaded (and why a plugin failed)
 
 ## Events
 - [Webhooks](${base}/openapi.json): \`POST /api/webhooks {url, events?}\`; deliveries are signed with \`X-Threadsmith-Signature: sha256=<HMAC-SHA256 of the raw body>\`

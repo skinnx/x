@@ -1,15 +1,15 @@
 // Per-destination status of a post: a detailed list (status banner, queue) and a compact icon strip (queue rows).
 import { CircleAlert, CircleCheck, Clock, ExternalLink, LoaderCircle } from "lucide-react";
-import { PLATFORMS } from "../../../shared/platforms.ts";
 import type { Post, PostTarget } from "../../../shared/types.ts";
-import { PlatformIcon, removedLabel, useAccounts } from "../lib/platforms.tsx";
+import { PlatformIcon, removedLabel, useAccounts, usePlatforms } from "../lib/platforms.tsx";
 import { cx } from "../lib/util.ts";
 
 function useLabels() {
   const { data: accounts } = useAccounts();
+  const platforms = usePlatforms();
   // An account removed after the post went out is no longer listed; the post keeps pointing at it.
   return (t: PostTarget) =>
-    accounts?.find((a) => a.id === t.accountId)?.label ?? (accounts ? removedLabel(t.platform) : PLATFORMS[t.platform].name);
+    accounts?.find((a) => a.id === t.accountId)?.label ?? (accounts ? removedLabel(platforms, t.platform) : platforms.name(t.platform));
 }
 
 function StateIcon({ t, publishing }: { t: PostTarget; publishing: boolean }) {
@@ -22,6 +22,7 @@ function StateIcon({ t, publishing }: { t: PostTarget; publishing: boolean }) {
 /** One row per destination: platform, account, state, link when live, the platform's reason when it failed. */
 export function TargetList({ post, only, className }: { post: Post; only?: PostTarget["status"][]; className?: string }) {
   const label = useLabels();
+  const platforms = usePlatforms();
   const publishing = post.status === "publishing";
   const list = post.targets.filter((t) => !only || only.includes(t.status));
   if (!list.length) return null;
@@ -39,7 +40,7 @@ export function TargetList({ post, only, className }: { post: Post; only?: PostT
               {t.status === "published" ? (
                 t.url ? (
                   <a href={t.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs underline-offset-2 opacity-80 hover:underline">
-                    View on {PLATFORMS[t.platform].name} <ExternalLink size={11} />
+                    View on {platforms.name(t.platform)} <ExternalLink size={11} />
                   </a>
                 ) : (
                   <span className="text-xs opacity-70">Published</span>

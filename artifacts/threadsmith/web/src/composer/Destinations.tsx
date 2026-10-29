@@ -1,11 +1,10 @@
 // Where this post goes: connected-account chips, then tabs for the shared thread and per-account versions.
 import { Check, CircleAlert, GitFork, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
-import { PLATFORMS } from "../../../shared/platforms.ts";
 import type { Account, Health, Post, Segment } from "../../../shared/types.ts";
 import { Popover } from "../components/Popover.tsx";
 import { navigate } from "../lib/router.ts";
-import { PlatformIcon, removedLabel } from "../lib/platforms.tsx";
+import { PlatformIcon, removedLabel, usePlatforms } from "../lib/platforms.tsx";
 import { cx } from "../lib/util.ts";
 import type { DraftTarget } from "./useDraft.ts";
 
@@ -68,6 +67,7 @@ function useOverflowCue() {
 }
 
 export function Destinations(p: Props) {
+  const platforms = usePlatforms();
   const [menu, setMenu] = useState(false);
   const selected = p.targets.map((t) => p.accounts.find((a) => a.id === t.accountId)).filter((a): a is Account => Boolean(a));
   const progress = (id: string) => p.post?.targets.find((t) => t.accountId === id);
@@ -116,7 +116,7 @@ export function Destinations(p: Props) {
               onClick={() => p.onToggle(a)}
               title={
                 pinned
-                  ? `Part of this thread is live on ${PLATFORMS[a.platform].name}; it stays a destination until it's finished`
+                  ? `Part of this thread is live on ${platforms.name(a.platform)}; it stays a destination until it's finished`
                   : a.lastError
                     ? `${a.label}: ${a.lastError}`
                     : `${on ? "Don't post" : "Post"} to ${a.label}${a.handle ? ` (${a.handle})` : ""}`
@@ -142,7 +142,7 @@ export function Destinations(p: Props) {
               className="flex h-7 max-w-[16rem] items-center gap-1.5 rounded-full border border-line pr-2.5 pl-2 text-xs text-ink-3"
             >
               <PlatformIcon platform={platform} size={12} tint={false} className="opacity-60" />
-              <span className="truncate">{removedLabel(platform)}</span>
+              <span className="truncate">{removedLabel(platforms, platform)}</span>
             </span>
           );
         })}
@@ -179,7 +179,7 @@ export function Destinations(p: Props) {
               const a = p.accounts.find((x) => x.id === t.accountId);
               const platform = a?.platform ?? platformOf(t.accountId);
               if (!platform) return null;
-              const name = a?.label ?? removedLabel(platform);
+              const name = a?.label ?? removedLabel(platforms, platform);
               const on = p.version === t.accountId;
               return (
                 <button
@@ -235,7 +235,7 @@ export function Destinations(p: Props) {
 
       {activeTarget?.snapshot && (
         <p className="text-xs text-ink-3">
-          What was posted to <span className="font-medium text-ink-2">{active?.label ?? removedLabel(activeProgress?.platform ?? "x")}</span>; the shared
+          What was posted to <span className="font-medium text-ink-2">{active?.label ?? removedLabel(platforms, activeProgress?.platform ?? "x")}</span>; the shared
           thread was edited after it went out.
         </p>
       )}
@@ -243,7 +243,7 @@ export function Destinations(p: Props) {
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-3">
           <span>
             Only <span className="font-medium text-ink-2">{active.label}</span> gets this version; edits to Shared don't reach it.
-            {PLATFORMS[active.platform].threadMode === "single" && " Posts are joined into one."}
+            {platforms.threadMode(active.platform) === "single" && " Posts are joined into one."}
           </span>
           {!p.readOnly && activeProgress?.status !== "published" && (
             <span className="flex items-center gap-1">

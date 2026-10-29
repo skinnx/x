@@ -16,7 +16,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { PLATFORMS } from "../../../shared/platforms.ts";
 import { joinThread, splitThread, weightedLength } from "../../../shared/thread.ts";
 import type { Account, Health, Post, Segment } from "../../../shared/types.ts";
 import { api, ApiError, intentUrl, liveSummary, remainingThread } from "../api.ts";
@@ -26,7 +25,7 @@ import { dismissToast, toast, toastError } from "../components/Toasts.tsx";
 import { useCommands, type Command } from "../lib/commands.ts";
 import { copyThread as copyExport, useLiveEvent } from "../lib/live.ts";
 import { adoptPostId, navigate, newDraft } from "../lib/router.ts";
-import { joinedMeter, PlatformIcon, postMeters, strictest, useAccounts, type Meter } from "../lib/platforms.tsx";
+import { joinedMeter, PlatformIcon, postMeters, strictest, useAccounts, usePlatforms, type Meter } from "../lib/platforms.tsx";
 import { formatWhen } from "../lib/time.ts";
 import { cx, keys, uid } from "../lib/util.ts";
 import { AltTextDialog } from "./AltTextDialog.tsx";
@@ -174,6 +173,7 @@ export function Composer(props: Props) {
   const thread = draft.thread;
   const post = draft.post;
   const { data: accounts = [] } = useAccounts();
+  const platforms = usePlatforms();
   const targets = draft.targets;
   const version = draft.version;
   const accountOf = (id: string) => accounts.find((a) => a.id === id);
@@ -189,12 +189,12 @@ export function Composer(props: Props) {
     let best = { count: post.xPostIds.length, where: "X", url: (i: number): string | null => `https://x.com/i/status/${post.xPostIds[i]}` };
     for (const t of post.targets) {
       const mine = version ? t.accountId === version : !t.thread;
-      if (!mine || t.status === "published" || PLATFORMS[t.platform].threadMode === "single") continue;
-      if (version || t.externalIds.length > best.count) best = { count: t.externalIds.length, where: PLATFORMS[t.platform].name, url: (i) => (i === 0 ? t.url : null) };
+      if (!mine || t.status === "published" || platforms.threadMode(t.platform) === "single") continue;
+      if (version || t.externalIds.length > best.count) best = { count: t.externalIds.length, where: platforms.name(t.platform), url: (i) => (i === 0 ? t.url : null) };
     }
     if (version && best.where === "X") return none;
     return { ...best, count: Math.min(best.count, thread.length) };
-  }, [viewLocked, post, thread, version]);
+  }, [viewLocked, post, thread, version, platforms]);
   const liveCount = live.count;
   const isLocked = (index: number) => viewLocked || index < liveCount;
 
@@ -207,12 +207,14 @@ export function Composer(props: Props) {
   const metersFor = (seg: Segment): Meter[] =>
     legacy
       ? [{ key: "x", label: "X", platform: "x", length: weightedLength(seg.text), max: maxChars }]
-      : postMeters(seg.text, seg.mediaIds.length, activeAccounts, health);
-  const joined = legacy || !thread ? [] : activeAccounts.filter((a) => PLATFORMS[a.platform].threadMode === "single").map((a) => joinedMeter(thread, a, health));
-  const maxImages = legacy || !activeAccounts.length ? MAX_IMAGES : Math.min(...activeAccounts.map((a) => PLATFORMS[a.platform].maxImages));
+      : postMeters(seg.text, seg.mediaIds.length, activeAccounts, health, platforms);
+  const joined = legacy || !thread ? [] : activeAccounts.filter((a) => platforms.threadMode(a.platform) === "single").map((a) => joinedMeter(thread, a, health, platforms));
+  const maxImages =
+    legacy || !activeAccounts.length ? MAX_IMAGES : Math.min(...activeAccounts.map((a) => platforms.get(a.platform)?.maxImages ?? MAX_IMAGES));
   const imageRules = activeAccounts
-    .filter((a, i, all) => (PLATFORMS[a.platform].imageTypes || PLATFORMS[a.platform].maxImageBytes) && all.findIndex((b) => b.platform === a.platform) === i)
-    .map((a) => ({ name: PLATFORMS[a.platform].name, types: PLATFORMS[a.platform].imageTypes, maxBytes: PLATFORMS[a.platform].maxImageBytes }));
+    .map((a) => platforms.get(a.platform))
+    .filter((info, i, all): info is NonNullable<typeof info> => !!info && !!(info.imageTypes || info.maxImageBytes) && all.findIndex((b) => b?.id === info.id) === i)
+    .map((info) => ({ name: info.name, types: info.imageTypes, maxBytes: info.maxImageBytes }));
 
   const [textMode, setTextMode] = useState(() => pref("threadsmith:textMode", false));
   const [uploads, setUploads] = useState<Record<string, PendingUpload[]>>({});

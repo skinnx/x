@@ -10,8 +10,7 @@ import { toast, toastError } from "../components/Toasts.tsx";
 import type { useReminders } from "../connect/Reminders.tsx";
 import { copyThread } from "../lib/live.ts";
 import { navigate, newDraft, openPost } from "../lib/router.ts";
-import { PLATFORMS } from "../../../shared/platforms.ts";
-import { PlatformIcon } from "../lib/platforms.tsx";
+import { PlatformIcon, usePlatforms } from "../lib/platforms.tsx";
 import { dayKey, formatDate, formatTime, formatWhen, relativeDay } from "../lib/time.ts";
 import { cx, keys } from "../lib/util.ts";
 
@@ -322,6 +321,7 @@ function PostRow({ post, at, date, tz }: { post: Post; at: string; date: string;
 }
 
 function Published({ health }: { health: Health }) {
+  const platforms = usePlatforms();
   const { data: posts, isPending } = useQuery({
     queryKey: ["posts", "published"],
     queryFn: () => api.listPosts({ status: ["published"], limit: 100 }),
@@ -355,7 +355,7 @@ function Published({ health }: { health: Health }) {
                     href={t.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    title={`View on ${PLATFORMS[t.platform].name}`}
+                    title={`View on ${platforms.name(t.platform)}`}
                     className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-ink-2 hover:bg-subtle hover:text-ink"
                   >
                     <PlatformIcon platform={t.platform} size={12} /> View <ExternalLink size={11} />

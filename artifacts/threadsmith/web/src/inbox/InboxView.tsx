@@ -1,5 +1,5 @@
 // Inbox: the control room. Agents do the work; the person decides here — waiting approvals, the kill switch,
-// the built-in operator, the approval chats (Telegram/Discord) and a readable activity log.
+// the built-in operator, the approval chats (from plugins: Telegram, Discord…) and a readable activity log.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
@@ -18,7 +18,7 @@ import {
   Send,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import type { AuditEntry, ChannelStatus, ControlState, Health, OperatorRun, Post } from "../../../shared/types.ts";
+import type { AuditEntry, ControlState, Health, OperatorRun, Post } from "../../../shared/types.ts";
 import { api, ApiError, type PreviewTarget } from "../api.ts";
 import { DecisionBar } from "../components/Approval.tsx";
 import { Card } from "../components/Card.tsx";
@@ -447,10 +447,11 @@ function RunList({ runs }: { runs: OperatorRun[] }) {
 
 // ---------- approval chats ----------
 
-const CHANNELS: { id: ChannelStatus["id"]; name: string; env: [string, string] }[] = [
-  { id: "telegram", name: "Telegram", env: ["TELEGRAM_APPROVAL_BOT_TOKEN", "TELEGRAM_APPROVAL_CHAT_ID"] },
-  { id: "discord", name: "Discord", env: ["DISCORD_APPROVAL_BOT_TOKEN", "DISCORD_APPROVAL_CHANNEL_ID"] },
-];
+/** Setup hints for the bundled approval chats; a chat from another plugin is set up as its plugin documents. */
+const CHANNEL_ENV: Record<string, [string, string]> = {
+  telegram: ["TELEGRAM_APPROVAL_BOT_TOKEN", "TELEGRAM_APPROVAL_CHAT_ID"],
+  discord: ["DISCORD_APPROVAL_BOT_TOKEN", "DISCORD_APPROVAL_CHANNEL_ID"],
+};
 
 function ChannelsPanel({ control }: { control: ControlState | undefined }) {
   const qc = useQueryClient();
@@ -462,7 +463,7 @@ function ChannelsPanel({ control }: { control: ControlState | undefined }) {
       const bad = channels.filter((c) => c.configured && (c.error || !c.connected));
       toast(
         bad.length
-          ? { title: "Test message failed", description: bad.map((c) => `${c.id}: ${c.error ?? "not connected"}`).join(" · "), tone: "error" }
+          ? { title: "Test message failed", description: bad.map((c) => `${c.name || c.id}: ${c.error ?? "not connected"}`).join(" · "), tone: "error" }
           : { title: "Test message sent", description: "Check your chat.", tone: "success" },
       );
     },
@@ -472,10 +473,11 @@ function ChannelsPanel({ control }: { control: ControlState | undefined }) {
 
   return (
     <Card icon={<MessageCircle size={16} />} title="Approval chats">
+      {control && !control.channels.length && <p className="text-xs text-ink-3">No approval-chat plugins are loaded.</p>}
       <ul className="space-y-2.5">
-        {CHANNELS.map((ch) => {
-          const s = control?.channels.find((c) => c.id === ch.id);
-          const status = !s?.configured
+        {(control?.channels ?? []).map((s) => {
+          const env = CHANNEL_ENV[s.id];
+          const status = !s.configured
             ? { dot: "bg-ink-3", text: "Not set up" }
             : s.error
               ? { dot: "bg-red-500", text: "Error" }
@@ -483,17 +485,23 @@ function ChannelsPanel({ control }: { control: ControlState | undefined }) {
                 ? { dot: "bg-emerald-500", text: "Connected" }
                 : { dot: "bg-amber-500", text: "Configured, not connected yet" };
           return (
-            <li key={ch.id}>
+            <li key={s.id}>
               <p className="flex items-center gap-2">
                 <span className={cx("size-2 shrink-0 rounded-full", status.dot)} />
-                <span className="font-medium text-ink">{ch.name}</span>
+                <span className="font-medium text-ink">{s.name || s.id}</span>
                 <span className="text-xs text-ink-3">{status.text}</span>
               </p>
-              {s?.error && <p className="mt-0.5 pl-4 text-xs break-words text-red-700 dark:text-red-300">{s.error}</p>}
-              {!s?.configured && (
+              {s.error && <p className="mt-0.5 pl-4 text-xs break-words text-red-700 dark:text-red-300">{s.error}</p>}
+              {!s.configured && (
                 <p className="mt-0.5 pl-4 text-xs leading-relaxed text-ink-3">
-                  Set <code className="font-mono text-[11px]">{ch.env[0]}</code> and <code className="font-mono text-[11px]">{ch.env[1]}</code> in .env,
-                  then restart.
+                  {env ? (
+                    <>
+                      Set <code className="font-mono text-[11px]">{env[0]}</code> and <code className="font-mono text-[11px]">{env[1]}</code> in .env,
+                      then restart.
+                    </>
+                  ) : (
+                    "Configure it as its plugin describes, then restart."
+                  )}
                 </p>
               )}
             </li>

@@ -43,12 +43,12 @@ Posts
   rm <id>                     Delete
   slots [n]                   Next free posting slots
   count [text|--file f] [--platform p] [--max n]
-                              Count characters the way a platform does (default x; no server needed)
+                              Count characters the way a platform does (default x; offline: the built-in platforms)
 
 Accounts
   accounts                    Connected accounts (connect them in the web UI: it needs your secrets)
   accounts check <ref>        Re-verify an account's stored credentials
-  platforms                   Supported platforms: limits, counting, images, cost
+  platforms                   Platforms the server's plugins provide: limits, counting, images, cost
 
   An account ref is its id (or a unique id prefix), its label, its handle, or a platform name when only one
   account of that platform is connected.
@@ -120,36 +120,49 @@ function weightedLength(raw) {
   return total + plainWeight(text.slice(last));
 }
 
-// ---------- per-platform counting (mirrors shared/platforms.ts countFor; keep in parity) ----------
+// ---------- platforms ----------
+// Platforms come from plugins on the server (GET /api/platforms), counting rule included, as data. The bundled seven
+// are copied here only so `count` keeps working offline; everything else asks the server.
 
-const PLATFORMS = {
-  x: { name: "X", maxChars: 280, maxImages: 4, threadMode: "replies" },
-  bluesky: { name: "Bluesky", maxChars: 300, maxImages: 4, threadMode: "replies" },
-  mastodon: { name: "Mastodon", maxChars: 500, maxImages: 4, threadMode: "replies" },
-  threads: { name: "Threads", maxChars: 500, maxImages: 20, threadMode: "replies" },
-  linkedin: { name: "LinkedIn", maxChars: 3000, maxImages: 20, threadMode: "single" },
-  telegram: { name: "Telegram", maxChars: 4096, maxImages: 10, threadMode: "messages" },
-  discord: { name: "Discord", maxChars: 2000, maxImages: 10, threadMode: "messages" },
+const BUILTIN_PLATFORMS = {
+  x: { name: "X", maxChars: 280, threadMode: "replies", counting: { method: "x-weighted" } },
+  bluesky: { name: "Bluesky", maxChars: 300, threadMode: "replies", counting: { method: "graphemes" } },
+  mastodon: { name: "Mastodon", maxChars: 500, threadMode: "replies", counting: { method: "codepoints", urlLength: 23 } },
+  threads: { name: "Threads", maxChars: 500, threadMode: "replies", counting: { method: "codepoints", emoji: "utf8-bytes" } },
+  linkedin: { name: "LinkedIn", maxChars: 3000, threadMode: "single", counting: { method: "codepoints" } },
+  telegram: { name: "Telegram", maxChars: 4096, threadMode: "messages", counting: { method: "codepoints" } },
+  discord: { name: "Discord", maxChars: 2000, threadMode: "messages", counting: { method: "codepoints" } },
 };
 const URL_ANY = /\bhttps?:\/\/\S+/gi;
 
-function countFor(platform, text) {
-  switch (platform) {
-    case "x":
-      return weightedLength(text);
-    case "bluesky":
-      return [...segmenter.segment(text.normalize("NFC"))].length; // graphemes; links count in full
-    case "mastodon":
-      return [...text.replace(URL_ANY, "x".repeat(23))].length; // every URL counts 23
-    case "threads": {
+/** Characters as a counting rule counts them (mirrors shared/counting.ts countWith; keep in parity). */
+function countWith(rule, text) {
+  switch (rule?.method) {
+    case "graphemes":
+      return [...segmenter.segment(text.normalize("NFC"))].length; // links count in full
+    case "codepoints": {
+      const t = rule.urlLength ? text.replace(URL_ANY, "x".repeat(rule.urlLength)) : text;
+      if (rule.emoji !== "utf8-bytes") return [...t].length;
       let n = 0; // an emoji counts as its UTF-8 byte length, everything else per character
-      for (const { segment } of segmenter.segment(text)) n += EMOJI_RE.test(segment) ? Buffer.byteLength(segment) : [...segment].length;
+      for (const { segment } of segmenter.segment(t)) n += EMOJI_RE.test(segment) ? Buffer.byteLength(segment) : [...segment].length;
       return n;
     }
     default:
-      return [...text].length;
+      return weightedLength(text); // x-weighted, and the safe guess for a rule this CLI doesn't know yet
   }
 }
+
+let platformsPromise;
+/** The server's platforms by id (rejects when the server can't be reached). */
+const platformsMap = (signal) =>
+  (platformsPromise ??= api("GET", "/api/platforms", undefined, undefined, signal).then((d) => {
+    knownPlatforms = new Map(d.platforms.map((p) => [p.id, p]));
+    return knownPlatforms;
+  }));
+let knownPlatforms = null;
+/** Best effort: names in listings come from the server when it answers. */
+const loadPlatforms = () => platformsMap().catch(() => null);
+const platformName = (id) => knownPlatforms?.get(id)?.name ?? BUILTIN_PLATFORMS[id]?.name ?? id;
 
 const splitThread = (text) =>
   text
@@ -191,13 +204,13 @@ try {
   fail(new UsageError(err.message));
 }
 
-async function api(method, path, body, form) {
+async function api(method, path, body, form, signal) {
   const headers = { accept: "application/json", "x-threadsmith-source": "cli" };
   if (TOKEN) headers.authorization = `Bearer ${TOKEN}`;
   if (body !== undefined) headers["content-type"] = "application/json";
   let res;
   try {
-    res = await fetch(BASE + path, { method, headers, body: form ?? (body === undefined ? undefined : JSON.stringify(body)) });
+    res = await fetch(BASE + path, { method, headers, body: form ?? (body === undefined ? undefined : JSON.stringify(body)), signal });
   } catch (err) {
     if (err.cause?.code === "UND_ERR_HEADERS_TIMEOUT") {
       throw Object.assign(new ApiError(`Threadsmith at ${BASE} took too long to answer (no response after 5 minutes).`), { code: "timeout" });
@@ -249,8 +262,8 @@ async function resolveId(ref) {
 // ---------- destinations ----------
 
 let accountsPromise;
-const accountsList = () => (accountsPromise ??= api("GET", "/api/accounts").then((d) => d.accounts));
-const describeAccount = (a) => `${a.label} (${PLATFORMS[a.platform]?.name ?? a.platform}${a.handle ? ` ${a.handle}` : ""}, ${short(a.id)})`;
+const accountsList = () => (accountsPromise ??= Promise.all([api("GET", "/api/accounts"), loadPlatforms()]).then(([d]) => d.accounts));
+const describeAccount = (a) => `${a.label} (${platformName(a.platform)}${a.handle ? ` ${a.handle}` : ""}, ${short(a.id)})`;
 
 /** Same rules as the MCP tools: id, id prefix, label, handle, or a platform name with exactly one account. */
 function resolveAccount(ref, accounts) {
@@ -261,7 +274,8 @@ function resolveAccount(ref, accounts) {
     (a) => a.label.toLowerCase() === r || (a.handle && a.handle.toLowerCase().replace(/^@/, "") === r.replace(/^@/, "")) || (r.length >= 4 && a.id.startsWith(r)),
   );
   if (strong.length === 1) return strong[0];
-  const platform = Object.keys(PLATFORMS).find((p) => p === r || PLATFORMS[p].name.toLowerCase() === r);
+  const ids = new Set([...(knownPlatforms?.keys() ?? Object.keys(BUILTIN_PLATFORMS)), ...accounts.map((a) => a.platform)]);
+  const platform = [...ids].find((p) => p === r || platformName(p).toLowerCase() === r);
   const matches = strong.length ? strong : platform ? accounts.filter((a) => a.platform === platform) : [];
   if (matches.length === 1) return matches[0];
   if (matches.length > 1) throw new UsageError(`"${ref}" matches ${matches.length} accounts; use an id or label: ${matches.map(describeAccount).join("; ")}`);
@@ -368,7 +382,7 @@ function emit(data, human) {
 }
 
 function line(p) {
-  const to = p.targets?.length ? `→ ${p.targets.map((t) => PLATFORMS[t.platform]?.name ?? t.platform).join(",")} ` : "";
+  const to = p.targets?.length ? `→ ${p.targets.map((t) => platformName(t.platform)).join(",")} ` : "";
   return `${short(p.id)}  ${p.status.padEnd(10)} ${(when(p.scheduledAt) || "—").padEnd(22)} ${to}${p.title ? `[${p.title}] ` : ""}${firstLine(p)}`;
 }
 
@@ -388,7 +402,7 @@ function status(p) {
   console.log(`${short(p.id)} ${p.status}${extra}`);
   for (const t of p.targets ?? []) {
     if (p.status === "scheduled" && t.status === "pending") continue;
-    console.log(`  ${(PLATFORMS[t.platform]?.name ?? t.platform).padEnd(9)} ${t.status}${t.url ? ` ${t.url}` : t.error ? ` — ${t.error}` : ""}`);
+    console.log(`  ${platformName(t.platform).padEnd(9)} ${t.status}${t.url ? ` ${t.url}` : t.error ? ` — ${t.error}` : ""}`);
   }
 }
 
@@ -448,6 +462,7 @@ const commands = {
 
   async queue() {
     const q = await api("GET", `/api/queue?days=${int(opt.days, "--days", 7)}`);
+    if (!opt.json) await loadPlatforms();
     await useServerTimezone(q.timezone);
     emit(q, () => {
       const days = q.days.filter((d) => d.items.length);
@@ -460,7 +475,7 @@ const commands = {
           const time = dayKey(at) === date ? hhmm(at) : `${new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: TZ })} ${hhmm(at)}`;
           console.log(`  ${time}  ${post.status.padEnd(10)} ${short(post.id)}  ${firstLine(post)}`);
           for (const t of post.targets ?? []) {
-            console.log(`         ${" ".repeat(time.length - 5)}↳ ${(PLATFORMS[t.platform]?.name ?? t.platform).padEnd(9)} ${t.status}${t.error ? ` — ${clip(t.error, 80)}` : ""}`);
+            console.log(`         ${" ".repeat(time.length - 5)}↳ ${platformName(t.platform).padEnd(9)} ${t.status}${t.error ? ` — ${clip(t.error, 80)}` : ""}`);
           }
         }
         const free = items.filter((i) => i.type === "slot").map((i) => hhmm(i.at));
@@ -473,6 +488,7 @@ const commands = {
     const qs = new URLSearchParams({ limit: "50" });
     if (opt.status) qs.set("status", opt.status);
     const data = await api("GET", `/api/posts?${qs}`);
+    if (!opt.json) await loadPlatforms();
     if (!opt.json) await useServerTimezone();
     emit(data, ({ posts }) => {
       if (posts.some((p) => p.scheduledAt)) console.log(`Times in ${TZ}`);
@@ -493,10 +509,11 @@ const commands = {
 
   async preview([ref]) {
     const data = await api("GET", `/api/posts/${await resolveId(ref)}/preview`);
+    if (!opt.json) await loadPlatforms();
     emit(data, ({ targets }) => {
       for (const t of targets) {
         const mode = t.threadMode === "single" && t.items.length === 1 ? ", joined into one post" : "";
-        console.log(`${t.label} — ${PLATFORMS[t.platform]?.name ?? t.platform}, limit ${t.limit}${mode}, ${t.status}${t.live ? `, ${t.live} live` : ""}`);
+        console.log(`${t.label} — ${platformName(t.platform)}, limit ${t.limit}${mode}, ${t.status}${t.live ? `, ${t.live} live` : ""}`);
         t.items.forEach((it, i) => console.log(`  [${i + 1}] ${it.count}/${t.limit}${it.fits ? "" : " OVER"}${it.images ? `  images: ${it.images}` : ""}  ${clip(it.text.replace(/\s+/g, " "), 60)}`));
         console.log(t.problem ? `  problem: ${t.problem}` : "  ready");
       }
@@ -600,18 +617,26 @@ const commands = {
   },
 
   async count(args) {
-    const platform = (opt.platform ?? "x").toLowerCase();
-    if (!PLATFORMS[platform]) throw new UsageError(`--platform must be one of: ${Object.keys(PLATFORMS).join(", ")}`);
-    const limit = platform === "x" ? await maxChars() : opt.max ? int(opt.max, "--max") : PLATFORMS[platform].maxChars;
+    const ref = (opt.platform ?? "x").trim().toLowerCase();
+    // The server's list (plugins included); offline, the bundled platforms only.
+    let platforms = await platformsMap(AbortSignal.timeout(3000)).catch((err) => {
+      if (err.code === "unreachable") return null;
+      throw err;
+    });
+    platforms ??= new Map(Object.entries(BUILTIN_PLATFORMS).map(([id, p]) => [id, { id, ...p }]));
+    const info = platforms.get(ref) ?? [...platforms.values()].find((p) => p.name.toLowerCase() === ref);
+    if (!info) throw new UsageError(`--platform must be one of: ${[...platforms.keys()].join(", ")}`);
+    const platform = info.id;
+    const limit = platform === "x" ? await maxChars() : opt.max ? int(opt.max, "--max") : info.maxChars;
     let parts = splitThread(readText(args));
-    const joined = PLATFORMS[platform].threadMode === "single" && parts.length > 1;
+    const joined = info.threadMode === "single" && parts.length > 1;
     if (joined) parts = [parts.join("\n\n")]; // LinkedIn publishes the thread as one post
     const posts = parts.map((text, i) => {
-      const chars = countFor(platform, text);
+      const chars = countWith(info.counting, text);
       return { post: i + 1, chars, remaining: limit - chars, fits: chars <= limit };
     });
     emit({ platform, limit, joined, allFit: posts.length > 0 && posts.every((p) => p.fits), posts }, () => {
-      if (platform !== "x" || joined) console.log(`${PLATFORMS[platform].name}${joined ? " (thread joined into one post)" : ""}`);
+      if (platform !== "x" || joined) console.log(`${info.name}${joined ? " (thread joined into one post)" : ""}`);
       posts.forEach((p) => console.log(`[${p.post}] ${p.chars}/${limit}${p.fits ? "" : `  OVER by ${-p.remaining}`}`));
     });
   },
@@ -630,13 +655,13 @@ const commands = {
       if (!accounts.length) return console.log("No accounts connected. Connect them in the web UI; until then posts use the legacy X mode.");
       for (const a of accounts) {
         const limit = a.maxChars ? ` · limit ${a.maxChars}` : "";
-        console.log(`${short(a.id)}  ${(PLATFORMS[a.platform]?.name ?? a.platform).padEnd(9)} ${a.label}${a.handle ? `  ${a.handle}` : ""}${limit}${a.lastError ? `\n          error: ${a.lastError}` : ""}`);
+        console.log(`${short(a.id)}  ${platformName(a.platform).padEnd(9)} ${a.label}${a.handle ? `  ${a.handle}` : ""}${limit}${a.lastError ? `\n          error: ${a.lastError}` : ""}`);
       }
     });
   },
 
   async platforms() {
-    const data = await api("GET", "/api/platforms");
+    const data = { platforms: [...(await platformsMap()).values()] };
     const mode = { replies: "reply chain", single: "one joined post", messages: "messages" };
     emit(data, ({ platforms }) => {
       for (const p of platforms) {

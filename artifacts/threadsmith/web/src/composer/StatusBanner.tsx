@@ -7,8 +7,8 @@ import type { Health, Post } from "../../../shared/types.ts";
 import { api, liveSummary, remainingThread } from "../api.ts";
 import { Popover } from "../components/Popover.tsx";
 import { TargetList } from "../components/TargetStatus.tsx";
-import { PLATFORMS } from "../../../shared/platforms.ts";
 import { toast, toastError } from "../components/Toasts.tsx";
+import { usePlatforms } from "../lib/platforms.tsx";
 import { openPost } from "../lib/router.ts";
 import { formatWhen } from "../lib/time.ts";
 import { copyText, cx } from "../lib/util.ts";
@@ -59,6 +59,7 @@ export function useRetry(post: Post | null, flush: () => Promise<void>, onChange
 export function StatusBanner(p: Props) {
   const { post } = p;
   const tz = p.health.timezone;
+  const platforms = usePlatforms();
 
   const retry = useRetry(post, p.flush, p.onChange);
   const duplicate = useMutation({
@@ -68,7 +69,7 @@ export function StatusBanner(p: Props) {
   });
 
   const multi = post.targets.length > 0;
-  const where = multi ? [...new Set(post.targets.map((t) => PLATFORMS[t.platform].name))].join(", ") : "X";
+  const where = multi ? [...new Set(post.targets.map((t) => platforms.name(t.platform)))].join(", ") : "X";
   const retryButton = (label: string) => (
     <button onClick={() => retry.mutate()} disabled={retry.isPending} className={primary}>
       {retry.isPending ? <LoaderCircle size={14} className="animate-spin" /> : <RotateCcw size={14} />} {label}

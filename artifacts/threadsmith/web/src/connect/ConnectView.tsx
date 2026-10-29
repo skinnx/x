@@ -1,6 +1,6 @@
 // Connect: how agents (MCP, REST, CLI, webhooks) and you (reminders) plug into Threadsmith, plus live status.
 import { useQuery } from "@tanstack/react-query";
-import { Bot, ExternalLink, FileText, Send, Terminal } from "lucide-react";
+import { Bot, ExternalLink, FileText, Puzzle, Send, Terminal } from "lucide-react";
 import type { Health } from "../../../shared/types.ts";
 import { api } from "../api.ts";
 import { useControl } from "../lib/control.ts";
@@ -100,6 +100,7 @@ node cli/threadsmith.mjs help`}
         </Card>
 
         <Accounts health={health} />
+        <Plugins />
 
         <Webhooks />
         <Reminders />
@@ -113,7 +114,7 @@ function StatusGrid({ health }: { health: Health }) {
   const { data: accounts } = useAccounts();
   const { data: control } = useControl();
   const n = accounts?.length ?? 0;
-  const chats = control?.channels.filter((c) => c.configured).map((c) => (c.id === "telegram" ? "Telegram" : "Discord")) ?? [];
+  const chats = control?.channels.filter((c) => c.configured).map((c) => c.name || c.id) ?? [];
   const items = [
     n
       ? {
@@ -139,7 +140,7 @@ function StatusGrid({ health }: { health: Health }) {
       value: !control ? "…" : control.approval.require === "never" ? "Agents publish without asking" : "Agent posts wait for you",
       note: chats.length
         ? `Decide in the Inbox or in ${chats.join(" and ")}.`
-        : "Decide in the Inbox. Add a Telegram or Discord approval chat in .env to decide from your phone.",
+        : "Decide in the Inbox. Set up an approval chat (Telegram, Discord or another plugin) to decide from your phone.",
     },
     {
       label: "Access",
@@ -163,6 +164,55 @@ function StatusGrid({ health }: { health: Health }) {
         </div>
       ))}
     </div>
+  );
+}
+
+const SOURCE_LABEL = { "built-in": "built-in", data: "data dir", config: "config" } as const;
+
+/** Every platform and approval chat is a plugin; this lists what loaded, what each provides, and what failed. */
+function Plugins() {
+  const { data: plugins, isPending, error } = useQuery({ queryKey: ["plugins"], queryFn: api.plugins, staleTime: 60_000 });
+  return (
+    <Card icon={<Puzzle size={16} />} title="Plugins" badge="platforms & approval chats">
+      <p>
+        Every platform and approval chat is a plugin. The built-in ones live in <code className="font-mono text-xs">plugins/</code>; add more in{" "}
+        <code className="font-mono text-xs">&lt;DATA_DIR&gt;/plugins/</code> or with <code className="font-mono text-xs">plugins.load</code> in{" "}
+        <code className="font-mono text-xs">threadsmith.config.json</code>, then restart (see <code className="font-mono text-xs">docs/PLUGINS.md</code>).
+      </p>
+      {isPending ? (
+        <div className="h-24 animate-pulse rounded-xl bg-subtle" />
+      ) : error ? (
+        <p className="text-sm text-red-600">{error.message}</p>
+      ) : !plugins.length ? (
+        <p className="text-ink-3">No plugins loaded.</p>
+      ) : (
+        <ul className="divide-y divide-line rounded-xl border border-line">
+          {plugins.map((pl) => {
+            const provides = [
+              pl.platforms.length ? `${pl.platforms.length === 1 ? "platform" : "platforms"} ${pl.platforms.join(", ")}` : null,
+              pl.channels.length ? `approval ${pl.channels.length === 1 ? "chat" : "chats"} ${pl.channels.join(", ")}` : null,
+            ].filter(Boolean);
+            const state = pl.error ? "bg-red-500" : pl.disabled ? "bg-ink-3" : "bg-emerald-500";
+            return (
+              <li key={`${pl.source}:${pl.name}`} className="px-3 py-2.5">
+                <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                  <span className={cx("size-2 shrink-0 rounded-full", state)} />
+                  <span className="font-medium text-ink">{pl.name}</span>
+                  <span className="text-xs text-ink-3">{pl.version}</span>
+                  <span className="rounded-md bg-subtle px-1.5 py-px text-[11px] text-ink-2">{SOURCE_LABEL[pl.source] ?? pl.source}</span>
+                  {pl.disabled && <span className="text-xs text-ink-3">disabled</span>}
+                </p>
+                <p className="mt-0.5 pl-4 text-xs text-ink-3">
+                  {provides.length ? `Provides ${provides.join(" · ")}` : pl.error ? "Not loaded" : "Provides nothing yet"}
+                  {pl.description && ` — ${pl.description}`}
+                </p>
+                {pl.error && <p className="mt-0.5 pl-4 text-xs break-words text-red-700 dark:text-red-300">{pl.error}</p>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Card>
   );
 }
 

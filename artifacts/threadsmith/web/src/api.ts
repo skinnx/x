@@ -1,5 +1,5 @@
 // Typed client for the Threadsmith REST API (same origin). Auth token lives in localStorage + a cookie for <img>/SSE.
-import type { PlatformInfo, ThreadMode } from "../../shared/platforms.ts";
+import type { PlatformInfo, ThreadMode } from "../../server/plugin-api.ts";
 import type {
   Account,
   AppEventType,
@@ -16,6 +16,22 @@ import type {
   Queue,
   Segment,
 } from "../../shared/types.ts";
+
+export type { CredentialField, ThreadMode } from "../../server/plugin-api.ts";
+/** A platform as GET /api/platforms serves it (declared by its plugin). */
+export type Platform = PlatformInfo & { hasMetrics: boolean };
+/** A plugin as GET /api/plugins lists it. */
+export interface PluginInfo {
+  name: string;
+  version: string;
+  description: string | null;
+  source: "built-in" | "data" | "config";
+  platforms: string[];
+  channels: string[];
+  /** Why it isn't loaded; null when it is. */
+  error: string | null;
+  disabled: boolean;
+}
 
 const TOKEN_KEY = "threadsmith_token";
 
@@ -177,7 +193,8 @@ export const api = {
   duplicate: (id: string) => call<Post>("POST", `/api/posts/${id}/duplicate`),
   preview: (id: string) => call<{ targets: PreviewTarget[] }>("GET", `/api/posts/${id}/preview`).then((r) => r.targets),
 
-  platforms: () => call<{ platforms: PlatformInfo[] }>("GET", "/api/platforms").then((r) => r.platforms),
+  platforms: () => call<{ platforms: Platform[] }>("GET", "/api/platforms").then((r) => r.platforms),
+  plugins: () => call<{ plugins: PluginInfo[] }>("GET", "/api/plugins").then((r) => r.plugins),
   accounts: () => call<{ accounts: Account[] }>("GET", "/api/accounts").then((r) => r.accounts),
   connectAccount: (body: { platform: PlatformId; credentials: Record<string, string>; label?: string; maxChars?: number }) =>
     call<Account>("POST", "/api/accounts", { body }),
