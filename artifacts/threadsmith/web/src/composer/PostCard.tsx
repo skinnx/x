@@ -2,7 +2,7 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink, GripVertical, ImagePlus, LoaderCircle, Lock, Scissors, Trash2, X } from "lucide-react";
+import { ExternalLink, GripVertical, ImagePlus, LoaderCircle, Lock, Scissors, Trash2, TriangleAlert, X } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { Segment } from "../../../shared/types.ts";
 import { api } from "../api.ts";
@@ -24,6 +24,8 @@ interface Props {
   /** One counter per destination platform (just X in single-X mode); the ring shows the strictest. */
   meters: Meter[];
   maxImages: number;
+  /** Selected platforms that accept only some image types (Threads, LinkedIn): a thumbnail of another type is flagged. */
+  imageRules: { name: string; types: string[] }[];
   readOnly: boolean;
   /** Set when this post is already live (a thread that stopped partway): shown locked, with a link when known. */
   live?: { where: string; url: string | null };
@@ -156,6 +158,7 @@ export function PostCard(p: Props) {
                 key={id}
                 id={id}
                 single={imageCount === 1}
+                rules={p.imageRules}
                 readOnly={p.readOnly}
                 onEdit={() => p.onEditImage(id)}
                 onRemove={() => p.onRemoveImage(id)}
@@ -243,9 +246,18 @@ export function PostCard(p: Props) {
   );
 }
 
-function Thumb(p: { id: string; single: boolean; readOnly: boolean; onEdit: () => void; onRemove: () => void }) {
+function Thumb(p: {
+  id: string;
+  single: boolean;
+  rules: { name: string; types: string[] }[];
+  readOnly: boolean;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
   const { data: media } = useQuery({ queryKey: ["media", p.id], queryFn: () => api.getMedia(p.id), staleTime: Infinity });
   const hasAlt = Boolean(media?.alt);
+  const refusedBy = media ? p.rules.filter((r) => !r.types.includes(media.mime)).map((r) => r.name) : [];
+  const kind = media?.mime.replace("image/", "").toUpperCase();
   return (
     <div className={cx("group/img relative overflow-hidden rounded-xl border border-line bg-subtle", p.single ? "aspect-video" : "aspect-square")}>
       {p.readOnly ? (
@@ -263,6 +275,15 @@ function Thumb(p: { id: string; single: boolean; readOnly: boolean; onEdit: () =
           )}
         >
           {hasAlt ? "ALT" : "+ ALT"}
+        </span>
+      )}
+      {refusedBy.length > 0 && (
+        <span
+          role="note"
+          title={`${refusedBy.join(" and ")} ${refusedBy.length > 1 ? "don't" : "doesn't"} accept ${kind} images. Use a JPEG or PNG, or give ${refusedBy.length > 1 ? "them their" : "it its"} own version without this image.`}
+          className="pointer-events-auto absolute top-2 left-2 flex items-center gap-1 rounded bg-amber-500/95 px-1.5 py-0.5 text-[10px] font-semibold text-black"
+        >
+          <TriangleAlert size={11} /> {kind} not accepted on {refusedBy.join(", ")}
         </span>
       )}
       {!p.readOnly && (

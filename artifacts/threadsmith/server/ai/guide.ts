@@ -1,6 +1,28 @@
 // Writing guide for agents, served as the MCP resource threadsmith://guide and inside /llms-full.txt.
+import { PLATFORMS } from "../../shared/platforms.ts";
 import { getConfig } from "../config.ts";
 import { xConfigured } from "../env.ts";
+
+const COUNTING: Record<string, string> = {
+  x: "weighted: CJK, emoji and Vietnamese letters like ạ ệ ố 2; URLs 23",
+  bluesky: "graphemes (an emoji or ệ is 1); URLs count in full",
+  mastodon: "code points; every URL 23",
+  threads: "code points; each emoji its UTF-8 bytes (usually 4)",
+  linkedin: "code points; the thread is joined into ONE post",
+  telegram: "code points; 1024 for a caption on a photo",
+  discord: "code points",
+};
+const MODE = { replies: "reply chain", single: "joined into one post", messages: "consecutive messages" };
+
+/** Markdown table of every platform's limits, counting, thread mode and cost (shared by the guide and llms.txt). */
+export function platformTable(): string {
+  const rows = Object.values(PLATFORMS).map((p) => {
+    const limit = p.id === "x" ? `${getConfig().maxChars} (config maxChars)` : String(p.maxChars);
+    const images = `${p.maxImages}${p.imageTypes ? ` (${p.imageTypes.map((t) => t.replace("image/", "")).join("/")})` : ""}`;
+    return `| ${p.name} | ${limit} | ${COUNTING[p.id]} | ${images} | ${MODE[p.threadMode]} | ${p.costNote} |`;
+  });
+  return ["| Platform | Limit per post | Counting | Images per post | A thread becomes | Cost |", "|---|---|---|---|---|---|", ...rows].join("\n");
+}
 
 export function threadGuide(): string {
   const { maxChars, timezone, lateGraceMinutes } = getConfig();
@@ -10,7 +32,7 @@ export function threadGuide(): string {
       ? `- A scheduled post that missed its time by more than ${lateGraceMinutes} minutes (Threadsmith was offline) is not posted late unattended:
   it becomes **due**, with an \`error\` saying why. Ask the person whether to publish it now, copy it, or reschedule it.\n`
       : "- A scheduled post that missed its time while Threadsmith was offline is published as soon as Threadsmith is back.\n";
-  return `# Writing X threads with Threadsmith
+  return `# Writing threads with Threadsmith
 
 ## Format and limits
 - A thread is one text with a line containing only \`---\` between posts (or an array of posts). A single post is a thread of one.
@@ -22,12 +44,25 @@ export function threadGuide(): string {
 - Times are ISO-8601 date-times in the future: \`2026-11-03T09:00\` is read in the configured timezone (${timezone});
   \`2026-11-03T09:00:00+07:00\` or \`2026-11-03T02:00:00Z\` is exact. Dates without a time are rejected. \`"next"\` means the next free posting slot from threadsmith.config.json.
 
+## Destinations (connected accounts)
+- A post goes to the connected accounts in its \`targets\` (MCP: \`to\`, by id, label, handle or platform name; CLI: \`--to\`). Each destination
+  publishes, fails and resumes on its own; the post is published when all are, failed when any is (see each destination's error).
+- A post without destinations uses the legacy single-X mode described below (the .env X keys, or manual copy & post).
+- Each destination can get its own version of the thread (MCP \`versions\`, CLI \`--version ref=file\`, REST \`targets[].thread\`), e.g. a
+  tighter X thread and one long LinkedIn post. Without one it publishes the main thread, so the main thread must fit every destination.
+- Platforms count differently: the same Vietnamese post can fit Bluesky (300 graphemes) and be over on X (280 weighted). Check each destination
+  with \`preview_post\` / \`threadsmith preview\` / \`GET /api/posts/{id}/preview\` before scheduling.
+- Connecting an account needs the person's secrets: they do it in the UI (or \`POST /api/accounts\`). Never ask them to paste tokens into a chat.
+
+${platformTable()}
+
 ## How publishing works on this instance
-- X mode: ${xConfigured ? "**api** — scheduled posts are published automatically through the X API." : "**manual** — no X API keys. At the scheduled time the person gets a notification and copies the thread into X by hand; afterwards mark it published."}
+- X mode (posts without destinations): ${xConfigured ? "**api** — scheduled posts are published automatically through the X API." : "**manual** — no X API keys. At the scheduled time the person gets a notification and copies the thread into X by hand; afterwards mark it published."}
 ${late}- If a thread fails partway through publishing, the posts already on X (\`xPostIds\`) are locked: they can't be edited, removed or reordered.
   Fix only the posts after them, then retry; it resumes after the last live post. To finish it by hand, export it and post only
   the remaining posts (\`remainingText\` / \`remainingPosts\`) as replies under \`replyToUrl\`.
 - On X's pay-per-use API each post costs about $0.015, and a post that contains a link about $0.20. A 6-post thread is 6 posts.
+  Every other platform is free to post to.
   Avoid gratuitous links; if the person wants a link, put it in the last post (or a reply) rather than the first.
 
 ## What makes a thread work

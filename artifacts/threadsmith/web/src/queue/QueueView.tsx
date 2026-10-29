@@ -4,10 +4,13 @@ import { Bell, CircleCheck, Copy, ExternalLink, Image, LoaderCircle, Plus, Rotat
 import { useMemo, useState } from "react";
 import type { Health, Post, QueueDay, QueueItem } from "../../../shared/types.ts";
 import { api, liveSummary, remainingThread, type AppConfig } from "../api.ts";
+import { TargetIcons, TargetList } from "../components/TargetStatus.tsx";
 import { toast, toastError } from "../components/Toasts.tsx";
 import type { useReminders } from "../connect/Reminders.tsx";
 import { copyThread } from "../lib/live.ts";
 import { navigate, newDraft, openPost } from "../lib/router.ts";
+import { PLATFORMS } from "../../../shared/platforms.ts";
+import { PlatformIcon } from "../lib/platforms.tsx";
 import { dayKey, formatDate, formatTime, formatWhen, relativeDay } from "../lib/time.ts";
 import { cx, keys } from "../lib/util.ts";
 
@@ -169,6 +172,7 @@ function Preview({ post }: { post: Post }) {
           </span>
         )}
         {post.source !== "ui" && <span>via {post.source.toUpperCase()}</span>}
+        {post.targets.length > 0 && <TargetIcons post={post} />}
       </p>
     </>
   );
@@ -192,7 +196,9 @@ function PostRow({ post, at, date, tz }: { post: Post; at: string; date: string;
   });
   const [askUrl, setAskUrl] = useState(false);
   const [url, setUrl] = useState("");
-  const due = post.status === "due";
+  const multi = post.targets.length > 0;
+  const due = post.status === "due" && !multi;
+  const missed = post.status === "due" && multi;
   const failed = post.status === "failed";
   const action = "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium";
   // Overdue posts from earlier days are listed under today: show their own date so they don't read as today's.
@@ -204,7 +210,7 @@ function PostRow({ post, at, date, tz }: { post: Post; at: string; date: string;
     <div
       className={cx(
         "rounded-xl border bg-surface transition-colors",
-        due ? "border-amber-300 bg-amber-50/60 shadow-sm dark:border-amber-800 dark:bg-amber-950/30" : failed ? "border-red-200 dark:border-red-900" : "border-line",
+        due || missed ? "border-amber-300 bg-amber-50/60 shadow-sm dark:border-amber-800 dark:bg-amber-950/30" : failed ? "border-red-200 dark:border-red-900" : "border-line",
       )}
     >
       <button onClick={() => openPost(post.id)} className="flex w-full items-start gap-4 rounded-xl px-3 py-2.5 text-left hover:bg-subtle/60">
@@ -219,9 +225,22 @@ function PostRow({ post, at, date, tz }: { post: Post; at: string; date: string;
       </button>
       {failed && (
         <div className="flex flex-wrap items-center gap-2 px-3 pb-3 sm:pl-27">
-          <p className="w-full text-xs break-words text-red-700 dark:text-red-300">{post.error ?? "Publishing failed."}</p>
+          {multi ? (
+            <TargetList post={post} only={["failed"]} className="text-red-800 dark:text-red-200" />
+          ) : (
+            <p className="w-full text-xs break-words text-red-700 dark:text-red-300">{post.error ?? "Publishing failed."}</p>
+          )}
           <button onClick={() => retry.mutate()} disabled={retry.isPending} className={cx(action, "bg-ink text-canvas")}>
-            {retry.isPending ? <LoaderCircle size={13} className="animate-spin" /> : <RotateCcw size={13} />} Retry
+            {retry.isPending ? <LoaderCircle size={13} className="animate-spin" /> : <RotateCcw size={13} />}{" "}
+            {multi && post.targets.some((t) => t.status === "published") ? "Retry the failed ones" : "Retry"}
+          </button>
+        </div>
+      )}
+      {missed && (
+        <div className="flex flex-wrap items-center gap-2 px-3 pb-3 sm:pl-27">
+          {post.error && <p className="w-full text-xs break-words text-amber-900 dark:text-amber-200">{post.error}</p>}
+          <button onClick={() => retry.mutate()} disabled={retry.isPending} className={cx(action, "bg-ink text-canvas")}>
+            {retry.isPending ? <LoaderCircle size={13} className="animate-spin" /> : <RotateCcw size={13} />} Publish now
           </button>
         </div>
       )}
@@ -296,7 +315,24 @@ function Published({ health }: { health: Health }) {
               <Preview post={post} />
             </div>
           </button>
-          {post.url && (
+          {post.targets.length > 0 ? (
+            <div className="flex shrink-0 flex-col items-end gap-0.5">
+              {post.targets.map((t) =>
+                t.url ? (
+                  <a
+                    key={t.accountId}
+                    href={t.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`View on ${PLATFORMS[t.platform].name}`}
+                    className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-ink-2 hover:bg-subtle hover:text-ink"
+                  >
+                    <PlatformIcon platform={t.platform} size={12} /> View <ExternalLink size={11} />
+                  </a>
+                ) : null,
+              )}
+            </div>
+          ) : post.url && (
             <a
               href={post.url}
               target="_blank"

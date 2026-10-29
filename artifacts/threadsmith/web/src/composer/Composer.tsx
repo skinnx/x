@@ -1,4 +1,5 @@
 // The home screen: a thread as sortable post cards (or one text area), autosaved, with scheduling and the copilot.
+// With connected accounts selected as destinations, each card counts per platform and accounts can get their own version.
 import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { useQueryClient } from "@tanstack/react-query";
@@ -19,26 +20,32 @@ import {
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { PLATFORMS } from "../../../shared/platforms.ts";
 import { joinThread, splitThread, weightedLength } from "../../../shared/thread.ts";
-import type { Health, Post, Segment } from "../../../shared/types.ts";
+import type { Account, Health, Post, Segment } from "../../../shared/types.ts";
 import { api, ApiError, intentUrl, liveSummary, remainingThread } from "../api.ts";
 import { Popover } from "../components/Popover.tsx";
 import { dismissToast, toast, toastError } from "../components/Toasts.tsx";
 import { useCommands, type Command } from "../lib/commands.ts";
 import { copyThread as copyExport, useLiveEvent } from "../lib/live.ts";
 import { adoptPostId, navigate, newDraft } from "../lib/router.ts";
+import { joinedMeter, limitFor, PlatformIcon, postMeters, strictest, useAccounts, type Meter } from "../lib/platforms.tsx";
 import { formatWhen } from "../lib/time.ts";
 import { cx, keys, uid } from "../lib/util.ts";
 import { AiPanel, type AiSection } from "./AiPanel.tsx";
 import { AltTextDialog } from "./AltTextDialog.tsx";
+import { Destinations } from "./Destinations.tsx";
 import { MAX_IMAGES, PostCard, type PendingUpload } from "./PostCard.tsx";
 import { ScheduleBar, type Busy } from "./ScheduleBar.tsx";
 import { StatusBanner } from "./StatusBanner.tsx";
-import { blankSegment, isBlank, useDraft, type SaveState } from "./useDraft.ts";
+import { blankSegment, isBlank, useDraft, type DraftTarget, type SaveState } from "./useDraft.ts";
 
 const SEPARATOR = /^\s*-{3,}\s*$/m;
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** "Post 1 is already live on X" / "Posts 1–3 are already live on Bluesky". */
+const liveText = (n: number, where: string) => (where === "X" ? liveSummary(n) : `${n === 1 ? "Post 1 is" : `Posts 1–${n} are`} already live on ${where}`);
 
 function pref(key: string, fallback: boolean): boolean {
   try {
@@ -170,10 +177,48 @@ export function Composer(props: Props) {
   const draft = useDraft(props.postId, onCreated);
   const thread = draft.thread;
   const post = draft.post;
+  const { data: accounts = [] } = useAccounts();
+  const targets = draft.targets;
+  const version = draft.version;
+  const accountOf = (id: string) => accounts.find((a) => a.id === id);
   const readOnly = post?.status === "published" || post?.status === "publishing";
-  // A thread that stopped partway on X: its first posts are live, so they can't change (Retry resumes by position).
-  const liveCount = readOnly ? 0 : Math.min(post?.xPostIds.length ?? 0, thread?.length ?? 0);
-  const isLocked = (index: number) => readOnly || index < liveCount;
+  // The version on screen already went out to its account: nothing in it can change.
+  const versionProgress = version ? post?.targets.find((t) => t.accountId === version) : undefined;
+  const viewLocked = readOnly || versionProgress?.status === "published";
+  // A thread that stopped partway (on X, or on a destination using the thread on screen): its first posts are live,
+  // so they can't change (Retry resumes by position).
+  const live = useMemo(() => {
+    const none = { count: 0, where: "X", url: (_i: number): string | null => null };
+    if (viewLocked || !post || !thread) return none;
+    let best = { count: post.xPostIds.length, where: "X", url: (i: number): string | null => `https://x.com/i/status/${post.xPostIds[i]}` };
+    for (const t of post.targets) {
+      const mine = version ? t.accountId === version : !t.thread;
+      if (!mine || t.status === "published" || PLATFORMS[t.platform].threadMode === "single") continue;
+      if (version || t.externalIds.length > best.count) best = { count: t.externalIds.length, where: PLATFORMS[t.platform].name, url: (i) => (i === 0 ? t.url : null) };
+    }
+    if (version && best.where === "X") return none;
+    return { ...best, count: Math.min(best.count, thread.length) };
+  }, [viewLocked, post, thread, version]);
+  const liveCount = live.count;
+  const isLocked = (index: number) => viewLocked || index < liveCount;
+
+  // Who the thread on screen goes to: the version's account, or every destination without its own version.
+  // No destinations at all = the original single-X mode (X's weighted count against the config limit).
+  const legacy = targets.length === 0;
+  const activeAccounts = (version ? [version] : targets.filter((t) => !t.thread).map((t) => t.accountId))
+    .map(accountOf)
+    .filter((a): a is Account => Boolean(a));
+  const metersFor = (seg: Segment): Meter[] =>
+    legacy
+      ? [{ key: "x", label: "X", platform: "x", length: weightedLength(seg.text), max: maxChars }]
+      : postMeters(seg.text, seg.mediaIds.length, activeAccounts, health);
+  const joined = legacy || !thread ? [] : activeAccounts.filter((a) => PLATFORMS[a.platform].threadMode === "single").map((a) => joinedMeter(thread, a, health));
+  const maxImages = legacy || !activeAccounts.length ? MAX_IMAGES : Math.min(...activeAccounts.map((a) => PLATFORMS[a.platform].maxImages));
+  const imageRules = activeAccounts
+    .filter((a, i, all) => PLATFORMS[a.platform].imageTypes && all.findIndex((b) => b.platform === a.platform) === i)
+    .map((a) => ({ name: PLATFORMS[a.platform].name, types: PLATFORMS[a.platform].imageTypes! }));
+  const threadLimits = activeAccounts.filter((a) => PLATFORMS[a.platform].threadMode !== "single").map((a) => limitFor(a, health));
+  const activeLimit = legacy || !threadLimits.length ? maxChars : Math.min(...threadLimits);
 
   const [textMode, setTextMode] = useState(() => pref("threadsmith:textMode", false));
   const [aiOpen, setAiOpen] = useState(() => pref("threadsmith:copilot", aiEnabled));
@@ -186,6 +231,9 @@ export function Composer(props: Props) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [slotTarget, setSlotTarget] = useState(props.slot);
+  const [adapting, setAdapting] = useState<string | null>(null);
+  /** Why a destination would refuse the post, from the last pre-flight check; cleared by the next edit. */
+  const [refusals, setRefusals] = useState<{ accountId: string | null; label: string; problem: string }[] | null>(null);
 
   const textareas = useRef(new Map<string, HTMLTextAreaElement>());
   const pendingFocus = useRef<{ id: string; at: "start" | "end" } | null>(null);
@@ -226,7 +274,7 @@ export function Composer(props: Props) {
     } else draft.applyRemote(event.post);
   });
 
-  const empty = !thread || isBlank(thread);
+  const empty = !draft.sharedThread || isBlank(draft.sharedThread);
   const segIndex = (id: string) => draft.thread?.findIndex((s) => s.id === id) ?? -1;
   const focusCard = (id: string, at: "start" | "end") => (pendingFocus.current = { id, at });
 
@@ -236,11 +284,95 @@ export function Composer(props: Props) {
       aiUndo.current = null;
       dismissToast("ai-undo");
     }
+    setRefusals(null);
     draft.setThread(next);
   };
 
+  const setTargets = (next: DraftTarget[]) => {
+    setRefusals(null);
+    draft.setTargets(next);
+  };
+  const switchVersion = (id: string | null) => {
+    aiUndo.current = null;
+    dismissToast("ai-undo");
+    setFocusedId(null);
+    draft.setVersion(id);
+  };
+  const toggleTarget = (a: Account) => {
+    const before = draft.targets;
+    const existing = before.find((t) => t.accountId === a.id);
+    if (!existing) return setTargets([...before, { accountId: a.id, thread: null }]);
+    setTargets(before.filter((t) => t !== existing));
+    if (existing.thread)
+      toast({ title: `Removed ${a.label} and its own version`, actions: [{ label: "Undo", onClick: () => setTargets(before) }], duration: 8000 });
+  };
+  /** Fork the shared thread into a version just for this account. */
+  const customize = (a: Account) => {
+    const base = draft.sharedThread ?? [];
+    setTargets(draft.targets.map((t) => (t.accountId === a.id ? { ...t, thread: base.map((s) => ({ ...s, id: uid() })) } : t)));
+    switchVersion(a.id);
+  };
+  const resetVersion = (a: Account) => {
+    const before = draft.targets;
+    switchVersion(null);
+    setTargets(before.map((t) => (t.accountId === a.id ? { ...t, thread: null } : t)));
+    toast({ title: `${a.label} gets the shared thread again`, actions: [{ label: "Undo", onClick: () => setTargets(before) }], duration: 8000 });
+  };
+  const adapt = async (a: Account) => {
+    const shared = draft.sharedThread ?? [];
+    setAdapting(a.id);
+    try {
+      const { posts } = await api.ai.adapt(joinThread(shared.map((s) => s.text)), a.platform, a.id);
+      if (!posts.length) throw new Error("The copilot returned nothing");
+      // Images stay with the post at the same position; any beyond the new length go on the last post.
+      const cap = PLATFORMS[a.platform].maxImages;
+      const next = posts.map((text, i) => ({ id: uid(), text, mediaIds: shared[i]?.mediaIds ?? [] }));
+      const extra = shared.slice(posts.length).flatMap((s) => s.mediaIds);
+      const last = next[next.length - 1]!;
+      last.mediaIds = [...last.mediaIds, ...extra].slice(0, cap);
+      const before = draft.targets;
+      setTargets(before.map((t) => (t.accountId === a.id ? { ...t, thread: next } : t)));
+      switchVersion(a.id);
+      toast({
+        id: "ai-undo",
+        title: `Adapted for ${PLATFORMS[a.platform].name}`,
+        tone: "success",
+        actions: [{ label: "Undo", onClick: () => setTargets(before) }],
+        duration: 10_000,
+      });
+    } catch (e) {
+      toastError(`Couldn't adapt for ${PLATFORMS[a.platform].name}`, e);
+    } finally {
+      setAdapting(null);
+    }
+  };
+
+  /**
+   * Ask the server what each destination would do with the saved post (limits, image counts, empty posts) and
+   * refuse to queue or publish when any would be rejected.
+   */
+  const destinationsAccept = async (id: string): Promise<boolean> => {
+    if (!draft.targets.length) return true;
+    const preview = await api.preview(id);
+    const bad = preview.filter((t) => t.problem).map((t) => ({ accountId: t.accountId, label: t.label, problem: t.problem! }));
+    if (!bad.length) return true;
+    setRefusals(bad);
+    const first = bad[0]!;
+    const acct = first.accountId ? accountOf(first.accountId) : undefined;
+    const forkable = acct && !draft.targets.find((t) => t.accountId === acct.id)?.thread;
+    toast({
+      id: "preflight",
+      title: bad.length > 1 ? `${bad.length} destinations would refuse this post` : `${first.label} would refuse this post`,
+      description: bad.length > 1 ? "Details are above the thread." : first.problem,
+      tone: "error",
+      duration: 12_000,
+      actions: forkable ? [{ label: `Customize for ${acct.label}`, onClick: () => customize(acct) }] : undefined,
+    });
+    return false;
+  };
+
   const applyAi = (next: Segment[], label: string) => {
-    if (readOnly) return toast({ title: "This post can no longer be edited", tone: "error" });
+    if (viewLocked) return toast({ title: "This post can no longer be edited", tone: "error" });
     aiUndo.current = draft.thread;
     draft.setThread(next);
     toast({ id: "ai-undo", title: label, tone: "success", actions: [{ label: `Undo (${keys.undo})`, onClick: undoAi }], duration: 10_000 });
@@ -313,8 +445,8 @@ export function Composer(props: Props) {
   const addImages = async (segId: string, files: File[]) => {
     const seg = draft.thread?.find((s) => s.id === segId);
     if (!seg) return;
-    const room = MAX_IMAGES - seg.mediaIds.length - (uploads[segId]?.length ?? 0);
-    if (files.length > room) toast({ title: `Up to ${MAX_IMAGES} images per post`, tone: "error" });
+    const room = maxImages - seg.mediaIds.length - (uploads[segId]?.length ?? 0);
+    if (files.length > room) toast({ title: `Up to ${maxImages} images per post`, tone: "error" });
     const accepted = files.slice(0, Math.max(room, 0)).filter((f) => {
       if (!IMAGE_TYPES.includes(f.type)) toast({ title: `${f.name || "That file"} isn't a PNG, JPEG, WebP or GIF`, tone: "error" });
       else if (f.size > MAX_IMAGE_BYTES) toast({ title: `${f.name || "Image"} is over X's 5 MB limit`, tone: "error" });
@@ -342,11 +474,12 @@ export function Composer(props: Props) {
 
   const fitPost = async (seg: Segment) => {
     setFitting(seg.id);
+    const limit = strictest(metersFor(seg))?.max ?? maxChars;
     try {
-      const { text } = await api.ai.fit(seg.text, maxChars);
+      const { text } = await api.ai.fit(seg.text, limit);
       applyAi(
         (draft.thread ?? []).map((s) => (s.id === seg.id ? { ...s, text } : s)),
-        `Fit post ${segIndex(seg.id) + 1} to ${maxChars}`,
+        `Fit post ${segIndex(seg.id) + 1} to ${limit}`,
       );
     } catch (e) {
       toastError("Couldn't shorten the post", e);
@@ -355,7 +488,8 @@ export function Composer(props: Props) {
     }
   };
 
-  const overLimit = () => (draft.thread ?? []).findIndex((s) => weightedLength(s.text) > maxChars);
+  // Single-X mode only; with destinations the server's pre-flight (destinationsAccept) decides.
+  const overLimit = () => (draft.targets.length ? -1 : (draft.sharedThread ?? []).findIndex((s) => weightedLength(s.text) > maxChars));
 
   const slotPassed = (at: string) =>
     toast({
@@ -391,6 +525,7 @@ export function Composer(props: Props) {
       await draft.flush();
       const id = draft.currentId();
       if (!id) throw new Error("The draft hasn't been saved yet");
+      if (!(await destinationsAccept(id))) return setBusy(null);
       const saved = await api.schedule(id, at);
       setPickerOpen(false);
       toast({
@@ -444,9 +579,17 @@ export function Composer(props: Props) {
     setBusy("publish");
     try {
       await draft.flush();
+      if (!(await destinationsAccept(draft.currentId()!))) return;
       const result = await api.publish(draft.currentId()!);
       draft.setPost(result);
-      if (result.status === "published")
+      if (result.targets.length) {
+        const ok = result.targets.filter((t) => t.status === "published").length;
+        toast(
+          result.status === "published"
+            ? { id: `published-${result.id}`, title: `Published to ${ok === 1 ? "1 destination" : `${ok} destinations`}`, tone: "success" }
+            : { id: `failed-${result.id}`, title: `Published to ${ok} of ${result.targets.length} destinations`, description: "See what failed above the thread.", tone: "error" },
+        );
+      } else if (result.status === "published")
         toast({
           id: `published-${result.id}`,
           title: "Posted to X",
@@ -532,6 +675,7 @@ export function Composer(props: Props) {
     return () => removeEventListener("keydown", onKey);
   }, []);
 
+  const hasTargets = targets.length > 0;
   const commands = useMemo<Command[]>(() => {
     const a = () => actions.current;
     const list: Command[] = [
@@ -543,10 +687,10 @@ export function Composer(props: Props) {
       { id: "ai-hooks", group: "AI", title: "Suggest opening hooks", icon: MessageSquareQuote, keywords: "copilot first post", run: () => a().openAi("hooks") },
       { id: "ai-rewrite", group: "AI", title: "Rewrite the focused post…", icon: PenLine, keywords: "copilot edit", run: () => a().openAi("rewrite") },
     ];
-    if (health.x.mode === "api")
+    if (health.x.mode === "api" || hasTargets)
       list.push({ id: "publish", group: "Thread", title: "Publish now", icon: Send, run: () => void a().publishNow() });
     return list;
-  }, [health.x.mode]);
+  }, [health.x.mode, hasTargets]);
   useCommands("composer", commands);
 
   if (draft.missing)
@@ -565,9 +709,10 @@ export function Composer(props: Props) {
   const focused = thread?.find((s) => s.id === focusedId) ?? null;
   const focusedIndex = focused && thread ? thread.indexOf(focused) : -1;
   const aiTarget = focused && !isLocked(focusedIndex) ? { index: focusedIndex, text: focused.text } : null;
-  const showText = textMode && !readOnly && liveCount === 0;
+  const showText = textMode && !viewLocked && liveCount === 0;
   // "Open in X" prefills the first post that isn't on X yet, as a reply when earlier posts are live.
-  const openInX = post && thread ? remainingThread({ ...post, thread }).intent : intentUrl(thread?.[0]?.text ?? "");
+  const shared = draft.sharedThread;
+  const openInX = post && shared ? remainingThread({ ...post, thread: shared }).intent : intentUrl(shared?.[0]?.text ?? "");
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -575,7 +720,7 @@ export function Composer(props: Props) {
         <header className="flex h-14 shrink-0 items-center gap-2 px-4 sm:px-6">
           <StatusLabel post={post} saveState={draft.saveState} tz={health.timezone} />
           <div className="flex-1" />
-          {!readOnly && (
+          {!viewLocked && (
             <div role="group" aria-label="Editor mode" className="flex rounded-lg border border-line p-0.5">
               {[
                 { on: !showText, icon: LayoutList, label: "Cards" },
@@ -590,7 +735,7 @@ export function Composer(props: Props) {
                     label === "Cards"
                       ? "One card per post"
                       : liveCount > 0
-                        ? `Text mode is off for this thread: ${liveSummary(liveCount)} and can't be changed. Edit the rest as cards.`
+                        ? `Text mode is off for this thread: ${liveText(liveCount, live.where)} and can't be changed. Edit the rest as cards.`
                         : "Whole thread as one text, posts separated by ---"
                   }
                   className={cx(
@@ -651,6 +796,35 @@ export function Composer(props: Props) {
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-[640px] px-3 pt-2 pb-16 sm:px-6">
+            {thread && (accounts.length > 0 || targets.length > 0) && (
+              <Destinations
+                accounts={accounts}
+                targets={targets}
+                post={post}
+                health={health}
+                readOnly={readOnly}
+                version={version}
+                aiEnabled={aiEnabled}
+                adapting={adapting}
+                onToggle={toggleTarget}
+                onVersion={switchVersion}
+                onCustomize={customize}
+                onReset={resetVersion}
+                onAdapt={(a) => void adapt(a)}
+              />
+            )}
+            {refusals && (
+              <div role="alert" className="mb-4 ml-10 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-900 dark:border-red-900 dark:bg-red-950/50 dark:text-red-100">
+                <p className="font-medium">Not queued: {refusals.length > 1 ? "these destinations" : refusals[0]!.label} would refuse it</p>
+                <ul className="mt-1 space-y-0.5 text-xs">
+                  {refusals.map((r) => (
+                    <li key={r.accountId ?? "x"}>
+                      <span className="font-medium">{r.label}:</span> {r.problem}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {post && (
               <StatusBanner
                 post={post}
@@ -675,7 +849,7 @@ export function Composer(props: Props) {
             )}
 
             {textMode && liveCount > 0 && (
-              <p className="mb-3 ml-10 text-xs text-ink-3">Showing cards: text mode is off while part of this thread is live on X.</p>
+              <p className="mb-3 ml-10 text-xs text-ink-3">Showing cards: text mode is off while part of this thread is live on {live.where}.</p>
             )}
             <div data-thread-editor>
             {!thread ? (
@@ -684,7 +858,7 @@ export function Composer(props: Props) {
                 <div className="h-20 animate-pulse rounded-2xl bg-subtle" />
               </div>
             ) : showText ? (
-              <TextMode thread={thread} maxChars={maxChars} onChange={edit} />
+              <TextMode key={version ?? "shared"} thread={thread} meter={(t, images) => strictest(metersFor({ id: "", text: t, mediaIds: Array(images).fill("") }))} onChange={edit} />
             ) : (
               <Cards
                 thread={thread}
@@ -701,9 +875,11 @@ export function Composer(props: Props) {
                     segment={seg}
                     index={i}
                     total={thread.length}
-                    maxChars={maxChars}
+                    meters={metersFor(seg)}
+                    maxImages={maxImages}
+                    imageRules={imageRules}
                     readOnly={isLocked(i)}
-                    liveUrl={i < liveCount ? `https://x.com/i/status/${post!.xPostIds[i]}` : undefined}
+                    live={i < liveCount ? { where: live.where, url: live.url(i) } : undefined}
                     uploads={uploads[seg.id] ?? []}
                     aiEnabled={aiEnabled}
                     fitting={fitting === seg.id}
@@ -722,7 +898,24 @@ export function Composer(props: Props) {
             )}
             </div>
 
-            {thread && !readOnly && !showText && (
+            {joined.map((m) => (
+              <p
+                key={m.key}
+                className={cx(
+                  "mb-2 ml-10 flex items-center gap-1.5 text-xs tabular-nums",
+                  m.length > m.max ? "font-medium text-red-600 dark:text-red-400" : "text-ink-3",
+                )}
+              >
+                <PlatformIcon platform={m.platform} size={12} tint={false} />
+                {m.label}: {thread!.length > 1 ? "joined into one post" : "one post"} · {m.length}/{m.max}
+                {m.length > m.max && " · too long, shorten it or customize a version"}
+              </p>
+            ))}
+            {!legacy && !version && !activeAccounts.length && thread && (
+              <p className="mb-2 ml-10 text-xs text-ink-3">Every destination has its own version, so this shared thread isn't posted anywhere.</p>
+            )}
+
+            {thread && !viewLocked && !showText && (
               <div className="flex items-center gap-3 pl-10">
                 <button
                   onClick={() => addPost()}
@@ -738,7 +931,7 @@ export function Composer(props: Props) {
                 )}
               </div>
             )}
-            {thread && !readOnly && (
+            {thread && !viewLocked && (
               <p className="mt-10 hidden text-center text-xs text-ink-3 sm:block">
                 {post?.status !== "scheduled" && (
                   <>
@@ -759,7 +952,8 @@ export function Composer(props: Props) {
                 post={post}
                 empty={empty}
                 openInX={openInX}
-                live={liveCount}
+                live={version ? 0 : liveCount}
+                destinations={targets.length}
                 slotTarget={slotTarget}
                 pickerOpen={pickerOpen}
                 setPickerOpen={setPickerOpen}
@@ -781,7 +975,7 @@ export function Composer(props: Props) {
           <aside className="z-40 w-[340px] shrink-0 border-l border-line bg-canvas max-xl:fixed max-xl:inset-y-0 max-xl:right-0 max-xl:w-[min(360px,100vw)] max-xl:animate-slide-in max-xl:shadow-2xl">
             <AiPanel
               ai={health.ai}
-              maxChars={maxChars}
+              maxChars={activeLimit}
               thread={thread ?? []}
               target={aiTarget}
               focus={aiFocus}
@@ -799,7 +993,7 @@ export function Composer(props: Props) {
               }}
               onReplacePost={(index, text, label) =>
                 isLocked(index)
-                  ? toast({ title: `Post ${index + 1} can't be changed`, description: `${liveSummary(liveCount)}.`, tone: "error" })
+                  ? toast({ title: `Post ${index + 1} can't be changed`, description: `${liveText(liveCount, live.where)}.`, tone: "error" })
                   : applyAi((draft.thread ?? []).map((s, i) => (i === index ? { ...s, text } : s)), label)
               }
             />
@@ -826,7 +1020,7 @@ function Cards(p: { thread: Segment[]; onReorder: (e: DragEndEvent) => void; chi
   );
 }
 
-function TextMode(p: { thread: Segment[]; maxChars: number; onChange: (thread: Segment[]) => void }) {
+function TextMode(p: { thread: Segment[]; meter: (text: string, images: number) => Meter | null; onChange: (thread: Segment[]) => void }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const sig = JSON.stringify(p.thread.map((s) => s.text));
   // Raw text is local while typing; resync (and re-base the image mapping) when the thread changes from
@@ -862,17 +1056,19 @@ function TextMode(p: { thread: Segment[]; maxChars: number; onChange: (thread: S
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs tabular-nums">
         {parts.map((t, i) => {
-          const n = weightedLength(t);
           const images = p.thread[i]?.mediaIds.length ?? 0;
+          const m = p.meter(t, images);
+          const over = m ? m.length > m.max : false;
           return (
             <span
               key={i}
+              title={m ? `${m.length}/${m.max} on ${m.label}` : undefined}
               className={cx(
                 "flex items-center gap-1 rounded-full px-2 py-0.5",
-                n > p.maxChars ? "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300" : "bg-subtle text-ink-2",
+                over ? "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300" : "bg-subtle text-ink-2",
               )}
             >
-              {i + 1} · {n > p.maxChars ? `−${n - p.maxChars}` : n}
+              {i + 1} · {m ? (over ? `${m.platform !== "x" ? `${m.label} ` : ""}−${m.length - m.max}` : m.length) : t.length}
               {images > 0 && (
                 <span className="flex items-center gap-0.5" title={`${images} image${images > 1 ? "s" : ""}`}>
                   · <ImageIcon size={11} aria-label="images" /> {images}

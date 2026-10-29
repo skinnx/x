@@ -208,7 +208,7 @@ const COUNTING: Record<PlatformId, string> = {
   x: "X weighs characters: most Latin letters, digits and punctuation count 1; CJK characters and each emoji count 2; Vietnamese letters from Unicode's Latin Extended Additional block (ạ, ả, ấ, ầ, ệ, ố, ở, ữ) count 2 while á, à, é, ó, ơ, ư, đ count 1; every link counts 23.",
   bluesky: "Bluesky counts graphemes (what a reader sees as one character: an emoji or a Vietnamese letter with its marks is 1). Links are NOT shortened: every character of a URL counts, so prefer short links.",
   mastodon: "Mastodon counts characters (Unicode code points); every link counts 23 however long it is.",
-  threads: "Threads counts characters (Unicode code points); links count in full.",
+  threads: "Threads counts characters (Unicode code points), but each emoji counts as its UTF-8 byte length (usually 4, more for flags and combined emoji), so emoji are expensive; links count in full.",
   linkedin: "LinkedIn counts characters (Unicode code points); links count in full.",
   telegram: "Telegram counts characters (Unicode code points); a message with a photo has a 1024-character caption limit.",
   discord: "Discord counts characters (Unicode code points); links count in full.",

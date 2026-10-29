@@ -290,6 +290,22 @@ const threadArgs = {
   text: z.string().optional().describe("The thread as one text: posts separated by a line containing only ---"),
   posts: z.array(z.string()).min(1).optional().describe("Alternatively, one string per post, in order"),
 };
+const to = z
+  .array(z.string().min(1))
+  .optional()
+  .describe(
+    "Destinations: connected accounts, each by id, label, handle (@you, you.bsky.social) or platform name (\"bluesky\", \"LinkedIn\": only when exactly one account " +
+      "of that platform is connected). Ambiguous or unknown references are refused with the list of choices. Omit to use the legacy single-X mode " +
+      "(the .env X API keys, or manual copy & post); [] on update_post goes back to it.",
+  );
+const versions = z
+  .record(z.string(), z.union([z.string(), z.array(z.string()).min(1), z.null()]))
+  .optional()
+  .describe(
+    "Per-destination versions, keyed by the same kind of reference as `to`: a text with --- separators or an array of posts that this account publishes " +
+      "instead of the main thread (e.g. a shorter X thread, one long LinkedIn post); null removes a version. Every key must be a destination. " +
+      "Images carry over by position. Use count_characters with that platform first.",
+  );
 const when = z
   .string()
   .describe(
@@ -303,8 +319,9 @@ tool(
     title: "Get settings",
     description:
       "Read this instance's settings before drafting or scheduling: timezone and current local time, the per-post character limit (maxChars), " +
-      'posting slots, X mode ("api" = Threadsmith publishes automatically at the scheduled time; "manual" = no X API keys, the person is notified ' +
-      "and copies the thread into X by hand), whether the built-in AI copilot is on (it serves the Threadsmith UI and REST; there are no copilot " +
+      'posting slots, X mode for posts without destinations ("api" = Threadsmith publishes automatically through the .env X keys at the scheduled time; ' +
+      '"manual" = no X API keys, the person is notified and copies the thread into X by hand), the connected accounts posts can go to (`to` in create_post), ' +
+      "whether the built-in AI copilot is on (it serves the Threadsmith UI and REST; there are no copilot " +
       "tools here, you write the text), and voiceExamples: the person's own past posts. " +
       "Match their voice and language when you write for them.",
     input: {},
@@ -313,16 +330,63 @@ tool(
   () => {
     const c = getConfig();
     const now = new Date().toISOString();
-    return result(`Timezone ${c.timezone}, limit ${c.maxChars} characters per post, X mode ${xConfigured ? "api" : "manual"}.`, {
+    const accounts = listAccounts().map((a) => ({ id: a.id, platform: a.platform, label: a.label, handle: a.handle, limit: limitFor(a), lastError: a.lastError }));
+    return result(
+      `Timezone ${c.timezone}, X limit ${c.maxChars} characters per post, X mode ${xConfigured ? "api" : "manual"} (posts without destinations), ` +
+        `${accounts.length} connected account(s)${accounts.length ? `: ${accounts.map((a) => `${a.label} (${PLATFORMS[a.platform].name})`).join(", ")}` : ""}.`,
+      {
       timezone: c.timezone,
       now,
       nowLocal: local(now),
       maxChars: c.maxChars,
       slots: c.slots,
       xMode: xConfigured ? "api" : "manual",
+      accounts,
       ai: aiStatus(),
       voiceExamples: voiceExamples(),
-    });
+      },
+    );
+  },
+);
+
+tool(
+  "list_platforms",
+  {
+    title: "List platforms",
+    description:
+      "Every platform Threadsmith can post to, with its default per-post character limit, how it counts (X weighted; Bluesky graphemes with links in full; " +
+      "Mastodon links 23; Threads emoji = their UTF-8 bytes, usually 4; others code points), images per post and accepted image types, threadMode (replies = a reply chain; single = LinkedIn joins the thread into one post; " +
+      "messages = consecutive messages on Telegram/Discord) and the cost note (X's API is paid per post; the others are free). " +
+      "Connecting an account needs the person's secrets, so it is done by the person in the Threadsmith UI (or REST POST /api/accounts), not through these tools.",
+    input: {},
+    annotations: READ,
+  },
+  () => {
+    const accounts = listAccounts();
+    const platforms = Object.values(PLATFORMS).map(({ credentials: _c, ...p }) => ({ ...p, connected: accounts.filter((a) => a.platform === p.id).length }));
+    return result(platforms.map((p) => `${p.name}: ${p.maxChars} chars, ${p.threadMode}${p.connected ? `, ${p.connected} connected` : ""}`).join("; "), { platforms });
+  },
+);
+
+tool(
+  "list_accounts",
+  {
+    title: "List connected accounts",
+    description:
+      "The connected accounts a post can go to: id, platform, label, handle, effective character limit and lastError (set when the latest check or publish was " +
+      "refused, e.g. an expired token: tell the person to reconnect it in the UI). Pass ids, labels, handles or platform names as `to` in create_post / update_post. " +
+      "There is no tool to connect accounts: that needs the person's secrets, so they do it in the Threadsmith UI.",
+    input: {},
+    annotations: READ,
+  },
+  () => {
+    const accounts = listAccounts().map((a) => ({ ...a, limit: limitFor(a), threadMode: PLATFORMS[a.platform].threadMode }));
+    return result(
+      accounts.length
+        ? accounts.map((a) => `${describeAccount(a)}${a.lastError ? ` — ERROR: ${a.lastError}` : ""}`).join("; ")
+        : "No accounts connected; posts use the legacy single-X mode. The person can connect accounts in the Threadsmith UI.",
+      { accounts },
+    );
   },
 );
 
@@ -331,23 +395,39 @@ tool(
   {
     title: "Count characters",
     description:
-      "Count each post of a draft exactly as X does (weighted: CJK characters and emoji count 2; Vietnamese letters from Unicode's " +
-      "Latin Extended Additional block such as ạ ấ ệ ố ữ count 2, while á à é ó ơ ư đ count 1; every link counts 23) against this instance's limit. " +
-      "Pass `text` (posts separated by a line containing only ---) or `posts`. " +
-      "Use it on every draft before create_post or update_post, and shorten any post where fits is false. " +
-      "hasLink marks posts containing a URL: those cost more on X's API and usually get less reach.",
-    input: threadArgs,
+      "Count each post of a draft the way a platform does, against its limit. Default X (weighted: CJK characters and emoji count 2; Vietnamese letters from Unicode's " +
+      "Latin Extended Additional block such as ạ ấ ệ ố ữ count 2, while á à é ó ơ ư đ count 1; every link counts 23; limit = this instance's maxChars). " +
+      "`platform` bluesky counts graphemes (300; links count in full), mastodon code points with links as 23 (500), threads 500 (each emoji counts its UTF-8 bytes, usually 4), linkedin 3000 (the thread is " +
+      "joined into ONE post, so the joined count is what matters), telegram 4096 (1024 for a photo caption), discord 2000. `account` uses that connected account's " +
+      "own limit (e.g. X Premium). Pass `text` (posts separated by a line containing only ---) or `posts`. " +
+      "Use it on every draft and every per-destination version before create_post or update_post, and shorten any post where fits is false. " +
+      "hasLink marks posts containing a URL: on X those cost more through the API and usually get less reach.",
+    input: {
+      ...threadArgs,
+      platform: z.enum(PLATFORM_IDS).optional().describe("Count as this platform does (default x)"),
+      account: z.string().optional().describe("A connected account (id, label, handle or platform name): its platform and its own limit"),
+    },
     annotations: { ...READ, idempotentHint: true },
   },
   (args) => {
     const parts = toThread(args)?.map((s) => s.text);
     if (!parts) throw new Error("Give `text` or `posts`.");
-    const posts = counts(parts);
-    const limit = getConfig().maxChars;
+    const account = args.account ? resolveAccount(args.account, listAccounts()) : undefined;
+    if (account && args.platform && account.platform !== args.platform) {
+      throw new BadInputError(`${describeAccount(account)} is not a ${PLATFORMS[args.platform].name} account.`);
+    }
+    const platform = account?.platform ?? args.platform ?? "x";
+    const limit = account ? limitFor(account) : platform === "x" ? getConfig().maxChars : PLATFORMS[platform].maxChars;
+    const single = PLATFORMS[platform].threadMode === "single" && parts.length > 1;
+    const items = single ? itemsFor(platform, parts.map((text) => ({ text, mediaIds: [] }))).map((i) => i.text) : parts;
+    const posts = counts(items, platform, limit);
     const allFit = posts.length > 0 && posts.every((p) => p.fits);
+    const name = PLATFORMS[platform].name;
     return result(
-      `${posts.length} post(s), limit ${limit}: ${posts.map((p) => `[${p.index}] ${p.chars}${p.fits ? "" : " OVER"}`).join(", ")}${allFit ? " — all fit." : ""}`,
-      { limit, allFit, posts },
+      `${single ? `${name} joins the ${parts.length} posts into one: ` : ""}${posts.length} item(s) on ${name}, limit ${limit}: ` +
+        `${posts.map((p) => `[${p.index}] ${p.chars}${p.fits ? "" : " OVER"}`).join(", ")}${allFit ? " — all fit." : ""}` +
+        (platform === "telegram" ? ` Items with a photo are limited to ${TELEGRAM_CAPTION_LIMIT}.` : ""),
+      { platform, limit, joined: single, allFit, posts },
     );
   },
 );
@@ -402,8 +482,9 @@ tool(
   {
     title: "Get a post",
     description:
-      "Get one post: every post of the thread with its character count and attached image ids, title, status, schedule (UTC and local), " +
-      "the X URL once published, the last error, and the log of publish attempts.",
+      "Get one post: every post of the thread with its X character count and attached image ids, title, status, schedule (UTC and local), " +
+      "its destinations (per account: status, own version or not, per-item counts the platform's way, live items, URL, error, and `problem` = what would stop it), " +
+      "mode (accounts, or legacy-x-api / legacy-x-manual for a post without destinations), the URL once published, the last error, and the log of publish attempts.",
     input: { id },
     annotations: READ,
   },
@@ -419,21 +500,29 @@ tool(
     title: "Create a post or thread",
     description:
       "Save a new post or thread. Give `text` (posts separated by a line containing only ---) or `posts` (one string per post). " +
+      "`to` picks the destinations among the connected accounts (list_accounts), e.g. [\"bluesky\", \"@me\", \"Work LinkedIn\"]; each gets the same thread unless " +
+      "`versions` gives it its own (e.g. {\"linkedin\": \"one longer post\"}). How a thread lands depends on the platform: X, Bluesky, Mastodon and Threads " +
+      "post a reply chain; LinkedIn joins the posts into ONE post (blank lines between them, 3000 characters); Telegram and Discord send consecutive messages. " +
+      "Without `to` the post uses the legacy single-X mode: the X API keys in .env, or manual copy & post. " +
       "Without `schedule` it is saved as a draft the person can review in the Threadsmith UI. " +
       'schedule "next" puts it in the next free posting slot from the configured schedule; an ISO-8601 time schedules it exactly. ' +
-      "Run count_characters first and show the person the thread before scheduling it. " +
+      "Run count_characters (with each destination's platform) first, show the person the thread, and check the result's warnings or preview_post before scheduling. " +
       "In manual X mode nothing is posted automatically: at the scheduled time the person is notified and copies the thread into X.",
     input: {
       ...threadArgs,
       title: z.string().max(200).optional().describe("Private label shown in the queue; never posted"),
+      to,
+      versions,
       schedule: when.optional(),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
-  ({ text, posts, title, schedule }) => {
+  ({ text, posts, title, to, versions, schedule }) => {
     const thread = toThread({ text, posts });
     if (!thread?.some((s) => s.text.trim())) throw new Error("Give the post text as `text` or `posts`.");
-    const p = createPost({ thread, title: title ?? null, scheduledAt: schedule ? toInstant(schedule) : null, source: "mcp" });
+    const shared = thread.map((s) => ({ id: "", text: s.text, mediaIds: s.mediaIds }));
+    const targets = buildTargets(undefined, to ?? (versions ? [] : undefined), versions, shared);
+    const p = createPost({ thread, title: title ?? null, targets, scheduledAt: schedule ? toInstant(schedule) : null, source: "mcp" });
     return postResult(p.scheduledAt ? `Scheduled for ${local(p.scheduledAt)} (${getConfig().timezone}).` : "Saved as a draft.", p);
   },
 );
@@ -443,17 +532,45 @@ tool(
   {
     title: "Edit a post",
     description:
-      "Replace the text (and optionally the title) of a draft, scheduled, due or failed post; published posts can't be edited. " +
-      "Give the whole new thread as `text` (--- separators) or `posts`. Images stay attached to the post at the same position. " +
-      "If a thread failed partway through publishing, the posts already live on X (xPostIds) can't be changed, removed or reordered: " +
-      "edit only the posts after them. The schedule is unchanged. Check counts with count_characters first.",
-    input: { id, ...threadArgs, title: z.string().max(200).nullable().optional() },
+      "Change the text, title, destinations or per-destination versions of a draft, scheduled, due or failed post; published posts can't be edited. " +
+      "Give the whole new thread as `text` (--- separators) or `posts`; images stay attached to the post at the same position. " +
+      "`to` replaces the destination list (accounts kept keep their versions; [] = back to the legacy single-X mode); omit it to keep the destinations. " +
+      "`versions` sets or (null) removes per-destination versions. LinkedIn joins whatever thread it gets into one post. " +
+      "If a thread failed partway through publishing, the posts already live somewhere (xPostIds, or a destination's live items) can't be changed, removed or " +
+      "reordered, and a partly published destination can't be removed: edit only the posts after them, then retry_post. The schedule is unchanged. " +
+      "Check counts with count_characters first.",
+    input: { id, ...threadArgs, title: z.string().max(200).nullable().optional(), to, versions },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
-  ({ id, text, posts, title }) => {
-    const thread = toThread({ text, posts }, requirePost(id).thread);
-    if (!thread && title === undefined) throw new Error("Nothing to change: give `text`, `posts` or `title`.");
-    return postResult("Updated.", updatePost(id, { thread, title }));
+  ({ id, text, posts, title, to, versions }) => {
+    const current = requirePost(id);
+    const thread = toThread({ text, posts }, current.thread);
+    if (!thread && title === undefined && to === undefined && versions === undefined) {
+      throw new Error("Nothing to change: give `text`, `posts`, `title`, `to` or `versions`.");
+    }
+    const shared = thread ? thread.map((s) => ({ id: s.id ?? "", text: s.text, mediaIds: s.mediaIds })) : current.thread;
+    const targets = buildTargets(current, to, versions, shared);
+    return postResult("Updated.", updatePost(id, { thread, title, targets }));
+  },
+);
+
+tool(
+  "preview_post",
+  {
+    title: "Preview per destination",
+    description:
+      "Show exactly what each destination of a saved post will publish: its items (its own version or the main thread; LinkedIn's joined single post), " +
+      "each counted the way that platform counts against the account's limit, and `problem`: what would make publishing there fail before anything is posted " +
+      "(null = ready). A post without destinations shows one entry for the legacy single-X mode. Use it before schedule_post or publish_now.",
+    input: { id },
+    annotations: READ,
+  },
+  ({ id }) => {
+    const { targets } = previewPost(requirePost(id));
+    const summary = targets
+      .map((t) => `${t.label} (${PLATFORMS[t.platform].name}, limit ${t.limit}): ${t.items.map((i) => `${i.count}${i.fits ? "" : " OVER"}`).join(", ")}${t.problem ? ` — ${t.problem}` : " — ready"}`)
+      .join("\n");
+    return result(summary, { targets, ready: targets.every((t) => !t.problem) });
   },
 );
 
@@ -503,13 +620,15 @@ tool(
   {
     title: "Publish now",
     description:
-      "Publish a draft, scheduled, due or failed post or thread to X right now through the X API, ignoring its schedule. Public, irreversible and billed per post by X: " +
-      "only when the person explicitly asks. In manual X mode (no API keys) this fails; use export_thread instead, let the person post it, then mark_published.",
+      "Publish a draft, scheduled, due or failed post or thread right now to every destination not yet published, ignoring its schedule. " +
+      "Public and irreversible (and billed per post on X's API; the other platforms are free): only when the person explicitly asks. " +
+      "Each destination succeeds or fails on its own; a failed one is listed in `error` and in its destination entry. " +
+      "A post without destinations uses the legacy single-X mode: in manual X mode (no API keys) this fails; use export_thread instead, let the person post it, then mark_published.",
     input: { id },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   },
   async ({ id }) => {
-    if (!xConfigured) {
+    if (!xConfigured && !requirePost(id).targets.length) {
       throw new ConflictError("X API keys aren't configured (manual mode). Use export_thread, have the person post it on X, then call mark_published.");
     }
     const p = await publishNow(id);
@@ -522,9 +641,9 @@ tool(
   {
     title: "Retry a failed or due post",
     description:
-      "Publish a failed or due post again through the X API. A thread resumes after the last post that reached X, so nothing is duplicated. " +
-      "Read the error with get_post first and fix the cause (text over the limit, credentials, a deleted image) before retrying. " +
-      "In manual X mode it only re-sends the copy & post notification.",
+      "Publish a failed or due post again, to the destinations that aren't published yet. Each thread resumes after the last item that went out there, so nothing is duplicated. " +
+      "Read the errors with get_post first and fix the cause (text over a limit: edit the post or that destination's version; an expired token: the person reconnects " +
+      "the account in the UI; a deleted image) before retrying. For a post without destinations in manual X mode it only re-sends the copy & post notification.",
     input: { id },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   },
@@ -572,7 +691,7 @@ tool(
   {
     title: "Export for posting by hand",
     description:
-      "Get a post ready to publish by hand: the full text (posts separated by ---), the individual posts, and an X intent URL that opens " +
+      "Get a post's main thread ready to publish by hand on X (legacy single-X/manual mode; per-destination versions are in get_post): the full text (posts separated by ---), the individual posts, and an X intent URL that opens " +
       "the X composer with the first post filled in. X's intent link can't create a thread, so the person adds the remaining posts as replies. " +
       "If the thread failed partway through an API publish, alreadyLive > 0: then only remainingText / remainingPosts still need posting, " +
       "as replies under replyToUrl. Use in manual mode or whenever the person wants to post it themselves; afterwards call mark_published.",

@@ -68,6 +68,8 @@ export function useLiveEvents() {
       void qc.invalidateQueries({ queryKey: ["posts"] });
       void qc.invalidateQueries({ queryKey: ["queue"] });
       void qc.invalidateQueries({ queryKey: ["slots"] });
+      // A publish can flag an account (expired token…): keep the Connect page and destination chips current.
+      if (event.type === "post.published" || event.type === "post.failed") void qc.invalidateQueries({ queryKey: ["accounts"] });
       dispatchEvent(new CustomEvent<AppEvent>(LIVE_EVENT, { detail: event }));
       // A "Time to post" / "failed" alert is stale once the post has moved on (posted, retried, rescheduled, deleted).
       const id = event.type === "post.deleted" ? event.id : event.post.id;
@@ -84,7 +86,15 @@ export function useLiveEvents() {
           duration: 0,
           actions: [{ label: "Open", primary: true, onClick: () => openPost(event.post.id) }],
         });
-      else if (event.type === "post.published" && event.post.xPostIds.length)
+      else if (event.type === "post.published" && event.post.targets.length) {
+        const n = event.post.targets.length;
+        toast({
+          id: `published-${event.post.id}`,
+          title: `Published to ${n === 1 ? "1 destination" : `${n} destinations`}`,
+          tone: "success",
+          actions: [{ label: "Open", onClick: () => openPost(event.post.id) }],
+        });
+      } else if (event.type === "post.published" && event.post.xPostIds.length)
         toast({
           id: `published-${event.post.id}`, // same id as the composer's own toast, so it shows once
           title: "Posted to X",

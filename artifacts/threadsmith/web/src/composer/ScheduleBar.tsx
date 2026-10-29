@@ -18,6 +18,8 @@ interface Props {
   openInX: string;
   /** How many posts are already live on X. */
   live: number;
+  /** Connected accounts this post goes to; with any, "Publish now" works without X keys in .env. */
+  destinations: number;
   slotTarget: string | null;
   pickerOpen: boolean;
   busy: Busy;
@@ -36,7 +38,7 @@ export function ScheduleBar(p: Props) {
   const { data: slots } = useQuery({ queryKey: ["slots"], queryFn: () => api.nextSlots(5), refetchInterval: 60_000 });
   const next = p.slotTarget ?? slots?.[0] ?? null;
   const scheduled = p.post?.status === "scheduled" && p.post.scheduledAt;
-  const apiMode = p.health.x.mode === "api";
+  const apiMode = p.health.x.mode === "api" || p.destinations > 0;
   const [confirmPublish, setConfirmPublish] = useState(false);
 
   useEffect(() => {
@@ -87,7 +89,7 @@ export function ScheduleBar(p: Props) {
         </Popover>
       </div>
 
-      <span title={apiMode ? undefined : "Add X API keys to auto-post — see README"} className="inline-flex">
+      <span title={apiMode ? undefined : "Add X API keys to auto-post, or pick a connected account above"} className="inline-flex">
         <button
           onClick={() => (confirmPublish ? (setConfirmPublish(false), p.onPublish()) : setConfirmPublish(true))}
           disabled={!apiMode || p.empty || p.busy === "publish"}

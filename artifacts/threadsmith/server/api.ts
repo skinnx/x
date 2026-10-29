@@ -126,8 +126,10 @@ const SegmentInputSchema = z
   .object({
     id: z.string().optional().openapi({ description: "Existing segment id to keep when editing; omit for new posts." }),
     text: z.string(),
-    mediaIds: z.array(z.string()).max(10).optional().openapi({
-      description: "Image ids from POST /media. X, Bluesky and Mastodon allow 4 per post, Threads/Telegram/Discord 10, LinkedIn 9 per post; checked per destination (GET /posts/{id}/preview) before anything is published.",
+    mediaIds: z.array(z.string()).max(20).optional().openapi({
+      description:
+        "Image ids from POST /media. Per post: X, Bluesky and Mastodon allow 4, Telegram and Discord 10, Threads and LinkedIn 20; Threads takes only JPEG/PNG and LinkedIn JPEG/PNG/GIF " +
+        "(GET /platforms → maxImages, imageTypes). Checked per destination (GET /posts/{id}/preview) before anything is published.",
     }),
   })
   .openapi("SegmentInput");
@@ -289,6 +291,7 @@ const PlatformInfoSchema = z
     name: z.string(),
     maxChars: z.number().int().openapi({ description: "Default per-post limit (an account's maxChars overrides it; X uses the config's maxChars)." }),
     maxImages: z.number().int(),
+    imageTypes: z.array(z.string()).optional().openapi({ description: "Accepted image MIME types when the platform is pickier than PNG/JPEG/WebP/GIF." }),
     threadMode: z.enum(["replies", "single", "messages"]).openapi({
       description: "How a thread lands: replies = each post replies to the previous one; single = joined into one post with blank lines (LinkedIn); messages = consecutive messages (Telegram, Discord).",
     }),
@@ -461,7 +464,9 @@ export function previewPost(post: Post): { targets: PreviewTarget[] } {
       const items = itemsFor(t.platform, t.thread ?? post.thread).map((s) => {
         const count = countFor(t.platform, s.text);
         const max = t.platform === "telegram" && s.mediaIds.length ? Math.min(limit, TELEGRAM_CAPTION_LIMIT) : limit;
-        const fits = count <= max && s.mediaIds.length <= PLATFORMS[t.platform].maxImages && Boolean(s.text.trim() || s.mediaIds.length);
+        const { maxImages, imageTypes } = PLATFORMS[t.platform];
+        const typesOk = !imageTypes || s.mediaIds.every((id) => imageTypes.includes(getMedia(id)?.mime ?? imageTypes[0]!));
+        const fits = count <= max && s.mediaIds.length <= maxImages && typesOk && Boolean(s.text.trim() || s.mediaIds.length);
         return { text: s.text, count, fits, images: s.mediaIds.length };
       });
       const pending = itemsFor(t.platform, t.thread ?? post.thread).slice(t.externalIds.length);
@@ -784,7 +789,7 @@ apiRoutes.openapi(
     summary: "Preview what each destination will receive",
     description:
       "Per destination: the items it will publish (its own version or the post's thread; LinkedIn joins the posts into one), each counted the way that platform counts " +
-      "(X weighted: Vietnamese letters like ệ and emoji 2, URLs 23; Bluesky graphemes; Mastodon URLs 23; others code points) against the account's limit, and `problem`: " +
+      "(X weighted: Vietnamese letters like ệ and emoji 2, URLs 23; Bluesky graphemes; Mastodon URLs 23; Threads emoji = their UTF-8 bytes; others code points) against the account's limit, and `problem`: " +
       "what would make publishing there fail before anything is posted (null = ready). A post without targets gives one entry for the legacy single-X mode (accountId null). " +
       "Check it before scheduling or publishing.",
     request: { params: IdParam },

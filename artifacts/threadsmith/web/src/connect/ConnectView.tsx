@@ -5,6 +5,7 @@ import type { Health } from "../../../shared/types.ts";
 import { api } from "../api.ts";
 import { Card, Code } from "../components/Card.tsx";
 import { cx } from "../lib/util.ts";
+import { Accounts } from "./Accounts.tsx";
 import { Reminders } from "./Reminders.tsx";
 import { Webhooks } from "./Webhooks.tsx";
 
@@ -33,6 +34,8 @@ export function ConnectView({ health }: { health: Health }) {
         </header>
 
         <StatusGrid health={health} />
+
+        <Accounts health={health} />
 
         <Card icon={<Bot size={16} />} title="MCP server" badge="for Claude, Cursor, any MCP client">
           <p>

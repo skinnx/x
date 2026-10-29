@@ -1,10 +1,13 @@
 // Banner above the thread for posts that need attention: due (copy & post by hand), failed, publishing, published.
+// Posts with connected-account destinations list each destination's own status, link and failure reason.
 import { useMutation } from "@tanstack/react-query";
 import { CircleAlert, CircleCheck, Copy, ExternalLink, LoaderCircle, RotateCcw, Send } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import type { Health, Post } from "../../../shared/types.ts";
 import { api, liveSummary, remainingThread } from "../api.ts";
 import { Popover } from "../components/Popover.tsx";
+import { TargetList } from "../components/TargetStatus.tsx";
+import { PLATFORMS } from "../../../shared/platforms.ts";
 import { toast, toastError } from "../components/Toasts.tsx";
 import { openPost } from "../lib/router.ts";
 import { formatWhen } from "../lib/time.ts";
@@ -36,6 +39,14 @@ export function StatusBanner(p: Props) {
     },
     onSuccess: (r) => {
       p.onChange(r);
+      if (r.targets.length) {
+        const ok = r.targets.filter((t) => t.status === "published").length;
+        return toast(
+          r.status === "published"
+            ? { id: `published-${r.id}`, title: `Published to ${ok === 1 ? "1 destination" : `all ${ok} destinations`}`, tone: "success" }
+            : { id: `failed-${r.id}`, title: `Still failing: ${r.targets.length - ok} of ${r.targets.length} destinations`, tone: "error" },
+        );
+      }
       toast({
         id: r.status === "published" ? `published-${r.id}` : undefined, // same id as the live "Posted to X" toast
         title: r.status === "published" ? "Posted to X" : r.status === "due" ? "Ready to post by hand" : "Retried",
@@ -51,10 +62,19 @@ export function StatusBanner(p: Props) {
     onError: (e) => toastError("Couldn't duplicate", e),
   });
 
+  const multi = post.targets.length > 0;
+  const where = multi ? [...new Set(post.targets.map((t) => PLATFORMS[t.platform].name))].join(", ") : "X";
+  const retryButton = (label: string) => (
+    <button onClick={() => retry.mutate()} disabled={retry.isPending} className={primary}>
+      {retry.isPending ? <LoaderCircle size={14} className="animate-spin" /> : <RotateCcw size={14} />} {label}
+    </button>
+  );
+
   if (post.status === "publishing")
     return (
       <Shell tone="info">
-        <LoaderCircle size={16} className="animate-spin" /> <span className="font-medium">Publishing to X…</span>
+        <LoaderCircle size={16} className="animate-spin" /> <span className="font-medium">Publishing to {where}…</span>
+        {multi && <TargetList post={post} className="pl-6" />}
       </Shell>
     );
 
@@ -66,7 +86,8 @@ export function StatusBanner(p: Props) {
           <span className="font-medium">Published</span>
           {post.publishedAt && <span className="opacity-70"> · {formatWhen(post.publishedAt, tz)}</span>}
         </span>
-        {post.url && (
+        {multi && <TargetList post={post} className="order-last pl-6" />}
+        {post.url && !multi && (
           <a href={post.url} target="_blank" rel="noopener noreferrer" className={secondary}>
             <ExternalLink size={14} /> View on X
           </a>
@@ -74,6 +95,41 @@ export function StatusBanner(p: Props) {
         <button onClick={() => duplicate.mutate()} disabled={duplicate.isPending} className={secondary}>
           <Copy size={14} /> Duplicate as draft
         </button>
+      </Shell>
+    );
+
+  if (post.status === "failed" && multi) {
+    const ok = post.targets.filter((t) => t.status === "published").length;
+    return (
+      <Shell tone="error">
+        <div className="flex w-full flex-col gap-2.5">
+          <div className="flex gap-2">
+            <CircleAlert size={16} className="mt-0.5 shrink-0" />
+            <p className="font-medium">
+              {ok ? `Published to ${ok} of ${post.targets.length} destinations` : "This post failed to publish"}
+            </p>
+          </div>
+          <TargetList post={post} className="pl-6" />
+          <div className="flex flex-wrap gap-2 pl-6">
+            {retryButton(ok ? "Retry the failed ones" : "Retry")}
+          </div>
+        </div>
+      </Shell>
+    );
+  }
+
+  // Missed its time while the server was off (connected accounts never need posting by hand).
+  if (post.status === "due" && multi)
+    return (
+      <Shell tone="due">
+        <div className="flex w-full flex-col gap-2.5">
+          <div>
+            <p className="font-semibold">Not posted yet</p>
+            {post.error && <p className="mt-0.5 text-sm break-words">{post.error}</p>}
+          </div>
+          <TargetList post={post} />
+          <div className="flex flex-wrap gap-2">{retryButton("Publish now")}</div>
+        </div>
       </Shell>
     );
 
