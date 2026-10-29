@@ -677,8 +677,6 @@ interface MediaRow {
   size: number;
   alt: string | null;
   path: string;
-  x_media_id: string | null;
-  x_media_expires_at: string | null;
   created_at: string;
 }
 
@@ -716,9 +714,9 @@ export function createMedia(input: { data: Uint8Array; mime: string; filename?: 
   return toMedia(db.prepare("SELECT * FROM media WHERE id = ?").get(id) as unknown as MediaRow);
 }
 
-export function getMedia(id: string): (Media & { path: string; xMediaId: string | null; xMediaExpiresAt: string | null }) | undefined {
+export function getMedia(id: string): (Media & { path: string }) | undefined {
   const r = db.prepare("SELECT * FROM media WHERE id = ?").get(id) as MediaRow | undefined;
-  return r ? { ...toMedia(r), path: mediaFile(r.path), xMediaId: r.x_media_id, xMediaExpiresAt: r.x_media_expires_at } : undefined;
+  return r ? { ...toMedia(r), path: mediaFile(r.path) } : undefined;
 }
 
 export function readMediaBytes(id: string): Buffer {
@@ -729,14 +727,8 @@ export function readMediaBytes(id: string): Buffer {
 
 export function updateMediaAlt(id: string, alt: string | null): Media {
   if (!getMedia(id)) throw new NotFoundError(`Media ${id} not found`);
-  // X attaches alt text at upload time, so a changed alt needs a fresh upload: drop the cached X media id.
-  db.prepare("UPDATE media SET alt = ?, x_media_id = NULL, x_media_expires_at = NULL WHERE id = ?").run(alt, id);
+  db.prepare("UPDATE media SET alt = ? WHERE id = ?").run(alt, id);
   return toMedia(db.prepare("SELECT * FROM media WHERE id = ?").get(id) as unknown as MediaRow);
-}
-
-/** Cache X's media id (valid ~24h) so retries don't re-upload. */
-export function setXMediaId(id: string, xMediaId: string, expiresAt: string): void {
-  db.prepare("UPDATE media SET x_media_id = ?, x_media_expires_at = ? WHERE id = ?").run(xMediaId, expiresAt, id);
 }
 
 export function deleteMedia(id: string): void {
