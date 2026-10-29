@@ -7,7 +7,7 @@ Threadsmith không tự làm "bộ não" để cạnh tranh với các agent đ�
 Tự host trong **một tiến trình** với **một file SQLite** (hoặc một container Docker), không cần tài khoản người dùng.
 
 ```bash
-# 1. chạy server, điền TELEGRAM_APPROVAL_BOT_TOKEN / TELEGRAM_APPROVAL_CHAT_ID trong .env (xem "Chạy nhanh")
+# 1. chạy server, mở Plugins → telegram-approvals → Settings, nhập token bot duyệt (xem "Chạy nhanh")
 # 2. nối agent của bạn
 claude mcp add --transport http threadsmith http://127.0.0.1:3000/mcp
 # 3. giao việc: "mỗi ngày làm việc đăng một thread về sản phẩm lên Bluesky và X, dựa trên số liệu tuần trước"
@@ -115,7 +115,7 @@ agent xếp lịch ──► chờ duyệt ──► Duyệt ──► đăng đ
 
 1. Tạo bot mới với [@BotFather](https://t.me/BotFather) (dùng bot riêng cho việc duyệt, không dùng chung bot đang đăng bài), nhắn `/start` cho bot.
 2. Lấy chat id của bạn (ví dụ nhắn [@userinfobot](https://t.me/userinfobot)).
-3. Điền vào `.env` rồi khởi động lại:
+3. Mở trang **Plugins** → `telegram-approvals` → **Settings**, nhập bot token, chat id và (tùy chọn) danh sách người được quyết định, rồi lưu. Kênh khởi động ngay, không cần khởi động lại. Cách cũ vẫn dùng được: điền vào `.env` rồi khởi động lại:
    ```
    TELEGRAM_APPROVAL_BOT_TOKEN=123456:ABC...
    TELEGRAM_APPROVAL_CHAT_ID=987654321
@@ -127,7 +127,7 @@ Threadsmith dùng long polling nên **không cần URL công khai**, chạy đư
 
 ### Duyệt qua Discord
 
-Tạo bot ở discord.com/developers (Bot → Reset Token), mời vào server với quyền View Channel và Send Messages ở một kênh, rồi điền `DISCORD_APPROVAL_BOT_TOKEN`, `DISCORD_APPROVAL_CHANNEL_ID`, tùy chọn `DISCORD_APPROVER_IDS`. Threadsmith nối Gateway bằng WebSocket (không cần URL công khai, không cần intent đặc quyền). Nút Duyệt/Bỏ hoạt động như trên Telegram; "Yêu cầu sửa" mở một hộp nhập. Discord không có lệnh chữ (cần quyền đọc nội dung tin nhắn), nên tạm dừng và chạy operator thực hiện qua Telegram, giao diện web hoặc CLI.
+Tạo bot ở discord.com/developers (Bot → Reset Token), mời vào server với quyền View Channel và Send Messages ở một kênh, rồi nhập token và channel id ở Plugins → `discord-approvals` → Settings (hoặc điền `DISCORD_APPROVAL_BOT_TOKEN`, `DISCORD_APPROVAL_CHANNEL_ID`, tùy chọn `DISCORD_APPROVER_IDS` trong `.env`). Threadsmith nối Gateway bằng WebSocket (không cần URL công khai, không cần intent đặc quyền). Nút Duyệt/Bỏ hoạt động như trên Telegram; "Yêu cầu sửa" mở một hộp nhập. Discord không có lệnh chữ (cần quyền đọc nội dung tin nhắn), nên tạm dừng và chạy operator thực hiện qua Telegram, giao diện web hoặc CLI.
 
 Có thể bật cả hai. Quyết định ở một nơi thì thẻ duyệt ở mọi nơi cùng được cập nhật.
 
@@ -249,6 +249,10 @@ plugins/bluesky/
   - bật/tắt (có hiệu lực ngay), cập nhật, gỡ, và khởi động lại khi cần.
 
   Gói được cài vào `<DATA_DIR>/plugin-packages`, **không chạy install script**, và bị kiểm tra đúng là plugin trước khi nạp. Chỉ chủ nhân được cài; agent nhận lỗi 403. Mọi thao tác ghi vào nhật ký.
+- **Cài đặt và secret của plugin** nhập ngay trên trang Plugins:
+  - Plugin tự khai báo các trường trong `package.json`, giao diện tự vẽ form. Ví dụ token bot Telegram/Discord duyệt bài giờ nhập ở đây, không bắt buộc sửa `.env`.
+  - Secret được mã hóa AES-256-GCM và không bao giờ hiện lại. Lưu xong plugin nạp lại ngay.
+  - Giá trị trong `.env` vẫn dùng được làm dự phòng.
 - **Cách khác:** thả thư mục vào `<DATA_DIR>/plugins/`, hoặc khai báo trong `threadsmith.config.json` → `"plugins": { "load": [...], "disable": [...], "settings": {...} }`. Plugin lỗi bị bỏ qua và báo trên trang Plugins; server không bị sập.
 - Ví dụ plugin bên thứ ba: `examples/plugin-webhook` (khoảng 70 dòng, đăng qua webhook tới n8n, Zapier hoặc dịch vụ riêng). Hướng dẫn đầy đủ ở [docs/PLUGINS.md](docs/PLUGINS.md).
 - Plugin chạy với toàn quyền của server: chỉ nạp code bạn tin.

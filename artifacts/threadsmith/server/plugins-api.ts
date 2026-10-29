@@ -15,7 +15,17 @@ import {
   uninstallPackage,
   updatePackage,
 } from "./plugin-packages.ts";
-import { addInstalled, listPlugins, readManifest, removeInstalled, setPluginEnabled, type PluginRecord } from "./plugins.ts";
+import {
+  addInstalled,
+  listPlugins,
+  missingSettings,
+  readManifest,
+  removeInstalled,
+  saveSettings,
+  setPluginEnabled,
+  settingsView,
+  type PluginRecord,
+} from "./plugins.ts";
 
 const json = <T extends z.ZodType>(schema: T, description: string) => ({ description, content: { "application/json": { schema } } });
 const body = <T extends z.ZodType>(schema: T) => ({ required: true, content: { "application/json": { schema } } });
@@ -40,8 +50,36 @@ const PluginSchema = z
     disabledByConfig: z.boolean().openapi({ description: "Switched off in threadsmith.config.json; only the config file turns it back on." }),
     restartRequired: z.boolean().openapi({ description: "An update is installed; restart Threadsmith to run the new code." }),
     spec: z.string().nullable().openapi({ description: "What it was installed from (installed plugins only)." }),
+    hasSettings: z.boolean().openapi({ description: "It declares settings (GET /plugins/settings)." }),
+    settingsMissing: z.array(z.string()).openapi({ description: "Required settings with no value yet." }),
   })
   .openapi("Plugin");
+
+const SettingFieldSchema = z
+  .object({
+    key: z.string(),
+    label: z.string(),
+    type: z.enum(["string", "text", "number", "boolean"]).optional(),
+    secret: z.boolean().optional(),
+    required: z.boolean().optional(),
+    default: z.union([z.string(), z.number(), z.boolean()]).optional(),
+    placeholder: z.string().optional(),
+    help: z.string().optional(),
+    env: z.string().optional().openapi({ description: "Environment variable used when nothing is saved." }),
+  })
+  .openapi("PluginSettingField");
+
+const SettingsSchema = z
+  .object({
+    name: z.string(),
+    fields: z.array(SettingFieldSchema),
+    values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).openapi({ description: "Current non-secret values. Secrets are never returned." }),
+    sources: z.record(z.string(), z.enum(["saved", "config", "env", "default", "unset"])).openapi({
+      description: "Where each value comes from: saved here, threadsmith.config.json, an environment variable, the default, or unset.",
+    }),
+    missing: z.array(z.string()),
+  })
+  .openapi("PluginSettings");
 
 const PluginsSchema = z
   .object({
@@ -71,8 +109,13 @@ const CatalogSchema = z
   .openapi("PluginCatalog");
 
 const view = (p: PluginRecord) => {
-  const { dir: _dir, ...rest } = p;
-  return { ...rest, spec: p.source === "installed" ? installedSpec(p.name) : null };
+  const { dir: _dir, settingsFields, ...rest } = p;
+  return {
+    ...rest,
+    spec: p.source === "installed" ? installedSpec(p.name) : null,
+    hasSettings: settingsFields.length > 0,
+    settingsMissing: missingSettings(p),
+  };
 };
 
 async function state() {
@@ -210,6 +253,49 @@ for (const [path, summary, description] of [
     },
   );
 }
+
+pluginRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/plugins/settings",
+    tags,
+    operationId: "getPluginSettings",
+    summary: "A plugin's settings form and current values",
+    description: "Fields as the plugin declares them, non-secret values, and where each value comes from. Secrets are never returned. Owner only.",
+    request: { query: z.object({ name: z.string().min(1) }) },
+    responses: { 200: json(SettingsSchema, "The form."), 403: E403, 404: json(Err, "No such plugin.") },
+  }),
+  (c) => {
+    requireOwner("see plugin settings");
+    const { name } = c.req.valid("query");
+    return c.json({ name, ...settingsView(name) }, 200);
+  },
+);
+
+pluginRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/plugins/settings",
+    tags,
+    operationId: "savePluginSettings",
+    summary: "Save a plugin's settings",
+    description:
+      "`values`: key → new value; null clears a saved value (it falls back to the config file, the env variable or the default); a secret left out keeps " +
+      "its stored value. Secrets are stored encrypted. The plugin reloads at once (its chats restart). Owner only.",
+    request: {
+      body: body(z.object({ name: z.string().min(1), values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])) })),
+    },
+    responses: { 200: json(SettingsSchema.extend({ plugin: PluginSchema }), "Saved; the plugin's state after reloading."), 400: E400, 403: E403, 404: json(Err, "No such plugin.") },
+  }),
+  async (c) => {
+    requireOwner("change plugin settings");
+    const { name, values } = c.req.valid("json");
+    const saved = await saveSettings(name, values);
+    audit("plugin.settings_changed", null, `${name}: ${Object.keys(values).join(", ")}`);
+    const plugin = view(listPlugins().find((p) => p.name === name)!);
+    return c.json({ name, ...saved, plugin }, 200);
+  },
+);
 
 pluginRoutes.openapi(
   createRoute({

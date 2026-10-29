@@ -2,7 +2,7 @@
 // Approval cards carry inline buttons (callback_query); "Request changes" asks for the note with a ForceReply prompt,
 // and a plain reply to a card works too. Commands: /pending /status /pause [reason] /resume /run [task].
 // Bot API reference: https://core.telegram.org/bots/api (getUpdates, sendMessage, editMessageText, answerCallbackQuery).
-// Env: TELEGRAM_APPROVAL_BOT_TOKEN (from @BotFather), TELEGRAM_APPROVAL_CHAT_ID (your private chat with the bot, or a
+// Settings (Plugins page; .env fallback): TELEGRAM_APPROVAL_BOT_TOKEN (from @BotFather), TELEGRAM_APPROVAL_CHAT_ID (your private chat with the bot, or a
 // group), TELEGRAM_APPROVER_IDS (comma-separated Telegram user ids allowed to decide; default: anyone in that chat).
 // TELEGRAM_API_BASE overrides https://api.telegram.org (tests, local Bot API server).
 import type { ChannelAction, ChannelButton, ChannelCommand, ChannelHandlers, ThreadsmithAPI } from "threadsmith/plugin";
@@ -40,9 +40,11 @@ const keyboard = (buttons?: ChannelButton[]) =>
 
 export default function telegramApprovals(ts: ThreadsmithAPI): void {
   // Read at call time (not at import), so a changed .env or a test override applies.
-  const botToken = () => ts.env("TELEGRAM_APPROVAL_BOT_TOKEN");
-  const chatId = () => ts.env("TELEGRAM_APPROVAL_CHAT_ID");
-  const approverIds = () => (ts.env("TELEGRAM_APPROVER_IDS") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  // Settings from the Plugins page (or TELEGRAM_APPROVAL_* in .env), read on use so a saved change applies at once.
+  const setting = (key: string) => (typeof ts.settings()[key] === "string" ? (ts.settings()[key] as string).trim() || undefined : undefined);
+  const botToken = () => setting("botToken");
+  const chatId = () => setting("chatId");
+  const approverIds = () => (setting("approverIds") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   const apiBase = () => (ts.env("TELEGRAM_API_BASE") || "https://api.telegram.org").replace(/\/+$/, "");
 
   let connected = false;
@@ -61,7 +63,7 @@ export default function telegramApprovals(ts: ThreadsmithAPI): void {
     const data = (await res.json().catch(() => ({}))) as { ok?: boolean; result?: T; description?: string; error_code?: number };
     if (!data.ok) {
       const code = data.error_code ?? res.status;
-      if (code === 401 || code === 404) throw new Error("Telegram rejected TELEGRAM_APPROVAL_BOT_TOKEN; copy it again from @BotFather.");
+      if (code === 401 || code === 404) throw new Error("Telegram rejected the bot token (Plugins → telegram-approvals); copy it again from @BotFather.");
       if (code === 409) throw new Error("Another program reads this bot's updates (a webhook or a second Threadsmith). Use a bot only for approvals.");
       throw new Error(`Telegram ${method}: ${data.description ?? `HTTP ${res.status}`}`);
     }

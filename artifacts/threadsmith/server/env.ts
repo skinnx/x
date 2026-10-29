@@ -43,21 +43,6 @@ export const env = {
     anthropicKey: str("ANTHROPIC_API_KEY"),
   },
 
-  /** Approval chat on Telegram: a bot from @BotFather, and the chat (your private chat with it, or a group). */
-  telegram: {
-    botToken: str("TELEGRAM_APPROVAL_BOT_TOKEN"),
-    chatId: str("TELEGRAM_APPROVAL_CHAT_ID"),
-    /** Telegram user ids allowed to decide (comma-separated). Default: anyone in that chat. */
-    approverIds: (str("TELEGRAM_APPROVER_IDS") ?? "").split(",").map((s) => s.trim()).filter(Boolean),
-  },
-  /** Approval channel on Discord: a bot and the channel it posts approval requests in. */
-  discord: {
-    botToken: str("DISCORD_APPROVAL_BOT_TOKEN"),
-    channelId: str("DISCORD_APPROVAL_CHANNEL_ID"),
-    /** Discord user ids allowed to decide (comma-separated). Default: anyone who can see the channel. */
-    approverIds: (str("DISCORD_APPROVER_IDS") ?? "").split(",").map((s) => s.trim()).filter(Boolean),
-  },
-
   vapidSubject: str("VAPID_SUBJECT") ?? "mailto:threadsmith@localhost",
 };
 

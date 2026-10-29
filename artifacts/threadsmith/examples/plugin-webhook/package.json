@@ -4,7 +4,23 @@
   "description": "Example third-party plugin: a 'Webhook' platform that POSTs each post as JSON to a URL (n8n, Zapier, Make, Slack workflows, your own service).",
   "private": true,
   "type": "module",
-  "keywords": ["threadsmith-plugin"],
-  "threadsmith": { "apiVersion": 1, "entry": "index.ts" },
-  "peerDependencies": { "threadsmith": "*" }
+  "keywords": [
+    "threadsmith-plugin"
+  ],
+  "threadsmith": {
+    "apiVersion": 1,
+    "entry": "index.ts",
+    "settings": [
+      {
+        "key": "maxChars",
+        "label": "Character limit per item",
+        "type": "number",
+        "default": 10000,
+        "help": "What your endpoint accepts."
+      }
+    ]
+  },
+  "peerDependencies": {
+    "threadsmith": "*"
+  }
 }

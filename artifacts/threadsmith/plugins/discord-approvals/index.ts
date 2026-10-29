@@ -5,7 +5,7 @@
 // can't read text, so there are no text commands here.
 // Reference: https://discord.com/developers/docs/reference (REST, rate limits), /events/gateway (HELLO, heartbeat,
 // IDENTIFY, close codes), /interactions/receiving-and-responding (callbacks, modals), /components/reference.
-// Env: DISCORD_APPROVAL_BOT_TOKEN, DISCORD_APPROVAL_CHANNEL_ID, DISCORD_APPROVER_IDS (comma-separated Discord user ids
+// Settings (Plugins page; .env fallback): DISCORD_APPROVAL_BOT_TOKEN, DISCORD_APPROVAL_CHANNEL_ID, DISCORD_APPROVER_IDS (comma-separated Discord user ids
 // allowed to decide; default: anyone who can see the channel).
 // DISCORD_API_BASE overrides https://discord.com/api/v10 and DISCORD_GATEWAY_URL the gateway URL (tests).
 import type { ChannelAction, ChannelButton, ChannelHandlers, ThreadsmithAPI } from "threadsmith/plugin";
@@ -47,7 +47,7 @@ const STYLE: Partial<Record<ChannelAction, number>> = { approve: 3, reject: 4 };
 const EPHEMERAL = 64;
 /** Close codes after which reconnecting can't help (bad token, intents, shard or version). */
 const FATAL_CLOSE: Record<number, string> = {
-  4004: "Discord rejected DISCORD_APPROVAL_BOT_TOKEN (gateway close 4004); copy the bot token again from the Developer Portal.",
+  4004: "Discord rejected the bot token (Plugins → discord-approvals) (gateway close 4004); copy the bot token again from the Developer Portal.",
   4010: "Discord gateway: invalid shard (4010).",
   4011: "Discord gateway: sharding required (4011); the bot is in too many servers for one connection.",
   4012: "Discord gateway: invalid API version (4012).",
@@ -100,9 +100,11 @@ function noteOf(list: DcComponent[] = []): string | undefined {
 
 export default function discordApprovals(ts: ThreadsmithAPI): void {
   // Read at call time (not at import), so a changed .env or a test override applies.
-  const botToken = () => ts.env("DISCORD_APPROVAL_BOT_TOKEN");
-  const channelId = () => ts.env("DISCORD_APPROVAL_CHANNEL_ID");
-  const approverIds = () => (ts.env("DISCORD_APPROVER_IDS") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  // Settings from the Plugins page (or DISCORD_APPROVAL_* in .env), read on use so a saved change applies at once.
+  const setting = (key: string) => (typeof ts.settings()[key] === "string" ? (ts.settings()[key] as string).trim() || undefined : undefined);
+  const botToken = () => setting("botToken");
+  const channelId = () => setting("channelId");
+  const approverIds = () => (setting("approverIds") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   const apiBase = () => (ts.env("DISCORD_API_BASE") || "https://discord.com/api/v10").replace(/\/+$/, "");
 
   let connected = false;
@@ -134,13 +136,13 @@ export default function discordApprovals(ts: ThreadsmithAPI): void {
         await sleep(Math.ceil((data.retry_after ?? 1) * 1000));
         continue;
       }
-      if (res.status === 401) throw new RestError("Discord rejected DISCORD_APPROVAL_BOT_TOKEN; copy the bot token again from the Developer Portal.", 401);
+      if (res.status === 401) throw new RestError("Discord rejected the bot token (Plugins → discord-approvals); copy the bot token again from the Developer Portal.", 401);
       if (data.code === 50001 || data.code === 50013 || res.status === 403)
         throw new RestError(
           `Discord ${method} ${path.split("/")[1]}: ${data.message ?? "Forbidden"}. Invite the bot to the server and give it View Channel + Send Messages in that channel.`,
           res.status,
         );
-      if (data.code === 10003) throw new RestError("Discord: unknown channel; check DISCORD_APPROVAL_CHANNEL_ID (right-click the channel → Copy Channel ID).", res.status);
+      if (data.code === 10003) throw new RestError("Discord: unknown channel; check the channel id (Plugins → discord-approvals) (right-click the channel → Copy Channel ID).", res.status);
       throw new RestError(`Discord ${method} ${path.split("/")[1]}: ${data.message ?? `HTTP ${res.status}`}${res.status === 429 ? " (rate limited)" : ""}`, res.status);
     }
   }

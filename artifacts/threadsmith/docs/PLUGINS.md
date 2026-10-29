@@ -123,6 +123,34 @@ Errors: `throw new ts.PlatformError(message, status?, resumable = true)`.
 
 Images: `ts.media.get(id)` (mime, size, alt), `ts.media.read(id)` (bytes), and `ts.media.publicUrl(id)` (a signed URL valid for an hour, for platforms that fetch images by URL; check `ts.host().publicUrlIsSet`).
 
+## Settings and secrets
+
+A plugin declares its settings **as data** in `package.json`, and the Plugins page renders a form from them without running plugin code:
+
+```json
+"threadsmith": {
+  "apiVersion": 1,
+  "settings": [
+    { "key": "botToken", "label": "Bot token", "secret": true, "required": true, "env": "FOO_BOT_TOKEN", "help": "From …" },
+    { "key": "region", "label": "Region", "default": "eu" },
+    { "key": "maxChars", "label": "Limit", "type": "number", "default": 10000 }
+  ]
+}
+```
+
+- **Field types:** `type` is `string` (default), `text` (multi-line), `number` or `boolean`.
+- **Secrets** (`secret: true`) are stored encrypted (AES-256-GCM, like account credentials). They are never sent back to the browser; the page only shows whether one is set and where it comes from.
+- **Required fields:** `required` fields with no value mark the plugin "Needs setup".
+- **Reading values:** `ts.settings()` returns the effective value of each field, taking the first of these that is set:
+  1. the value saved on the Plugins page;
+  2. `threadsmith.config.json` → `plugins.settings["<plugin name>"]`;
+  3. the field's `env` variable;
+  4. its `default`.
+
+  Read it when you need a value rather than caching it.
+- **Saving** reloads the plugin at once: its factory runs again and its chats restart.
+- **Access:** only the owner can read or change settings (`GET`/`POST /api/plugins/settings`), and every change is audited (keys only, never values).
+
 ## An approval channel
 
 `ts.registerChannel(definition)` adds a chat where the person gets approval requests, alerts and the daily digest.
@@ -159,4 +187,3 @@ Discover tab. Keep `threadsmith` as a peer dependency.
 
 - **No hot reload of changed code.** Updates need a restart (switching plugins on and off, installing and uninstalling don't).
 - **No sandboxing.** Plugins are trusted code.
-- **No settings form.** A plugin's settings live in `threadsmith.config.json` and its secrets in `.env`.

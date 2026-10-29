@@ -171,6 +171,29 @@ export interface ChannelDefinition {
   finalize(ref: string, text: string): Promise<void>;
 }
 
+// ---------- settings ----------
+
+/**
+ * One setting a plugin declares, as data, in its package.json: "threadsmith": { "apiVersion": 1, "settings": [ … ] }.
+ * The Plugins page renders a form from these without running the plugin; secrets are stored encrypted and never shown
+ * again. Values reach the plugin through ts.settings().
+ */
+export interface SettingField {
+  key: string;
+  label: string;
+  /** "string" (default), "text" (multi-line), "number" or "boolean". */
+  type?: "string" | "text" | "number" | "boolean";
+  /** Stored encrypted; the UI shows only whether it is set. */
+  secret?: boolean;
+  /** The plugin can't work without it; the UI flags the plugin until it is set. */
+  required?: boolean;
+  default?: string | number | boolean;
+  placeholder?: string;
+  help?: string;
+  /** Environment variable used when nothing is saved, so .env setups keep working. */
+  env?: string;
+}
+
 // ---------- the object every plugin gets ----------
 
 export interface MediaFile {
@@ -193,7 +216,12 @@ export interface ThreadsmithAPI {
 
   /** An environment variable (.env is already loaded), trimmed; undefined when empty. */
   env(name: string): string | undefined;
-  /** This plugin's settings: threadsmith.config.json → plugins.settings["<plugin name>"] ({} when absent). */
+  /**
+   * This plugin's settings, by key. For each field declared in package.json → "threadsmith".settings: the value saved on
+   * the Plugins page (secrets decrypted), else threadsmith.config.json → plugins.settings["<plugin name>"], else the
+   * field's `env` variable, else its `default`. Read it when you need a value (it changes when the person saves; the
+   * plugin is also reloaded then). Undeclared keys from the config file are passed through as they are.
+   */
   settings(): Record<string, unknown>;
   /** Server-wide settings plugins may need. */
   host(): { timezone: string; maxChars: number; publicUrl: string; publicUrlIsSet: boolean };

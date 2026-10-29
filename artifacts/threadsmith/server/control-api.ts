@@ -203,7 +203,7 @@ controlRoutes.openapi(
     tags,
     operationId: "testChannels",
     summary: "Send a test message to the approval chats",
-    description: "Checks TELEGRAM_APPROVAL_* / DISCORD_APPROVAL_* from .env by sending a hello (and the digest if `digest` is true).",
+    description: "Checks the configured approval chats (settings on the Plugins page, or TELEGRAM_APPROVAL_* / DISCORD_APPROVAL_* in .env) by sending a hello (and the digest if `digest` is true).",
     request: { body: body(z.object({ digest: z.boolean().optional() }), false) },
     responses: { 200: json(z.object({ channels: z.array(ChannelSchema) }), "Channel states after sending."), 403: E403 },
   }),

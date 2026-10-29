@@ -23,9 +23,11 @@ import {
   type PlatformDefinition,
   type PlatformInfo,
   type PluginFactory,
+  type SettingField,
   type ThreadsmithAPI,
 } from "./plugin-api.ts";
-import { ConflictError, getMedia, NotFoundError, readMediaBytes } from "./repo.ts";
+import { BadInputError, ConflictError, getMedia, NotFoundError, readMediaBytes } from "./repo.ts";
+import { open, seal } from "./secrets.ts";
 
 /** Thrown by platforms (ts.PlatformError): a message the person can act on, and whether Retry may resume. */
 export class PlatformError extends Error {
@@ -54,6 +56,8 @@ export interface PluginRecord {
   disabledByConfig: boolean;
   /** New code is on disk (an update) but the running server still has the old one: restart to use it. */
   restartRequired: boolean;
+  /** The settings form, from package.json → "threadsmith".settings. */
+  settingsFields: SettingField[];
 }
 
 interface Entry {
@@ -74,7 +78,25 @@ const Manifest = z.object({
   name: z.string().min(1),
   version: z.string().default("0.0.0"),
   description: z.string().optional(),
-  threadsmith: z.object({ apiVersion: z.number().int(), entry: z.string().optional() }),
+  threadsmith: z.object({
+    apiVersion: z.number().int(),
+    entry: z.string().optional(),
+    settings: z
+      .array(
+        z.object({
+          key: z.string().regex(/^[A-Za-z][\w-]{0,63}$/),
+          label: z.string().min(1),
+          type: z.enum(["string", "text", "number", "boolean"]).optional(),
+          secret: z.boolean().optional(),
+          required: z.boolean().optional(),
+          default: z.union([z.string(), z.number(), z.boolean()]).optional(),
+          placeholder: z.string().optional(),
+          help: z.string().optional(),
+          env: z.string().optional(),
+        }),
+      )
+      .default([]),
+  }),
 });
 
 /** Read and check a plugin's package.json (used before installing, too). */
@@ -165,7 +187,7 @@ function apiFor(entry: Entry): ThreadsmithAPI {
       return off;
     },
     env: (name) => process.env[name]?.trim() || undefined,
-    settings: () => (getConfig().plugins.settings[record.name] as Record<string, unknown> | undefined) ?? {},
+    settings: () => resolveSettings(record).values,
     host: () => ({ timezone: getConfig().timezone, maxChars: getConfig().maxChars, publicUrl: publicUrl(), publicUrlIsSet: Boolean(env.publicUrl) }),
     store: { get: (key) => kv.get(storeKey(key)), set: (key, value) => kv.set(storeKey(key), value) },
     media: {
@@ -268,12 +290,13 @@ async function add(dir: string, source: PluginRecord["source"]): Promise<Entry> 
     disabled: false,
     disabledByConfig: false,
     restartRequired: false,
+    settingsFields: [],
   };
   const entry: Entry = { record, factory: null, unsubscribe: [] };
   entries.push(entry);
   try {
     const manifest = readManifest(dir);
-    Object.assign(record, { name: manifest.name, version: manifest.version, description: manifest.description ?? null });
+    Object.assign(record, { name: manifest.name, version: manifest.version, description: manifest.description ?? null, settingsFields: manifest.threadsmith.settings });
     if (entries.some((e) => e !== entry && e.record.name === record.name)) throw new Error(`a plugin named ${record.name} is already loaded`);
   } catch (err) {
     record.error = (err as Error).message;
@@ -321,7 +344,9 @@ export async function addInstalled(dir: string): Promise<PluginRecord> {
   if (existing) {
     if (existing.record.source !== "installed") throw new ConflictError(`A ${existing.record.source} plugin named ${name} already exists.`);
     // Same plugin, new version: the running process keeps the old module until it restarts.
-    existing.record.version = readManifest(dir).version;
+    const manifest = readManifest(dir);
+    existing.record.version = manifest.version;
+    existing.record.settingsFields = manifest.threadsmith.settings;
     existing.record.restartRequired = Boolean(existing.factory);
     return { ...existing.record };
   }
@@ -334,6 +359,7 @@ export function removeInstalled(name: string): void {
   if (entry.record.source !== "installed") throw new ConflictError(`${name} is ${entry.record.source}; only plugins installed from the UI can be uninstalled here.`);
   deactivate(entry);
   entries.splice(entries.indexOf(entry), 1);
+  kv.set(settingsKey(name), null);
   const off = uiDisabled();
   if (off.delete(name)) kv.set(UI_DISABLED, [...off]);
 }
@@ -370,6 +396,7 @@ export async function loadPlugins(): Promise<void> {
           disabled: false,
           disabledByConfig: false,
           restartRequired: false,
+          settingsFields: [],
         },
         factory: null,
         unsubscribe: [],
@@ -386,4 +413,103 @@ export async function loadPlugins(): Promise<void> {
       db.prepare("UPDATE accounts SET last_error = ? WHERE id = ?").run(`No loaded plugin provides "${row.platform}"; posts to this account will fail until it is installed or enabled.`, row.id);
     }
   }
+}
+
+// ---------- settings ----------
+
+interface StoredSettings {
+  values: Record<string, string | number | boolean>;
+  /** Secrets, each sealed (AES-256-GCM, see server/secrets.ts). */
+  secrets: Record<string, string>;
+}
+
+export type SettingSource = "saved" | "config" | "env" | "default" | "unset";
+
+const settingsKey = (name: string) => `plugin-settings:${name}`;
+const stored = (name: string): StoredSettings => kv.get<StoredSettings>(settingsKey(name)) ?? { values: {}, secrets: {} };
+
+function coerce(field: SettingField, raw: unknown): string | number | boolean | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (field.type === "number") {
+    const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+    return Number.isFinite(n) ? n : undefined;
+  }
+  if (field.type === "boolean") return typeof raw === "boolean" ? raw : /^(1|true|yes|on)$/i.test(String(raw).trim());
+  return typeof raw === "string" ? raw : String(raw);
+}
+
+/** Effective values and where each came from: saved on the Plugins page > config file > env variable > default. */
+function resolveSettings(record: PluginRecord): { values: Record<string, unknown>; sources: Record<string, SettingSource> } {
+  const saved = stored(record.name);
+  const config = (getConfig().plugins.settings[record.name] as Record<string, unknown> | undefined) ?? {};
+  const values: Record<string, unknown> = { ...config };
+  const sources: Record<string, SettingSource> = {};
+  for (const f of record.settingsFields) {
+    const candidates: [SettingSource, unknown][] = [
+      ["saved", f.secret ? (saved.secrets[f.key] ? open(saved.secrets[f.key]!) : undefined) : saved.values[f.key]],
+      ["config", config[f.key]],
+      ["env", f.env ? process.env[f.env]?.trim() : undefined],
+      ["default", f.default],
+    ];
+    const hit = candidates.map(([src, raw]) => [src, coerce(f, raw)] as const).find(([, v]) => v !== undefined);
+    values[f.key] = hit?.[1];
+    sources[f.key] = hit?.[0] ?? "unset";
+  }
+  return { values, sources };
+}
+
+export interface SettingsView {
+  fields: SettingField[];
+  /** Non-secret values; secrets are never returned (see `sources` for whether one is set). */
+  values: Record<string, string | number | boolean | null>;
+  sources: Record<string, SettingSource>;
+  /** Required fields that have no value anywhere. */
+  missing: string[];
+}
+
+export function settingsView(name: string): SettingsView {
+  const { record } = find(name);
+  const { values, sources } = resolveSettings(record);
+  return {
+    fields: record.settingsFields,
+    values: Object.fromEntries(record.settingsFields.filter((f) => !f.secret).map((f) => [f.key, (values[f.key] as string | number | boolean | undefined) ?? null])),
+    sources,
+    missing: record.settingsFields.filter((f) => f.required && sources[f.key] === "unset").map((f) => f.key),
+  };
+}
+
+/** Required settings a plugin still lacks (for the plugin list). */
+export const missingSettings = (record: PluginRecord) =>
+  record.settingsFields.length ? record.settingsFields.filter((f) => f.required && resolveSettings(record).sources[f.key] === "unset").map((f) => f.key) : [];
+
+/**
+ * Save settings from the Plugins page. A key set to null is cleared (it falls back to config, env or default); a secret
+ * left out keeps its stored value. The plugin is reloaded so it picks the values up (its chats restart).
+ */
+export async function saveSettings(name: string, patch: Record<string, unknown>): Promise<SettingsView> {
+  const entry = find(name);
+  const fields = new Map(entry.record.settingsFields.map((f) => [f.key, f]));
+  const next = stored(name);
+  for (const [key, raw] of Object.entries(patch)) {
+    const field = fields.get(key);
+    if (!field) throw new BadInputError(`${name} has no setting "${key}".`);
+    if (raw === null) {
+      delete next.values[key];
+      delete next.secrets[key];
+      continue;
+    }
+    const value = coerce(field, raw);
+    if (value === undefined) {
+      if (raw === "") continue;
+      throw new BadInputError(`${field.label}: expected ${field.type ?? "text"}.`);
+    }
+    if (field.secret) next.secrets[key] = seal(String(value));
+    else next.values[key] = value;
+  }
+  kv.set(settingsKey(name), next);
+  if (!entry.record.disabled && entry.factory) {
+    deactivate(entry);
+    await activate(entry);
+  }
+  return settingsView(name);
 }
