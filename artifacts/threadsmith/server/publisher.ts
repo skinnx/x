@@ -6,7 +6,7 @@ import { accountCredentials, getAccount, setAccountError } from "./accounts.ts";
 import { getConfig } from "./config.ts";
 import { ADAPTERS } from "./platforms/index.ts";
 import { PlatformError, type PublishItem } from "./platforms/types.ts";
-import { markFailed, markPublished, markTargetFailed, markTargetPublished, recordTargetProgress, requirePost } from "./repo.ts";
+import { getMedia, markFailed, markPublished, markTargetFailed, markTargetPublished, recordTargetProgress, requirePost } from "./repo.ts";
 
 export function limitFor(account: Account): number {
   if (account.maxChars) return account.maxChars;
@@ -26,6 +26,10 @@ export function preflight(account: Account, items: PublishItem[]): string | null
       return `${n} is ${length}/${captionLimit} characters on ${info.name}${captionLimit !== limit ? " (photo captions are limited)" : ""}; shorten it or give ${info.name} its own version.`;
     }
     if (item.mediaIds.length > info.maxImages) return `${n} has ${item.mediaIds.length} images; ${info.name} allows at most ${info.maxImages}.`;
+    if (info.imageTypes) {
+      const bad = item.mediaIds.map(getMedia).find((m) => m && !info.imageTypes!.includes(m.mime));
+      if (bad) return `${n}: ${info.name} doesn't accept ${bad.mime.replace("image/", "").toUpperCase()} images (${bad.filename}); use ${info.imageTypes.map((t) => t.replace("image/", "").toUpperCase()).join(" or ")}.`;
+    }
   }
   return null;
 }

@@ -25,6 +25,8 @@ export interface PlatformInfo {
   name: string;
   maxChars: number;
   maxImages: number;
+  /** Image types the platform accepts (all of PNG, JPEG, WebP, GIF when absent). */
+  imageTypes?: string[];
   threadMode: ThreadMode;
   /** Cost or access note shown wherever the account is connected. */
   costNote: string;
@@ -46,6 +48,13 @@ export function countFor(platform: PlatformId, text: string): number {
       return graphemes(text.normalize("NFC")); // Bluesky limits graphemes; links count in full
     case "mastodon":
       return [...text.replace(URL_ANY, "x".repeat(23))].length; // Mastodon counts every URL as 23
+    case "threads": {
+      // Threads counts an emoji as its UTF-8 byte length, everything else per character.
+      if (!segmenter) return [...text].length;
+      let n = 0;
+      for (const { segment } of segmenter.segment(text)) n += /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(segment) ? new TextEncoder().encode(segment).length : [...segment].length;
+      return n;
+    }
     default:
       return [...text].length;
   }
@@ -98,17 +107,20 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     id: "threads",
     name: "Threads",
     maxChars: 500,
-    maxImages: 10,
+    maxImages: 20,
+    imageTypes: ["image/jpeg", "image/png"],
     threadMode: "replies",
-    costNote: "Free, but needs a Meta developer app with threads_basic and threads_content_publish. Images must be reachable at PUBLIC_URL over HTTPS.",
-    setup: "developers.facebook.com → create an app with the Threads use case → generate a long-lived user access token (valid 60 days; refresh it before it expires).",
+    costNote:
+      "Free, but needs a Meta developer app with threads_basic, threads_content_publish and threads_manage_replies (for threads). Images must be reachable at PUBLIC_URL over HTTPS.",
+    setup: "developers.facebook.com → create an app with the Threads use case → generate a long-lived user access token with threads_basic, threads_content_publish and threads_manage_replies (valid 60 days; refresh it before it expires).",
     credentials: [{ key: "accessToken", label: "Long-lived access token", secret: true }],
   },
   linkedin: {
     id: "linkedin",
     name: "LinkedIn",
     maxChars: 3000,
-    maxImages: 9,
+    maxImages: 20,
+    imageTypes: ["image/jpeg", "image/png", "image/gif"],
     threadMode: "single",
     costNote: "Free. Needs an app with the w_member_social scope (Share on LinkedIn product). Threads are joined into one post.",
     setup: "linkedin.com/developers → create an app → add “Share on LinkedIn” and “Sign In with LinkedIn using OpenID Connect” → generate an access token with openid, profile, w_member_social (valid 60 days).",
