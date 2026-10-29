@@ -69,8 +69,9 @@ async function publishTarget(post: Post, target: PostTarget): Promise<string | n
     const message = err instanceof Error ? err.message : String(err);
     const done = requirePost(post.id).targets.find((t) => t.accountId === account.id)?.externalIds.length ?? 0;
     const resumable = !(err instanceof PlatformError) || err.resumable;
+    // The X client already reports its own progress in the message.
     const progress =
-      done && done < items.length
+      account.platform !== "x" && done && done < items.length
         ? ` ${done} of ${items.length} are live on ${name}${resumable ? "; Retry continues after them" : ""}.`
         : "";
     markTargetFailed(post.id, account.id, message + progress);

@@ -23,6 +23,8 @@ app.use("/api/*", requireAuth);
 app.use("/mcp", requireAuth);
 app.use("/mcp/*", requireAuth);
 app.use("/media/*", requireAuth);
+// The full guide lists this instance's accounts and settings; the short /llms.txt stays public.
+app.use("/llms-full.txt", requireAuth);
 
 app.route("/api", apiRoutes);
 app.route("/api/push", pushRoutes);

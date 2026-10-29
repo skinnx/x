@@ -5,7 +5,7 @@ import type { Account, PlatformId } from "../shared/types.ts";
 import { db } from "./db.ts";
 import { ADAPTERS } from "./platforms/index.ts";
 import type { Credentials } from "./platforms/types.ts";
-import { BadInputError, ConflictError, NotFoundError } from "./repo.ts";
+import { BadInputError, ConflictError, httpUrl, NotFoundError } from "./repo.ts";
 import { open, seal } from "./secrets.ts";
 
 interface AccountRow {
@@ -90,7 +90,7 @@ export async function connectAccount(input: {
     input.platform,
     input.label?.trim() || `${PLATFORMS[input.platform].name} ${who.handle}`,
     who.handle,
-    who.profileUrl,
+    httpUrl(who.profileUrl),
     input.maxChars ?? null,
     seal(JSON.stringify(credentials)),
     ts,
@@ -110,7 +110,7 @@ export async function updateAccount(
     db.prepare("UPDATE accounts SET credentials = ?, handle = ?, profile_url = ?, last_error = NULL, verified_at = ? WHERE id = ?").run(
       seal(JSON.stringify(credentials)),
       who.handle,
-      who.profileUrl,
+      httpUrl(who.profileUrl),
       new Date().toISOString(),
       id,
     );
@@ -127,7 +127,7 @@ export async function recheckAccount(id: string): Promise<Account> {
     const who = await ADAPTERS[account.platform].verify(accountCredentials(id));
     db.prepare("UPDATE accounts SET handle = ?, profile_url = ?, last_error = NULL, verified_at = ? WHERE id = ?").run(
       who.handle,
-      who.profileUrl,
+      httpUrl(who.profileUrl),
       new Date().toISOString(),
       id,
     );
@@ -150,11 +150,11 @@ export function deleteAccount(id: string): void {
   const pending = db
     .prepare(
       `SELECT COUNT(*) AS n FROM post_targets t JOIN posts p ON p.id = t.post_id
-       WHERE t.account_id = ? AND t.status != 'published' AND p.status IN ('scheduled', 'publishing', 'due', 'failed')`,
+       WHERE t.account_id = ? AND t.status != 'published' AND p.status != 'published'`,
     )
     .get(id) as { n: number };
   if (pending.n) {
-    throw new ConflictError(`${pending.n} queued or unfinished post(s) still go to this account; remove it from them first.`);
+    throw new ConflictError(`${pending.n} draft, queued or unfinished post(s) still go to this account; remove it from them first.`);
   }
   db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
 }

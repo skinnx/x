@@ -1215,7 +1215,8 @@ mediaFileRoutes.get("/:id", async (c) => {
   if (!media || !bytes) throw new NotFoundError(`Media ${id} not found`);
   return c.body(bytes, 200, {
     "Content-Type": media.mime,
-    "Cache-Control": "public, max-age=31536000, immutable",
+    // private: a shared cache in front must not serve token-protected or expired signed links to others.
+    "Cache-Control": "private, max-age=31536000, immutable",
     "X-Content-Type-Options": "nosniff",
   });
 });

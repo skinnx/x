@@ -116,7 +116,9 @@ async function uploadImage(base: string, token: string, mediaId: string): Promis
 
 /** Same post, same item, same parent → same key, so Mastodon returns the earlier status instead of posting twice. */
 function idempotencyKey(postId: string, accountId: string, items: PublishItem[], index: number, inReplyTo: string | null): string {
-  const h = createHash("sha256").update(JSON.stringify([postId, accountId, index, inReplyTo, items.map((i) => [i.text, i.mediaIds])]));
+  // Only this item: editing later posts after a timeout must not change the key of the one that may have gone out.
+  const item = items[index]!;
+  const h = createHash("sha256").update(JSON.stringify([postId, accountId, index, inReplyTo, item.text, item.mediaIds]));
   return `threadsmith-${h.digest("hex").slice(0, 40)}`;
 }
 

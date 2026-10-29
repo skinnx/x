@@ -125,6 +125,7 @@ function messageBody(item: PublishItem): unknown {
 export const discord: PlatformAdapter = {
   async verify(c) {
     const hook = await request<Webhook>("GET", webhookUrl(c));
+    if (!hook) throw new PlatformError("Discord answered the webhook check without JSON; check the webhook URL.", 502);
     const channel = hook.channel_id ? ` → channel ${hook.channel_id}` : "";
     return {
       handle: `${hook.name ?? "webhook"}${channel}`,
@@ -135,6 +136,7 @@ export const discord: PlatformAdapter = {
   async publish(ctx) {
     const base = webhookUrl(ctx.credentials);
     const hook = await request<Webhook>("GET", base);
+    if (!hook) throw new PlatformError("Discord answered the webhook check without JSON; check the webhook URL.", 502);
     const post = new URL(base);
     post.searchParams.set("wait", "true");
     const ids = [...ctx.posted];

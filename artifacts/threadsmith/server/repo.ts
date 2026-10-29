@@ -174,7 +174,7 @@ export function createPost(input: {
       `INSERT INTO posts (id, title, status, thread, scheduled_at, source, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(id, input.title ?? null, scheduledAt ? "scheduled" : "draft", JSON.stringify(thread), scheduledAt, input.source, ts, ts);
-    if (input.targets) writeTargets(id, input.targets, []);
+    if (input.targets) writeTargets(id, input.targets, [], thread);
   });
   const post = requirePost(id);
   bus.emit({ type: "post.created", post });
@@ -235,7 +235,7 @@ export function updatePost(
   const title = patch.title !== undefined ? patch.title : post.title;
   tx(() => {
     db.prepare("UPDATE posts SET thread = ?, title = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(thread), title, now(), id);
-    if (patch.targets) writeTargets(id, patch.targets, post.targets);
+    if (patch.targets) writeTargets(id, patch.targets, post.targets, thread);
   });
   const updated = requirePost(id);
   bus.emit({ type: "post.updated", post: updated });
@@ -246,7 +246,7 @@ export function updatePost(
  * Replace a post's destinations. Existing targets keep their progress; a target with posts already live can't be
  * dropped until it is published, and its own thread keeps its live prefix.
  */
-function writeTargets(postId: string, targets: TargetInput[], existing: PostTarget[]): void {
+function writeTargets(postId: string, targets: TargetInput[], existing: PostTarget[], shared: Segment[]): void {
   const seen = new Set<string>();
   for (const t of targets) {
     if (seen.has(t.accountId)) throw new BadInputError(`Account ${t.accountId} is listed twice`);
@@ -265,9 +265,14 @@ function writeTargets(postId: string, targets: TargetInput[], existing: PostTarg
     const old = existing.find((e) => e.accountId === t.accountId);
     let thread: Segment[] | null =
       t.thread === undefined ? (old?.thread ?? null) : t.thread ? normalizeThread({ thread: t.thread }, old?.thread ?? []) : null;
+    // What is live on this destination came from its own version or the shared thread; whichever it publishes
+    // next (switching either way included) must start with exactly those posts.
     if (old && old.status !== "published" && old.externalIds.length && PLATFORMS[old.platform].threadMode !== "single") {
-      const base = old.thread ?? null;
-      if (base) thread = lockLivePrefix(base, thread ?? [], old.externalIds.length, PLATFORMS[old.platform].name);
+      const name = PLATFORMS[old.platform].name;
+      // A shared-thread destination's live prefix is already locked on `shared` by updatePost (sharedLive).
+      const before = old.thread ?? shared;
+      if (thread) thread = lockLivePrefix(before, thread, old.externalIds.length, name);
+      else lockLivePrefix(before, structuredClone(shared), old.externalIds.length, name);
     }
     db.prepare(
       `INSERT INTO post_targets (post_id, account_id, position, thread, status, external_ids, url, error, published_at)
@@ -291,10 +296,13 @@ export function recordTargetProgress(postId: string, accountId: string, external
   db.prepare("UPDATE post_targets SET external_ids = ? WHERE post_id = ? AND account_id = ?").run(JSON.stringify(externalIds), postId, accountId);
 }
 
+/** Links that come from a remote platform are only kept if they are plain http(s) (never javascript: or data:). */
+export const httpUrl = (u: string | null | undefined): string | null => (u && /^https?:\/\/[^\s]+$/i.test(u) ? u : null);
+
 export function markTargetPublished(postId: string, accountId: string, result: { externalIds: string[]; url: string | null }): void {
   db.prepare(
     "UPDATE post_targets SET status = 'published', external_ids = ?, url = ?, error = NULL, published_at = ? WHERE post_id = ? AND account_id = ?",
-  ).run(JSON.stringify(result.externalIds), result.url, now(), postId, accountId);
+  ).run(JSON.stringify(result.externalIds), httpUrl(result.url), now(), postId, accountId);
 }
 
 export function markTargetFailed(postId: string, accountId: string, error: string): void {
@@ -415,6 +423,17 @@ export function markDue(id: string, note: string | null = null): Post {
 export function recoverInterrupted(): number {
   const stuck = listPosts({ status: ["publishing"] });
   for (const p of stuck) {
+    if (p.targets.length) {
+      const notes = p.targets
+        .filter((t) => t.status !== "published")
+        .map((t) => {
+          const name = PLATFORMS[t.platform].name;
+          markTargetFailed(p.id, t.accountId, `Interrupted while publishing (process restarted); ${t.externalIds.length} item(s) confirmed live.`);
+          return `${name}: ${t.externalIds.length} confirmed live; check ${name} for item ${t.externalIds.length + 1} before you Retry (it may have gone out unrecorded).`;
+        });
+      markFailed(p.id, `Interrupted while publishing (process restarted). ${notes.join(" · ")}`);
+      continue;
+    }
     markFailed(
       p.id,
       `Interrupted while publishing (process restarted). ${p.xPostIds.length} of ${p.thread.length} posts were confirmed on X. ` +
